@@ -115,34 +115,69 @@ export default function InitialSnapshot() {
   const isLoading = fetcher.state !== "idle";
 
   return (
-    <s-page heading="Initialize Product Snapshots">
+    <s-page
+      heading="Initialize Product Snapshots"
+      backAction={{ url: "/app", label: "Dashboard" }}
+      inlineSize="large"
+    >
       <s-section>
-        <s-paragraph>
-          Before monitoring begins, Revertly needs to take an initial snapshot of your
-          products and store assets. This gives the system a baseline to compare future changes against.
-        </s-paragraph>
-        <s-paragraph>
-          Currently tracking <strong>{result?.count ?? count}</strong> products.
-        </s-paragraph>
+        <s-card>
+          <s-box padding="base">
+            <s-stack direction="block" gap="base">
+              <s-text variant="headingMd" fontWeight="bold">Store Baseline Setup</s-text>
+              <s-paragraph>
+                Before monitoring begins, Revertly takes an initial snapshot of your
+                products and store assets. This establishes a baseline to detect unauthorized price drops, mass tag edits, and accidental deletions.
+              </s-paragraph>
+              
+              <s-box padding="tight" borderWidth="base" borderRadius="base" borderColor="subdued">
+                <s-stack direction="inline" gap="tight" align-items="center">
+                  <s-badge tone={count > 0 ? "success" : "attention"}>
+                    {count > 0 ? "Monitoring Active" : "Setup Required"}
+                  </s-badge>
+                  <s-text>
+                    Currently tracking <strong>{result?.count ?? count}</strong> product snapshots in your baseline.
+                  </s-text>
+                </s-stack>
+              </s-box>
 
-        {result?.success && (
-          <s-banner tone="success">
-            Snapshot complete! {result.count} products are now actively monitored
-            {result.initialRpCreated
-              ? ", and your first Full Store Baseline (Theme, Collections & Products) has been secured in Restore Points!"
-              : "."}
-          </s-banner>
-        )}
+              {result?.success && (
+                <s-banner tone="success">
+                  <s-stack direction="block" gap="tight">
+                    <s-text fontWeight="bold">🎉 Snapshot Baseline Complete!</s-text>
+                    <s-paragraph>
+                      {result.count} products are now actively monitored
+                      {result.initialRpCreated
+                        ? ", and your first Full Store Baseline (Theme, Collections & Products) has been secured in Restore Points!"
+                        : "."}
+                    </s-paragraph>
+                    <s-stack direction="inline" gap="tight">
+                      <s-button url="/app" variant="primary">
+                        Go to Dashboard →
+                      </s-button>
+                      <s-button url="/app/rules" variant="secondary">
+                        Configure Detection Rules
+                      </s-button>
+                      <s-button url="/app/restore-points" variant="secondary">
+                        View Restore Points
+                      </s-button>
+                    </s-stack>
+                  </s-stack>
+                </s-banner>
+              )}
 
-        <fetcher.Form method="POST">
-          <s-button
-            submit
-            variant="primary"
-            {...(isLoading ? { loading: true } : {})}
-          >
-            {count > 0 ? "Refresh Product Snapshots" : "Initialize Monitoring"}
-          </s-button>
-        </fetcher.Form>
+              <fetcher.Form method="POST">
+                <s-button
+                  submit
+                  variant={result?.success ? "secondary" : "primary"}
+                  {...(isLoading ? { loading: true } : {})}
+                >
+                  {count > 0 ? "Refresh Product Snapshots" : "Initialize Monitoring"}
+                </s-button>
+              </fetcher.Form>
+            </s-stack>
+          </s-box>
+        </s-card>
       </s-section>
     </s-page>
   );

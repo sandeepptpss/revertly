@@ -30,12 +30,17 @@ export const action = async ({ request }) => {
   const intent = formData.get("intent");
   const incidentId = parseInt(formData.get("incidentId"));
 
+  const incident = await prisma.incident.findFirst({
+    where: { id: incidentId, shop },
+  });
+  if (!incident) return { success: false, message: "Incident not found." };
+
   if (intent === "resolve") {
     await prisma.incident.update({
       where: { id: incidentId },
       data: { status: "RESOLVED", resolvedAt: new Date() },
     });
-    return { success: true, action: "resolved" };
+    return { success: true, message: "Incident marked as resolved." };
   }
 
   if (intent === "ignore") {
@@ -43,10 +48,10 @@ export const action = async ({ request }) => {
       where: { id: incidentId },
       data: { status: "IGNORED", resolvedAt: new Date() },
     });
-    return { success: true, action: "ignored" };
+    return { success: true, message: "Incident ignored." };
   }
 
-  return { success: false };
+  return { success: false, message: "Action failed." };
 };
 
 function formatTime(date) {
@@ -76,27 +81,42 @@ function statusTone(status) {
 export default function Incidents() {
   const { incidents, currentStatus } = useLoaderData();
   const fetcher = useFetcher();
+  const result = fetcher.data;
 
   const handleAction = (intent, incidentId) => {
     fetcher.submit({ intent, incidentId: String(incidentId) }, { method: "POST" });
   };
 
-  const statuses = ["", "OPEN", "RESOLVED", "IGNORED", "ROLLED_BACK"];
+  const statuses = [
+    { id: "", label: "All Incidents" },
+    { id: "OPEN", label: "Open" },
+    { id: "RESOLVED", label: "Resolved" },
+    { id: "ROLLED_BACK", label: "Rolled Back" },
+    { id: "IGNORED", label: "Ignored" },
+  ];
 
   return (
-    <s-page heading="Incidents">
+    <s-page heading="Incidents" inlineSize="large">
+      {/* Action feedback banner */}
+      {result?.message && (
+        <s-section>
+          <s-banner tone={result.success ? "success" : "critical"}>
+            {result.message}
+          </s-banner>
+        </s-section>
+      )}
+
       {/* Status filter tabs */}
       <s-section>
-        <s-stack direction="inline" gap="tight">
+        <s-stack direction="inline" gap="tight" wrap>
           {statuses.map((s) => (
-            <s-link
-              key={s || "all"}
-              url={`/app/incidents${s ? `?status=${s}` : ""}`}
+            <s-button
+              key={s.id || "all"}
+              url={`/app/incidents${s.id ? `?status=${s.id}` : ""}`}
+              variant={s.id === currentStatus ? "primary" : "secondary"}
             >
-              <s-badge tone={s === currentStatus ? "info" : undefined}>
-                {s || "All"}
-              </s-badge>
-            </s-link>
+              {s.label}
+            </s-button>
           ))}
         </s-stack>
       </s-section>

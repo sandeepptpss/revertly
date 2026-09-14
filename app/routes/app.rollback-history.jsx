@@ -35,7 +35,11 @@ export default function RollbackHistory() {
   const { jobs } = useLoaderData();
 
   return (
-    <s-page heading="Rollback History">
+    <s-page
+      heading="Rollback History"
+      backAction={{ url: "/app", label: "Dashboard" }}
+      inlineSize="large"
+    >
       <s-section heading={`${jobs.length} rollback jobs`}>
         {jobs.length === 0 ? (
           <s-empty-state heading="No rollbacks yet">

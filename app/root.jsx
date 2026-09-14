@@ -22,6 +22,33 @@ export default function App() {
         {apiKey && <meta name="shopify-api-key" content={apiKey} />}
         <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
         <script src="https://cdn.shopify.com/shopifycloud/polaris.js"></script>
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `
+              html, body, :root {
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+                --pc-page-max-inline-size: 100% !important;
+                --p-page-max-width: 100% !important;
+              }
+              *, *:before, *:after {
+                box-sizing: inherit;
+              }
+              s-page {
+                width: 100% !important;
+                max-width: 100% !important;
+                display: block;
+              }
+              s-page::part(page), s-page::part(content), s-page::part(main) {
+                max-width: 100% !important;
+                width: 100% !important;
+              }
+            `,
+          }}
+        />
         <Meta />
         <Links />
       </head>

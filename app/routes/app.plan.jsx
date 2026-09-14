@@ -234,7 +234,7 @@ export default function Plan() {
   const isSubmitting = fetcher.state !== "idle";
 
   return (
-    <s-page>
+    <s-page heading="Plans & Billing" inlineSize="large">
       {/* Success banner */}
       {result?.success && (
         <s-section>

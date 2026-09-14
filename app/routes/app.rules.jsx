@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -46,8 +47,9 @@ export const action = async ({ request }) => {
         where: { id: ruleId },
         data: { isActive: !rule.isActive },
       });
+      return { success: true, message: `Rule "${rule.name}" is now ${!rule.isActive ? "Active" : "Inactive"}.` };
     }
-    return { success: true };
+    return { success: true, message: "Rule status updated." };
   }
 
   if (intent === "delete") {
@@ -59,7 +61,7 @@ export const action = async ({ request }) => {
     return { success: true, message: "Rule deleted." };
   }
 
-  return { success: false };
+  return { success: false, message: "Action failed." };
 };
 
 const FIELDS = ["price", "compareAtPrice", "title", "status", "vendor", "tags", "sku", "inventory"];
@@ -70,9 +72,11 @@ export default function Rules() {
   const { rules } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
+  const isSaving = fetcher.state !== "idle";
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   return (
-    <s-page heading="Detection Rules">
+    <s-page heading="Detection Rules" inlineSize="large">
       {result?.message && (
         <s-section>
           <s-banner tone={result.success ? "success" : "critical"}>
@@ -81,71 +85,92 @@ export default function Rules() {
         </s-section>
       )}
 
-      {/* Create Rule Form */}
+      {/* Create Rule Header / Form */}
       <s-section>
-        <details style={{ background: "#fbfcfd", border: "1px solid var(--p-color-border-subdued, #e1e3e5)", borderRadius: "8px", padding: "16px" }}>
-          <summary style={{ cursor: "pointer", fontWeight: "600", fontSize: "14px", color: "var(--p-color-text, #202223)" }}>
-            + Create New Detection Rule
-          </summary>
-          <div style={{ marginTop: "16px" }}>
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="create" />
-              <s-form-layout>
-                <s-form-layout-group>
-                  <s-text-field
-                    name="name"
-                    label="Rule Name"
-                    placeholder="e.g. Critical Price Drop (>30%)"
-                    required
-                  />
-                </s-form-layout-group>
-                <s-form-layout-group condensed>
-                  <s-select name="field" label="Monitor Field">
-                    {FIELDS.map((f) => (
-                      <s-option key={f} value={f}>{f}</s-option>
-                    ))}
-                  </s-select>
-                  <s-select name="condition" label="Condition">
-                    {CONDITIONS.map((c) => (
-                      <s-option key={c} value={c}>{c.replace(/_/g, " ")}</s-option>
-                    ))}
-                  </s-select>
-                  <s-select name="severity" label="Severity">
-                    {SEVERITIES.map((s) => (
-                      <s-option key={s} value={s}>{s}</s-option>
-                    ))}
-                  </s-select>
-                </s-form-layout-group>
-                <s-form-layout-group condensed>
-                  <s-text-field
-                    name="threshold"
-                    label="Threshold (%)"
-                    type="number"
-                    placeholder="30"
-                    helpText="For percent-based conditions"
-                  />
-                  <s-text-field
-                    name="minProducts"
-                    label="Min Products"
-                    type="number"
-                    placeholder="20"
-                    helpText="Trigger when N+ products affected"
-                  />
-                  <s-text-field
-                    name="windowMinutes"
-                    label="Time Window (min)"
-                    type="number"
-                    placeholder="10"
-                    helpText="Within time window"
-                  />
-                </s-form-layout-group>
-                <s-button submit variant="primary">
-                  Save Rule
-                </s-button>
-              </s-form-layout>
-            </fetcher.Form>
-          </div>
-        </details>
+        {!showCreateForm ? (
+          <s-stack direction="inline" align="space-between" align-items="center">
+            <s-text tone="subdued">
+              Define automated rules to alert and prevent malicious or accidental catalog changes.
+            </s-text>
+            <s-button variant="primary" onClick={() => setShowCreateForm(true)}>
+              + Create New Rule
+            </s-button>
+          </s-stack>
+        ) : (
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-stack direction="inline" align="space-between" align-items="center">
+                  <s-text fontWeight="bold" variant="headingMd">Create New Detection Rule</s-text>
+                  <s-button variant="tertiary" onClick={() => setShowCreateForm(false)}>
+                    Close
+                  </s-button>
+                </s-stack>
+                <fetcher.Form method="POST" onSubmit={() => setShowCreateForm(false)}>
+                  <input type="hidden" name="intent" value="create" />
+                  <s-form-layout>
+                    <s-form-layout-group>
+                      <s-text-field
+                        name="name"
+                        label="Rule Name"
+                        placeholder="e.g. Critical Price Drop (>30%)"
+                        required
+                      />
+                    </s-form-layout-group>
+                    <s-form-layout-group condensed>
+                      <s-select name="field" label="Monitor Field">
+                        {FIELDS.map((f) => (
+                          <s-option key={f} value={f}>{f}</s-option>
+                        ))}
+                      </s-select>
+                      <s-select name="condition" label="Condition">
+                        {CONDITIONS.map((c) => (
+                          <s-option key={c} value={c}>{c.replace(/_/g, " ")}</s-option>
+                        ))}
+                      </s-select>
+                      <s-select name="severity" label="Severity">
+                        {SEVERITIES.map((s) => (
+                          <s-option key={s} value={s}>{s}</s-option>
+                        ))}
+                      </s-select>
+                    </s-form-layout-group>
+                    <s-form-layout-group condensed>
+                      <s-text-field
+                        name="threshold"
+                        label="Threshold (%)"
+                        type="number"
+                        placeholder="30"
+                        helpText="For percent-based conditions"
+                      />
+                      <s-text-field
+                        name="minProducts"
+                        label="Min Products"
+                        type="number"
+                        placeholder="20"
+                        helpText="Trigger when N+ products affected"
+                      />
+                      <s-text-field
+                        name="windowMinutes"
+                        label="Time Window (min)"
+                        type="number"
+                        placeholder="10"
+                        helpText="Within time window"
+                      />
+                    </s-form-layout-group>
+                    <s-stack direction="inline" gap="tight">
+                      <s-button submit variant="primary" {...(isSaving ? { loading: true } : {})}>
+                        Save Rule
+                      </s-button>
+                      <s-button variant="secondary" onClick={() => setShowCreateForm(false)}>
+                        Cancel
+                      </s-button>
+                    </s-stack>
+                  </s-form-layout>
+                </fetcher.Form>
+              </s-stack>
+            </s-box>
+          </s-card>
+        )}
       </s-section>
 
       {/* Rules List */}

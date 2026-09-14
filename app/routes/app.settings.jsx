@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -73,9 +74,11 @@ export default function Settings() {
   const { settings } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
+  const isSaving = fetcher.state !== "idle";
+  const [slackUrl, setSlackUrl] = useState(settings.slackWebhookUrl || "");
 
   return (
-    <s-page heading="Settings">
+    <s-page heading="Settings" inlineSize="large">
       {result?.message && (
         <s-section>
           <s-banner tone={result.success ? "success" : "critical"}>
@@ -87,134 +90,169 @@ export default function Settings() {
       <fetcher.Form method="POST">
         <input type="hidden" name="intent" value="save" />
 
+        {/* Top Action Header */}
+        <s-section>
+          <s-stack direction="inline" align="space-between" align-items="center">
+            <s-text tone="subdued">
+              Manage automatic catalog monitoring, crash prevention circuit breakers, and alert destinations.
+            </s-text>
+            <s-button submit variant="primary" {...(isSaving ? { loading: true } : {})}>
+              Save Settings
+            </s-button>
+          </s-stack>
+        </s-section>
+
         {/* Monitoring */}
-        <s-section heading="Monitoring">
-          <s-form-layout>
-            <s-checkbox
-              name="monitoringEnabled"
-              value="true"
-              label="Enable product change monitoring"
-              defaultChecked={settings.monitoringEnabled}
-            />
-          </s-form-layout>
+        <s-section heading="Catalog Monitoring">
+          <s-card>
+            <s-box padding="base">
+              <s-form-layout>
+                <s-checkbox
+                  name="monitoringEnabled"
+                  value="true"
+                  label="Enable product change monitoring"
+                  defaultChecked={settings.monitoringEnabled}
+                />
+                <s-text tone="subdued" variant="bodySm">
+                  When enabled, Revertly listens to real-time product update and delete events to detect price and catalog discrepancies.
+                </s-text>
+              </s-form-layout>
+            </s-box>
+          </s-card>
         </s-section>
 
         {/* Emergency Circuit Breaker */}
         <s-section heading="Emergency Circuit Breaker (Price Crash Guard)">
-          <s-paragraph>
-            Protect your store from catastrophic revenue loss. Automatically pause selling or revert prices if an app, staff, or CSV causes a sudden crash.
-          </s-paragraph>
-          <s-form-layout>
-            <s-checkbox
-              name="circuitBreakerEnabled"
-              value="true"
-              label="Enable Emergency Circuit Breaker"
-              defaultChecked={settings.circuitBreakerEnabled}
-            />
-            <s-form-layout-group condensed>
-              <s-text-field
-                name="circuitBreakerThreshold"
-                label="Crash Trigger Threshold (%)"
-                type="number"
-                defaultValue={String(settings.circuitBreakerThreshold || 50)}
-                helpText="Trigger when variant price drops by this percentage or more"
-              />
-              <s-select
-                name="circuitBreakerAction"
-                label="Emergency Protective Action"
-                value={settings.circuitBreakerAction || "DRAFT"}
-              >
-                <s-option value="DRAFT">Set Product to DRAFT (Hide instantly)</s-option>
-                <s-option value="AUTO_REVERT">Auto-Revert Price (Restore previous price)</s-option>
-              </s-select>
-            </s-form-layout-group>
-          </s-form-layout>
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-paragraph>
+                  Protect your store from catastrophic revenue loss. Automatically pause selling or revert prices if an app, staff error, or CSV upload causes a sudden crash.
+                </s-paragraph>
+                <s-form-layout>
+                  <s-checkbox
+                    name="circuitBreakerEnabled"
+                    value="true"
+                    label="Enable Emergency Circuit Breaker"
+                    defaultChecked={settings.circuitBreakerEnabled}
+                  />
+                  <s-form-layout-group condensed>
+                    <s-text-field
+                      name="circuitBreakerThreshold"
+                      label="Crash Trigger Threshold (%)"
+                      type="number"
+                      defaultValue={String(settings.circuitBreakerThreshold || 50)}
+                      helpText="Trigger when variant price drops by this percentage or more"
+                    />
+                    <s-select
+                      name="circuitBreakerAction"
+                      label="Emergency Protective Action"
+                      value={settings.circuitBreakerAction || "DRAFT"}
+                    >
+                      <s-option value="DRAFT">Set Product to DRAFT (Hide instantly)</s-option>
+                      <s-option value="AUTO_REVERT">Auto-Revert Price (Restore previous price)</s-option>
+                    </s-select>
+                  </s-form-layout-group>
+                </s-form-layout>
+              </s-stack>
+            </s-box>
+          </s-card>
         </s-section>
 
         {/* Bulk Detection */}
         <s-section heading="Bulk Change Detection">
-          <s-paragraph>
-            Create an incident when too many products change in a short period.
-          </s-paragraph>
-          <s-form-layout>
-            <s-form-layout-group condensed>
-              <s-text-field
-                name="bulkThreshold"
-                label="Products Threshold"
-                type="number"
-                defaultValue={String(settings.bulkThreshold)}
-                helpText="Trigger incident if this many products change"
-              />
-              <s-text-field
-                name="bulkWindowMinutes"
-                label="Time Window (minutes)"
-                type="number"
-                defaultValue={String(settings.bulkWindowMinutes)}
-                helpText="Within this time window"
-              />
-            </s-form-layout-group>
-          </s-form-layout>
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-paragraph>
+                  Automatically create an incident when too many products change in a short period.
+                </s-paragraph>
+                <s-form-layout>
+                  <s-form-layout-group condensed>
+                    <s-text-field
+                      name="bulkThreshold"
+                      label="Products Threshold"
+                      type="number"
+                      defaultValue={String(settings.bulkThreshold)}
+                      helpText="Trigger incident if this many products change"
+                    />
+                    <s-text-field
+                      name="bulkWindowMinutes"
+                      label="Time Window (minutes)"
+                      type="number"
+                      defaultValue={String(settings.bulkWindowMinutes)}
+                      helpText="Within this time window"
+                    />
+                  </s-form-layout-group>
+                </s-form-layout>
+              </s-stack>
+            </s-box>
+          </s-card>
         </s-section>
 
         {/* Alerts */}
         <s-section heading="Alert Settings (Email & Slack)">
-          <s-form-layout>
-            <s-text-field
-              name="alertEmail"
-              label="Alert Email"
-              type="email"
-              defaultValue={settings.alertEmail || ""}
-              placeholder="merchant@example.com"
-              helpText="Receive email alerts when incidents are created"
-            />
-            <s-stack direction="inline" gap="tight" blockAlign="end">
-              <div style={{ flex: 1 }}>
+          <s-card>
+            <s-box padding="base">
+              <s-form-layout>
                 <s-text-field
-                  name="slackWebhookUrl"
-                  label="Slack Incoming Webhook URL"
-                  type="url"
-                  defaultValue={settings.slackWebhookUrl || ""}
-                  placeholder="https://hooks.slack.com/services/..."
-                  helpText="Receive real-time instant alerts directly in your Slack channel"
+                  name="alertEmail"
+                  label="Alert Email"
+                  type="email"
+                  defaultValue={settings.alertEmail || ""}
+                  placeholder="merchant@example.com"
+                  helpText="Receive email alerts when incidents are created"
                 />
-              </div>
-              <s-button
-                type="button"
-                onClick={() => {
-                  const input = document.querySelector('input[name="slackWebhookUrl"]');
-                  fetcher.submit(
-                    { intent: "testSlack", slackWebhookUrl: input?.value || "" },
-                    { method: "POST" }
-                  );
-                }}
-              >
-                Test Slack
-              </s-button>
-            </s-stack>
-            <s-checkbox
-              name="alertOnCritical"
-              value="true"
-              label="Alert on Critical incidents"
-              defaultChecked={settings.alertOnCritical}
-            />
-            <s-checkbox
-              name="alertOnHigh"
-              value="true"
-              label="Alert on High severity incidents"
-              defaultChecked={settings.alertOnHigh}
-            />
-            <s-checkbox
-              name="alertOnMedium"
-              value="true"
-              label="Alert on Medium severity incidents"
-              defaultChecked={settings.alertOnMedium}
-            />
-          </s-form-layout>
+                <s-stack direction="inline" gap="tight" blockAlign="end">
+                  <div style={{ flex: 1 }}>
+                    <s-text-field
+                      name="slackWebhookUrl"
+                      label="Slack Incoming Webhook URL"
+                      type="url"
+                      value={slackUrl}
+                      onChange={(e) => setSlackUrl(e.target.value)}
+                      placeholder="https://hooks.slack.com/services/..."
+                      helpText="Receive real-time instant alerts directly in your Slack channel"
+                    />
+                  </div>
+                  <s-button
+                    type="button"
+                    onClick={() => {
+                      fetcher.submit(
+                        { intent: "testSlack", slackWebhookUrl: slackUrl },
+                        { method: "POST" }
+                      );
+                    }}
+                  >
+                    Test Slack
+                  </s-button>
+                </s-stack>
+                <s-checkbox
+                  name="alertOnCritical"
+                  value="true"
+                  label="Alert on Critical incidents"
+                  defaultChecked={settings.alertOnCritical}
+                />
+                <s-checkbox
+                  name="alertOnHigh"
+                  value="true"
+                  label="Alert on High severity incidents"
+                  defaultChecked={settings.alertOnHigh}
+                />
+                <s-checkbox
+                  name="alertOnMedium"
+                  value="true"
+                  label="Alert on Medium severity incidents"
+                  defaultChecked={settings.alertOnMedium}
+                />
+              </s-form-layout>
+            </s-box>
+          </s-card>
         </s-section>
 
         <s-section>
           <s-stack direction="inline" gap="300">
-            <s-button submit variant="primary">
+            <s-button submit variant="primary" {...(isSaving ? { loading: true } : {})}>
               Save Settings
             </s-button>
           </s-stack>

@@ -80,7 +80,7 @@ export default function Activity() {
   const totalPages = Math.ceil(total / perPage);
 
   return (
-    <s-page heading="Activity Log">
+    <s-page heading="Activity Log" inlineSize="large">
       {result?.message && (
         <s-section>
           <s-banner tone={result.success ? "success" : "critical"}>

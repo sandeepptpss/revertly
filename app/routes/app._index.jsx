@@ -78,7 +78,7 @@ export default function Dashboard() {
   const { stats, recentChanges, recentIncidents, isInitialized } = useLoaderData();
 
   return (
-    <s-page heading="Dashboard">
+    <s-page heading="Dashboard" inlineSize="large">
 
       {/* ── Onboarding Banner (only when not initialized) ── */}
       {!isInitialized && (
@@ -210,9 +210,9 @@ export default function Dashboard() {
                 </s-stack>
 
                 {recentIncidents.length === 0 ? (
-                  <s-box padding="base" style={{ background: "#fbfcfd", borderRadius: "8px", border: "1px dashed var(--p-color-border-subdued, #d2d5d8)" }}>
+                  <s-box padding="base" borderWidth="base" borderRadius="base" borderColor="subdued" background="surface-secondary">
                     <s-stack direction="block" gap="tight" align="center">
-                      <s-text variant="bodySm" fontWeight="bold">Shield Active &bull; Zero Incidents</s-text>
+                      <s-text variant="bodySm" fontWeight="bold">🛡️ Shield Active &bull; Zero Incidents</s-text>
                       <s-text tone="subdued" variant="bodyXs">
                         Your store is safe! Suspicious price drops and mass updates will be flagged here immediately.
                       </s-text>
@@ -270,9 +270,9 @@ export default function Dashboard() {
                 </s-stack>
 
                 {recentChanges.length === 0 ? (
-                  <s-box padding="base" style={{ background: "#fbfcfd", borderRadius: "8px", border: "1px dashed var(--p-color-border-subdued, #d2d5d8)" }}>
+                  <s-box padding="base" borderWidth="base" borderRadius="base" borderColor="subdued" background="surface-secondary">
                     <s-stack direction="block" gap="tight" align="center">
-                      <s-text variant="bodySm" fontWeight="bold">Listening for Updates</s-text>
+                      <s-text variant="bodySm" fontWeight="bold">📡 Listening for Updates</s-text>
                       <s-text tone="subdued" variant="bodyXs">
                         Product updates, price changes, and deletions will appear in real time.
                       </s-text>
@@ -313,7 +313,7 @@ export default function Dashboard() {
       {/* ── Quick Actions Aside ── */}
       <s-section slot="aside" heading="Quick Actions">
         <s-stack direction="block" gap="tight">
-          <s-button url="/app/restore-points/new" variant="primary" fullWidth>
+          <s-button url="/app/restore-points" variant="primary" fullWidth>
             + Create Restore Point
           </s-button>
           <s-button url="/app/incidents" fullWidth>

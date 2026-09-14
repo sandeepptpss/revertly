@@ -96,10 +96,11 @@ export default function Support() {
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSubmitting = fetcher.state !== "idle";
-  const [activeArticle, setActiveArticle] = React.useState(null);
+  const [expandedIndex, setExpandedIndex] = React.useState(null);
+  const toggleArticle = (i) => setExpandedIndex(expandedIndex === i ? null : i);
 
   return (
-    <s-page heading="Help &amp; Support">
+    <s-page heading="Help &amp; Support" inlineSize="large">
       {/* Hero Banner */}
       <s-section>
         <s-banner tone="info">
@@ -148,21 +149,31 @@ export default function Support() {
       {/* Help Articles */}
       <s-section heading="Frequently Asked Questions">
         <s-stack direction="block" gap="tight">
-          {HELP_ARTICLES.map((article, i) => (
-            <s-card key={i}>
-              <s-box padding="base">
-                <s-stack direction="block" gap="tight">
-                  <s-stack direction="inline" align="space-between">
-                    <s-stack direction="block" gap="tight">
-                      <s-badge tone="subdued">{article.category}</s-badge>
-                      <s-text fontWeight="bold">{article.title}</s-text>
+          {HELP_ARTICLES.map((article, i) => {
+            const isExpanded = expandedIndex === i;
+            return (
+              <s-card key={i}>
+                <s-box padding="base">
+                  <s-stack direction="block" gap="tight">
+                    <s-stack direction="inline" align="space-between" align-items="center">
+                      <s-stack direction="inline" gap="tight" align-items="center">
+                        <s-badge tone="subdued">{article.category}</s-badge>
+                        <s-text fontWeight="bold">{article.title}</s-text>
+                      </s-stack>
+                      <s-button variant="tertiary" onClick={() => toggleArticle(i)}>
+                        {isExpanded ? "Hide ▲" : "Read ▼"}
+                      </s-button>
                     </s-stack>
+                    {isExpanded && (
+                      <s-box paddingBlockStart="tight">
+                        <s-text tone="subdued">{article.body}</s-text>
+                      </s-box>
+                    )}
                   </s-stack>
-                  <s-text tone="subdued">{article.body}</s-text>
-                </s-stack>
-              </s-box>
-            </s-card>
-          ))}
+                </s-box>
+              </s-card>
+            );
+          })}
         </s-stack>
       </s-section>
 

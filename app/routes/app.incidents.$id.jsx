@@ -162,6 +162,7 @@ export default function IncidentDetail() {
     <s-page
       heading={incident.name}
       backAction={{ url: "/app/incidents", label: "Incidents" }}
+      inlineSize="large"
     >
       {/* Status Bar */}
       <s-section>
@@ -206,6 +207,49 @@ export default function IncidentDetail() {
           <s-banner tone={result.success ? "success" : "critical"}>
             {result.message}
           </s-banner>
+        </s-section>
+      )}
+
+      {/* ── Emergency Action Bar ── */}
+      {canRollback && (
+        <s-section>
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="inline" align="space-between" align-items="center" wrap>
+                <s-stack direction="block" gap="extraTight">
+                  <s-text fontWeight="bold">Action Required: Incident is Open</s-text>
+                  <s-text tone="subdued">
+                    Review the {incident.affectedCount} affected product{incident.affectedCount !== 1 ? "s" : ""} below or execute an instant rollback to restore previous catalog values.
+                  </s-text>
+                </s-stack>
+                <s-stack direction="inline" gap="tight" align-items="center">
+                  <fetcher.Form method="POST">
+                    <input type="hidden" name="intent" value="rollback" />
+                    <s-button
+                      submit
+                      variant="primary"
+                      tone="critical"
+                      {...(isRolling ? { loading: true } : {})}
+                    >
+                      ⚡ Confirm Rollback ({Object.keys(byProduct).length} Products)
+                    </s-button>
+                  </fetcher.Form>
+                  <fetcher.Form method="POST">
+                    <input type="hidden" name="intent" value="resolve" />
+                    <s-button submit tone="success" variant="secondary">
+                      Mark Resolved
+                    </s-button>
+                  </fetcher.Form>
+                  <fetcher.Form method="POST">
+                    <input type="hidden" name="intent" value="ignore" />
+                    <s-button submit variant="tertiary">
+                      Ignore
+                    </s-button>
+                  </fetcher.Form>
+                </s-stack>
+              </s-stack>
+            </s-box>
+          </s-card>
         </s-section>
       )}
 

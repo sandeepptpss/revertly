@@ -85,7 +85,7 @@ export default function RestorePoints() {
   const isCreating = fetcher.state !== "idle";
 
   return (
-    <s-page heading="Restore Points">
+    <s-page heading="Restore Points" inlineSize="large">
       {result?.message && (
         <s-section>
           <s-banner tone={result.success ? "success" : "critical"}>

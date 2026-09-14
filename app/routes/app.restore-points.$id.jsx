@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, redirect } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -13,9 +13,17 @@ import {
 } from "../backup.server.js";
 
 export const loader = async ({ request, params }) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
+
+  if (params.id === "new") {
+    return redirect("/app/restore-points");
+  }
+
   const rpId = parseInt(params.id);
+  if (isNaN(rpId)) {
+    throw new Response("Not Found", { status: 404 });
+  }
 
   const restorePoint = await prisma.restorePoint.findFirst({
     where: { id: rpId, shop },
@@ -367,6 +375,20 @@ export default function RestorePointDetail() {
   );
   const [expandedFile, setExpandedFile] = useState(null);
 
+  const [activeTab, setActiveTab] = useState(() => {
+    if (differences.length > 0) return "products";
+    if (themeData?.activeTheme) return "theme";
+    return "products";
+  });
+
+  const tabs = [
+    ...(themeData?.activeTheme ? [{ id: "theme", label: `🎨 Theme (${filesList.length})` }] : []),
+    { id: "products", label: `📦 Products (${differences.length} diff${differences.length === 1 ? "" : "s"})` },
+    ...(collectionData.length > 0 ? [{ id: "collections", label: `🗂️ Collections (${collectionData.length})` }] : []),
+    ...(pageData.length > 0 ? [{ id: "pages", label: `📄 Pages & Menus (${pageData.length})` }] : []),
+    ...(lastJob ? [{ id: "history", label: "🕒 History" }] : []),
+  ];
+
   const toggleSelectAll = () => {
     if (selectedFiles.length === filesList.length) {
       setSelectedFiles([]);
@@ -379,6 +401,7 @@ export default function RestorePointDetail() {
     <s-page
       heading={restorePoint.name}
       backAction={{ url: "/app/restore-points", label: "Restore Points" }}
+      inlineSize="large"
     >
       <s-section>
         <s-stack direction="block" gap="tight">
@@ -404,13 +427,28 @@ export default function RestorePointDetail() {
         </s-stack>
       </s-section>
 
+      {/* ── Navigation Tabs ── */}
+      <s-section>
+        <s-stack direction="inline" gap="tight" wrap>
+          {tabs.map((tab) => (
+            <s-button
+              key={tab.id}
+              variant={activeTab === tab.id ? "primary" : "secondary"}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </s-button>
+          ))}
+        </s-stack>
+      </s-section>
+
       {/* ── Draft Staging Preview Banner ── */}
       {result?.isDraft && result?.previewUrl && (
         <s-section>
           <s-banner tone="success">
             <s-stack direction="block" gap="tight">
               <s-text fontWeight="bold">
-                🎉 Draft Staging Theme Created: "{result.draftThemeName}"
+                🎉 Draft Staging Theme Created: &ldquo;{result.draftThemeName}&rdquo;
               </s-text>
               <s-paragraph>
                 Your backed-up theme files were safely deployed into an <strong>unpublished draft theme</strong> ({result.filesRestored} files restored). Your live storefront is 100% untouched! You can preview it now:
@@ -455,7 +493,7 @@ export default function RestorePointDetail() {
       )}
 
       {/* ── Active Theme Backup & Restore Section ── */}
-      {themeData?.activeTheme && (
+      {activeTab === "theme" && themeData?.activeTheme && (
         <s-section heading="Theme Backup &amp; Code Protection">
           <s-card>
             <s-box padding="base">
@@ -772,7 +810,7 @@ export default function RestorePointDetail() {
                 </s-stack>
 
                 <s-text tone="subdued" variant="bodySm">
-                  💡 <strong>Pro Tip:</strong> Select <strong>"Restore to Draft Theme"</strong> to safely preview your storefront without risking live store downtime. If restoring directly to live, Revertly will automatically capture a safety snapshot first.
+                  💡 <strong>Pro Tip:</strong> Select <strong>&ldquo;Restore to Draft Theme&rdquo;</strong> to safely preview your storefront without risking live store downtime. If restoring directly to live, Revertly will automatically capture a safety snapshot first.
                 </s-text>
               </s-stack>
             </s-box>
@@ -781,7 +819,7 @@ export default function RestorePointDetail() {
       )}
 
       {/* ── Collections Backup Section ── */}
-      {collectionData.length > 0 && (
+      {activeTab === "collections" && collectionData.length > 0 && (
         <s-section heading={`${collectionData.length} Collections Protected`}>
           <s-card>
             <s-box padding="base">
@@ -790,7 +828,7 @@ export default function RestorePointDetail() {
                   All automated smart rules and custom collection settings are preserved. If a collection is accidentally deleted or rules are broken, you can restore it below.
                 </s-paragraph>
                 <s-resource-list>
-                  {collectionData.slice(0, 8).map((col, idx) => (
+                  {collectionData.map((col, idx) => (
                     <s-resource-item key={col.id || idx} id={String(col.id || idx)}>
                       <s-stack direction="inline" align="space-between" align-items="center">
                         <s-stack direction="block" gap="tight">
@@ -817,12 +855,12 @@ export default function RestorePointDetail() {
       )}
 
       {/* ── Content Pages Backup Section ── */}
-      {pageData.length > 0 && (
+      {activeTab === "pages" && pageData.length > 0 && (
         <s-section heading={`${pageData.length} Content Pages Protected`}>
           <s-card>
             <s-box padding="base">
               <s-resource-list>
-                {pageData.slice(0, 5).map((p, idx) => (
+                {pageData.map((p, idx) => (
                   <s-resource-item key={p.id || idx} id={String(p.id || idx)}>
                     <s-stack direction="inline" align="space-between" align-items="center">
                       <s-stack direction="block" gap="tight">
@@ -846,79 +884,118 @@ export default function RestorePointDetail() {
       )}
 
       {/* ── Products Differences & Rollback ── */}
-      <s-section
-        heading={`${differences.length} products differ from restore point`}
-      >
-        {differences.length === 0 ? (
-          <s-banner tone="success">
-            All products match this restore point. No product changes detected.
-          </s-banner>
-        ) : (
-          differences.map((d) => (
-            <s-card key={d.productId}>
+      {activeTab === "products" && (
+        <>
+          {differences.length > 0 && (
+            <s-section>
+              <s-card>
+                <s-box padding="base">
+                  <s-stack direction="inline" align="space-between" align-items="center">
+                    <s-stack direction="block" gap="extraTight">
+                      <s-text fontWeight="bold">Catalog Differences Detected</s-text>
+                      <s-text tone="subdued">
+                        {differences.length} product{differences.length !== 1 ? "s differ" : " differs"} from this restore point.
+                      </s-text>
+                    </s-stack>
+                    <fetcher.Form method="POST">
+                      <input type="hidden" name="intent" value="restore" />
+                      <s-button
+                        submit
+                        variant="primary"
+                        tone="critical"
+                        {...(isRestoring ? { loading: true } : {})}
+                      >
+                        ⚡ Restore {differences.length} Products to Snapshot
+                      </s-button>
+                    </fetcher.Form>
+                  </s-stack>
+                </s-box>
+              </s-card>
+            </s-section>
+          )}
+
+          <s-section
+            heading={`${differences.length} products differ from restore point`}
+          >
+            {differences.length === 0 ? (
+              <s-banner tone="success">
+                All products match this restore point. No product changes detected.
+              </s-banner>
+            ) : (
+              differences.map((d) => (
+                <s-card key={d.productId}>
+                  <s-box padding="base">
+                    <s-stack direction="block" gap="tight">
+                      <s-text fontWeight="bold">{d.title}</s-text>
+                      <s-data-table
+                        columnContentTypes={["text", "text", "text"]}
+                        headings={["Field", "Saved (Restore Point)", "Current"]}
+                        rows={d.diffs.map((df) => [df.field, String(df.saved), String(df.current)])}
+                      />
+                    </s-stack>
+                  </s-box>
+                </s-card>
+              ))
+            )}
+          </s-section>
+
+          {differences.length > 0 && (
+            <s-section>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="restore" />
+                <s-stack direction="inline" gap="base">
+                  <s-button
+                    submit
+                    variant="primary"
+                    tone="critical"
+                    {...(isRestoring ? { loading: true } : {})}
+                  >
+                    Restore {differences.length} Products to This Point
+                  </s-button>
+                </s-stack>
+              </fetcher.Form>
+              <s-paragraph>
+                <s-text tone="subdued">
+                  Only changed product fields will be restored. Unaffected fields remain unchanged.
+                </s-text>
+              </s-paragraph>
+            </s-section>
+          )}
+        </>
+      )}
+
+      {/* ── Restore History ── */}
+      {activeTab === "history" && (
+        <s-section heading="Restore History">
+          {lastJob ? (
+            <s-card>
               <s-box padding="base">
-                <s-stack direction="block" gap="tight">
-                  <s-text fontWeight="bold">{d.title}</s-text>
-                  <s-data-table
-                    columnContentTypes={["text", "text", "text"]}
-                    headings={["Field", "Saved (Restore Point)", "Current"]}
-                    rows={d.diffs.map((df) => [df.field, String(df.saved), String(df.current)])}
-                  />
+                <s-stack direction="inline" gap="base" align="center">
+                  <s-badge
+                    tone={
+                      lastJob.status === "COMPLETED"
+                        ? "success"
+                        : lastJob.status === "FAILED"
+                          ? "critical"
+                          : "attention"
+                    }
+                  >
+                    {lastJob.status}
+                  </s-badge>
+                  <s-text>
+                    {lastJob.successCount}/{lastJob.totalProducts} products restored
+                  </s-text>
+                  <s-text tone="subdued">{formatTime(lastJob.createdAt)}</s-text>
                 </s-stack>
               </s-box>
             </s-card>
-          ))
-        )}
-      </s-section>
-
-      {/* Last rollback job */}
-      {lastJob && (
-        <s-section heading="Last Restore Job">
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="inline" gap="base">
-                <s-badge
-                  tone={
-                    lastJob.status === "COMPLETED"
-                      ? "success"
-                      : lastJob.status === "FAILED"
-                        ? "critical"
-                        : "attention"
-                  }
-                >
-                  {lastJob.status}
-                </s-badge>
-                <s-text>
-                  {lastJob.successCount}/{lastJob.totalProducts} products restored
-                </s-text>
-                <s-text tone="subdued">{formatTime(lastJob.createdAt)}</s-text>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
-      )}
-
-      {/* Products Restore Action */}
-      {differences.length > 0 && (
-        <s-section>
-          <fetcher.Form method="POST">
-            <input type="hidden" name="intent" value="restore" />
-            <s-stack direction="inline" gap="base">
-              <s-button
-                submit
-                variant="primary"
-                tone="critical"
-                {...(isRestoring ? { loading: true } : {})}
-              >
-                Restore {differences.length} Products to This Point
-              </s-button>
-            </s-stack>
-          </fetcher.Form>
-          <s-paragraph>
-            <s-text tone="subdued">
-              Only changed product fields will be restored. Unaffected fields remain unchanged.
-            </s-text>
-          </s-paragraph>
+          ) : (
+            <s-card>
+              <s-box padding="base">
+                <s-text tone="subdued">No restore operations have been run from this restore point yet.</s-text>
+              </s-box>
+            </s-card>
+          )}
         </s-section>
       )}
     </s-page>

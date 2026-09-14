@@ -18,9 +18,9 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>Revertly Catalog &amp; Store Shield</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Real-time product change detection, automated price crash circuit breakers, and 1-click catalog and theme rollback for Shopify merchants.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -36,16 +36,13 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Real-Time Catalog Watchdog</strong>. Detects unauthorized price drops, mass CSV mistakes, and app conflicts the second they happen.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Emergency Circuit Breaker</strong>. Automatically puts crashed products into draft or restores previous prices to prevent catastrophic revenue loss.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>1-Click Theme &amp; Catalog Restore</strong>. Take multi-resource snapshots of products, theme Liquid code, and smart collections with instant rollback.
           </li>
         </ul>
       </div>
