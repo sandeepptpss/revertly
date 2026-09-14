@@ -11,10 +11,10 @@ import prisma from "./db.server";
 export const PLAN_STARTER = "Starter";
 export const PLAN_GROWTH = "Growth";
 export const PLAN_BUSINESS = "Business";
+export const PLAN_ENTERPRISE = "Enterprise";
 
 // Aliases for backwards compatibility
 export const PLAN_PRO = PLAN_GROWTH;
-export const PLAN_ENTERPRISE = PLAN_BUSINESS;
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -51,7 +51,7 @@ const shopify = shopifyApp({
     [PLAN_GROWTH]: {
       lineItems: [
         {
-          amount: 19,
+          amount: 24,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
         },
@@ -60,7 +60,16 @@ const shopify = shopifyApp({
     [PLAN_BUSINESS]: {
       lineItems: [
         {
-          amount: 29,
+          amount: 49,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days,
+        },
+      ],
+    },
+    [PLAN_ENTERPRISE]: {
+      lineItems: [
+        {
+          amount: 79,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
         },

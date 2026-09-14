@@ -19,7 +19,7 @@ const PLANS = [
     price: "$0",
     period: "",
     subtext: "",
-    footerText: "Basic protection",
+    footerText: "Basic protection for new stores",
     features: [
       "Up to 100 products monitored",
       "7 days change history retention",
@@ -42,14 +42,15 @@ const PLANS = [
       "Up to 10 restore points",
       "3 active detection rules",
       "Single & multi-product rollback",
-      "Email change alerts",
+      "Email catalog drift alerts",
+      "Automated daily catalog sync",
     ],
   },
   {
     id: "growth",
     category: "Most Popular",
     name: "Growth",
-    price: "$19",
+    price: "$24",
     period: "/ month",
     subtext: "14-day free trial",
     footerText: "For growing retail stores",
@@ -61,28 +62,50 @@ const PLANS = [
       "Bulk product rollback (CSV undo)",
       "1-Click Deleted Product Recovery",
       "Collections & Smart Rules Backup",
+      "Orders & Customers Vault (2,500 orders)",
+      "Accountant-ready Tax CSV export",
       "Email & Audit log reports",
     ],
   },
   {
     id: "business",
-    category: "Ultimate Shield",
+    category: "Store Shield",
     name: "Business",
-    price: "$29",
+    price: "$49",
     period: "/ month",
-    subtext: "Complete Peace of Mind",
-    footerText: "For large stores & teams",
+    subtext: "14-day free trial",
+    footerText: "For scaling brands & agencies",
+    features: [
+      "Up to 20,000 products monitored",
+      "180 days (6 months) retention",
+      "Up to 100 restore points",
+      "Full Store Themes & Liquid Code Backup",
+      "1-Click Theme Code & Asset Rollback",
+      "Orders & Customers Vault (15,000 orders)",
+      "Chargeback Dispute Proof Pack (JSON)",
+      "Emergency Circuit Breaker (Auto-Draft)",
+      "Unlimited detection rules",
+      "Real-time Slack Webhook Alerts",
+    ],
+  },
+  {
+    id: "enterprise",
+    category: "Ultimate Plus",
+    name: "Enterprise",
+    price: "$79",
+    period: "/ month",
+    subtext: "14-day free trial",
+    footerText: "For Shopify Plus & high volume",
     features: [
       "Unlimited products monitored",
-      "365 days (1 year) retention",
+      "365 days (1 full year) retention",
       "Unlimited restore points",
-      "Full Store Backup (Themes, Code & Collections)",
-      "1-Click Theme Code & Settings Rollback",
-      "Unlimited detection rules",
-      "Emergency Circuit Breaker (Auto-Draft)",
-      "Real-time Slack Webhook Alerts",
-      "Instant bulk & variant rollback",
-      "Priority developer support",
+      "Unlimited Themes, Code & Assets",
+      "Unlimited Orders & Customers Vault",
+      "Dedicated GDPR & Tax compliance exports",
+      "High-speed GraphQL rate allocation",
+      "Multi-store staging & priority SLA",
+      "Priority 24/7 Developer Support",
     ],
   },
 ];
@@ -93,8 +116,8 @@ const PLAN_LIMITS = {
   starter: { products: 1000, restorePoints: 10, rules: 3 },
   growth: { products: 5000, restorePoints: 50, rules: 10 },
   pro: { products: 5000, restorePoints: 50, rules: 10 }, // backwards compat
-  business: { products: Infinity, restorePoints: Infinity, rules: Infinity },
-  enterprise: { products: Infinity, restorePoints: Infinity, rules: Infinity }, // backwards compat
+  business: { products: 20000, restorePoints: 100, rules: Infinity },
+  enterprise: { products: Infinity, restorePoints: Infinity, rules: Infinity },
 };
 
 // ── Server ───────────────────────────────────────────────────────────────────
@@ -106,14 +129,15 @@ export const loader = async ({ request }) => {
   let activeShopifyPlan = null;
   try {
     const billingCheck = await billing.check({
-      plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS],
+      plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
       isTest,
     });
     if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
       const subName = billingCheck.appSubscriptions[0]?.name;
       if (subName === PLAN_STARTER) activeShopifyPlan = "starter";
       else if (subName === PLAN_GROWTH || subName === PLAN_PRO) activeShopifyPlan = "growth";
-      else if (subName === PLAN_BUSINESS || subName === PLAN_ENTERPRISE) activeShopifyPlan = "business";
+      else if (subName === PLAN_BUSINESS) activeShopifyPlan = "business";
+      else if (subName === PLAN_ENTERPRISE) activeShopifyPlan = "enterprise";
     }
   } catch (err) {
     console.warn("Shopify billing check warning:", err?.message || err);
@@ -124,7 +148,6 @@ export const loader = async ({ request }) => {
 
   // Normalize legacy plan IDs
   if (currentPlan === "pro") currentPlan = "growth";
-  if (currentPlan === "enterprise") currentPlan = "business";
 
   if (activeShopifyPlan && settings && settings.planId !== activeShopifyPlan) {
     await prisma.appSettings.update({
@@ -154,16 +177,25 @@ export const action = async ({ request }) => {
   const planId = formData.get("planId");
   const isTest = process.env.NODE_ENV !== "production";
 
-  if (planId === "starter" || planId === "growth" || planId === "business" || planId === "pro" || planId === "enterprise") {
+  if (
+    planId === "starter" ||
+    planId === "growth" ||
+    planId === "business" ||
+    planId === "enterprise" ||
+    planId === "pro"
+  ) {
     let targetPlan = PLAN_STARTER;
     let normalizedPlanId = planId;
 
     if (planId === "growth" || planId === "pro") {
       targetPlan = PLAN_GROWTH;
       normalizedPlanId = "growth";
-    } else if (planId === "business" || planId === "enterprise") {
+    } else if (planId === "business") {
       targetPlan = PLAN_BUSINESS;
       normalizedPlanId = "business";
+    } else if (planId === "enterprise") {
+      targetPlan = PLAN_ENTERPRISE;
+      normalizedPlanId = "enterprise";
     }
 
     const url = new URL(request.url);
@@ -192,7 +224,7 @@ export const action = async ({ request }) => {
   } else if (planId === "free") {
     try {
       const billingCheck = await billing.check({
-        plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS],
+        plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
         isTest,
       });
       if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
@@ -289,18 +321,39 @@ export default function Plan() {
         <s-stack direction="block" gap="100">
           <s-text variant="headingLg" fontWeight="bold">Choose Your Protection Plan</s-text>
           <s-text tone="subdued" variant="bodyMd">
-            Scale your peace of mind as your store grows. Upgrade, downgrade, or cancel anytime.
+            Scale your peace of mind as your store grows. All paid plans include a 14-day free trial. Upgrade, downgrade, or cancel anytime.
           </s-text>
         </s-stack>
       </s-section>
 
-      {/* ── Four Cards Columns ── */}
+      {/* ── Five Cards Responsive Grid ── */}
       <s-section>
-        <s-columns columns="4">
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: "16px",
+            alignItems: "stretch",
+          }}
+        >
           {PLANS.map((plan) => {
             const isCurrent = activePlan === plan.id;
             const isGrowth = plan.id === "growth";
             const isBusiness = plan.id === "business";
+            const isEnterprise = plan.id === "enterprise";
+
+            let borderColor = "transparent";
+            let bgColor = "transparent";
+            if (isGrowth) {
+              borderColor = "#005bd3";
+              bgColor = "rgba(0, 91, 211, 0.03)";
+            } else if (isBusiness) {
+              borderColor = "#2c6ecb";
+              bgColor = "rgba(44, 110, 203, 0.02)";
+            } else if (isEnterprise) {
+              borderColor = "#5c6ac4";
+              bgColor = "rgba(92, 106, 196, 0.03)";
+            }
 
             return (
               <s-card key={plan.id}>
@@ -311,8 +364,8 @@ export default function Plan() {
                     flexDirection: "column",
                     justifyContent: "space-between",
                     borderRadius: "10px",
-                    border: isGrowth ? "2px solid #005bd3" : "1px solid transparent",
-                    background: isGrowth ? "rgba(0, 91, 211, 0.02)" : "transparent",
+                    border: `2px solid ${borderColor}`,
+                    background: bgColor,
                     transition: "all 0.2s ease",
                   }}
                 >
@@ -329,7 +382,9 @@ export default function Plan() {
                           ) : isGrowth ? (
                             <s-badge tone="info">Most Popular</s-badge>
                           ) : isBusiness ? (
-                            <s-badge tone="magic">Ultimate</s-badge>
+                            <s-badge tone="magic">Store Shield</s-badge>
+                          ) : isEnterprise ? (
+                            <s-badge tone="attention">Shopify Plus</s-badge>
                           ) : null}
                         </s-stack>
                         
@@ -403,7 +458,7 @@ export default function Plan() {
               </s-card>
             );
           })}
-        </s-columns>
+        </div>
       </s-section>
 
       {/* ── Guarantee & Disclaimer ── */}
