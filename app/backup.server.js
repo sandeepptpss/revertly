@@ -1258,5 +1258,8 @@ export function generateOrdersCsv(orders = []) {
     ].map((val) => `"${String(val).replace(/"/g, '""')}"`);
   });
 
-  return "\uFEFF" + [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+  return (
+    "\uFEFF" +
+    [headers.map((h) => `"${h}"`).join(","), ...rows.map((r) => r.join(","))].join("\r\n")
+  );
 }

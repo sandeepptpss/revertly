@@ -25,12 +25,12 @@ export const loader = async ({ request }) => {
         shop,
         ...(searchOrder
           ? {
-              OR: [
-                { orderNumber: { contains: searchOrder } },
-                { customerEmail: { contains: searchOrder } },
-                { customerName: { contains: searchOrder } },
-              ],
-            }
+            OR: [
+              { orderNumber: { contains: searchOrder } },
+              { customerEmail: { contains: searchOrder } },
+              { customerName: { contains: searchOrder } },
+            ],
+          }
           : {}),
       },
       orderBy: { processedAt: "desc" },
@@ -41,13 +41,13 @@ export const loader = async ({ request }) => {
         shop,
         ...(searchCustomer
           ? {
-              OR: [
-                { email: { contains: searchCustomer } },
-                { firstName: { contains: searchCustomer } },
-                { lastName: { contains: searchCustomer } },
-                { phone: { contains: searchCustomer } },
-              ],
-            }
+            OR: [
+              { email: { contains: searchCustomer } },
+              { firstName: { contains: searchCustomer } },
+              { lastName: { contains: searchCustomer } },
+              { phone: { contains: searchCustomer } },
+            ],
+          }
           : {}),
       },
       orderBy: { createdAt: "desc" },
@@ -158,6 +158,7 @@ export default function DataVault() {
                     🔄 Sync Orders &amp; Customers
                   </s-button>
                 </fetcher.Form>
+
 
                 <s-button href="/app/vault/export?type=orders_csv" variant="secondary">
                   ⬇️ Export Tax CSV
@@ -426,7 +427,7 @@ export default function DataVault() {
             <s-box padding="base">
               <s-stack direction="block" gap="base">
                 <s-text fontWeight="bold" variant="headingMd">How to use your Revertly Data Vault:</s-text>
-                
+
                 <s-stack direction="block" gap="tight">
                   <s-text fontWeight="bold">1. Defeating Payment Chargebacks (PayPal / Stripe / Klarna):</s-text>
                   <s-paragraph>
