@@ -1,337 +1,388 @@
-import { useEffect } from "react";
-import { useFetcher } from "react-router";
-import { useAppBridge } from "@shopify/app-bridge-react";
+import { useLoaderData, useRouteError } from "react-router";
+import { authenticate } from "../shopify.server.js";
+import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
 
-  return null;
-};
-
-export const action = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-            demoInfo: metafield(namespace: "$app", key: "demo_info") {
-              jsonValue
-            }
-          }
-        }
-      }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-          metafields: [
-            {
-              namespace: "$app",
-              key: "demo_info",
-              value: "Created by React Router Template",
-            },
-          ],
-        },
+  const [
+    totalProducts,
+    todayChanges,
+    openIncidents,
+    readyRestorePoints,
+    recentChanges,
+    recentIncidents,
+    totalRollbacks,
+  ] = await Promise.all([
+    prisma.productSnapshot.count({ where: { shop } }),
+    prisma.changeEvent.count({
+      where: {
+        shop,
+        changedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
       },
-    },
-  );
-  const responseJson = await response.json();
-  const product = responseJson.data.productCreate.product;
-  const variantId = product.variants.edges[0].node.id;
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
-  const variantResponseJson = await variantResponse.json();
-  const metaobjectResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $values: JSON!) {
-      metaobjectUpsert(handle: $handle, values: $values) {
-        metaobject {
-          id
-          handle
-          values
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      variables: {
-        handle: {
-          type: "$app:example",
-          handle: "demo-entry",
-        },
-        values: {
-          title: "Demo Entry",
-          description:
-            "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-        },
-      },
-    },
-  );
-  const metaobjectResponseJson = await metaobjectResponse.json();
+    }),
+    prisma.incident.count({ where: { shop, status: "OPEN" } }),
+    prisma.restorePoint.count({ where: { shop, status: "READY" } }),
+    prisma.changeEvent.findMany({
+      where: { shop },
+      orderBy: { changedAt: "desc" },
+      take: 8,
+    }),
+    prisma.incident.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      include: { _count: { select: { changes: true } } },
+    }),
+    prisma.rollbackJob.count({ where: { shop, status: "COMPLETED" } }),
+  ]);
 
   return {
-    product: responseJson.data.productCreate.product,
-    variant: variantResponseJson.data.productVariantsBulkUpdate.productVariants,
-    metaobject: metaobjectResponseJson.data.metaobjectUpsert.metaobject,
+    stats: { totalProducts, todayChanges, openIncidents, readyRestorePoints, totalRollbacks },
+    recentChanges,
+    recentIncidents,
+    shop,
+    isInitialized: totalProducts > 0,
   };
 };
 
-export default function Index() {
-  const fetcher = useFetcher();
-  const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
+function timeAgo(date) {
+  const ms = Date.now() - new Date(date).getTime();
+  const mins = Math.floor(ms / 60000);
+  const hours = Math.floor(ms / 3600000);
+  const days = Math.floor(ms / 86400000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${days}d ago`;
+}
 
-  useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
-    }
-  }, [fetcher.data?.product?.id, shopify]);
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+function fieldLabel(fn) {
+  return fn
+    .replace("variant.", "")
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (s) => s.toUpperCase());
+}
+
+function severityTone(s) {
+  return { CRITICAL: "critical", HIGH: "warning", MEDIUM: "attention", LOW: "success" }[s] || "info";
+}
+
+function statusTone(s) {
+  return { OPEN: "critical", RESOLVED: "success", IGNORED: "subdued", ROLLED_BACK: "success" }[s] || "info";
+}
+
+export default function Dashboard() {
+  const { stats, recentChanges, recentIncidents, isInitialized } = useLoaderData();
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
-      </s-button>
+    <s-page heading="Dashboard">
 
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
-        <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
+      {/* ── Onboarding Banner (only when not initialized) ── */}
+      {!isInitialized && (
+        <s-section>
+          <s-banner
+            title="Welcome to Revertly!"
+            tone="info"
+            action={{ content: "Initialize Monitoring", url: "/app/initialize" }}
           >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
+            <s-paragraph>
+              Start monitoring your products in seconds. Click <strong>Initialize Monitoring</strong> to take
+              a snapshot of all current products — this gives Revertly a baseline to detect future changes.
+            </s-paragraph>
+          </s-banner>
+        </s-section>
+      )}
+
+      {/* ── Alert: Open Incidents ── */}
+      {stats.openIncidents > 0 ? (
+        <s-section>
+          <s-banner
+            title={`${stats.openIncidents} open incident${stats.openIncidents > 1 ? "s" : ""} require your attention`}
+            tone="critical"
+            action={{ content: "Review Incidents", url: "/app/incidents" }}
           >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
-        </s-paragraph>
+            <s-paragraph>
+              Suspicious product changes have been detected. Review and rollback if needed.
+            </s-paragraph>
+          </s-banner>
+        </s-section>
+      ) : isInitialized ? (
+        <s-section>
+          <s-banner
+            title="Catalog Watchdog Active — Store is Protected"
+            tone="success"
+          >
+            <s-paragraph>
+              All products are actively protected against accidental price crashes and bulk changes. Zero open incidents.
+            </s-paragraph>
+          </s-banner>
+        </s-section>
+      ) : null}
+
+      {/* ── Stats Cards ── */}
+      <s-section heading="Overview">
+        <s-columns columns="4">
+          {/* Monitored Products */}
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="tight">
+                <s-text tone="subdued">Monitored Products</s-text>
+                <s-heading level="2">
+                  {stats.totalProducts.toLocaleString()}
+                </s-heading>
+                <s-text tone="subdued">
+                  {isInitialized ? "Actively tracked" : "Not initialized yet"}
+                </s-text>
+                {!isInitialized && (
+                  <s-link url="/app/initialize">Initialize now →</s-link>
+                )}
+              </s-stack>
+            </s-box>
+          </s-card>
+
+          {/* Changes Today */}
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="tight">
+                <s-text tone="subdued">Changes Today</s-text>
+                <s-heading level="2">
+                  {stats.todayChanges.toLocaleString()}
+                </s-heading>
+                <s-text tone="subdued">
+                  {stats.todayChanges === 0 ? "No changes in last 24h" : "In the last 24 hours"}
+                </s-text>
+                <s-link url="/app/activity">View activity →</s-link>
+              </s-stack>
+            </s-box>
+          </s-card>
+
+          {/* Open Incidents */}
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="tight">
+                <s-text tone="subdued">Open Incidents</s-text>
+                <s-heading level="2">
+                  {stats.openIncidents.toLocaleString()}
+                </s-heading>
+                <s-text tone={stats.openIncidents > 0 ? "critical" : "subdued"}>
+                  {stats.openIncidents > 0 ? "Requires attention" : "All clear"}
+                </s-text>
+                <s-link url="/app/incidents">View incidents →</s-link>
+              </s-stack>
+            </s-box>
+          </s-card>
+
+          {/* Restore Points */}
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="tight">
+                <s-text tone="subdued">Restore Points</s-text>
+                <s-heading level="2">
+                  {stats.readyRestorePoints.toLocaleString()}
+                </s-heading>
+                <s-text tone="subdued">
+                  {stats.readyRestorePoints === 0 ? "None created yet" : "Ready to restore"}
+                </s-text>
+                <s-link url="/app/restore-points">
+                  {stats.readyRestorePoints === 0 ? "Create one →" : "Manage →"}
+                </s-link>
+              </s-stack>
+            </s-box>
+          </s-card>
+        </s-columns>
       </s-section>
-      <s-section heading="Get started with products">
-        <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references. Includes a product{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metafields"
-            target="_blank"
-          >
-            metafield
-          </s-link>{" "}
-          and{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metaobjects"
-            target="_blank"
-          >
-            metaobject
-          </s-link>
-          .
-        </s-paragraph>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
+
+      {/* ── Two Column Layout: Incidents + Activity ── */}
+      <s-section>
+        <s-columns columns="2">
+          {/* Recent Incidents */}
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-stack direction="inline" align="space-between">
+                  <s-text fontWeight="bold" variant="headingMd">
+                    Recent Incidents
+                  </s-text>
+                  <s-link url="/app/incidents">View all</s-link>
+                </s-stack>
+
+                {recentIncidents.length === 0 ? (
+                  <s-box padding="base" style={{ background: "#fbfcfd", borderRadius: "8px", border: "1px dashed var(--p-color-border-subdued, #d2d5d8)" }}>
+                    <s-stack direction="block" gap="tight" align="center">
+                      <s-text variant="bodySm" fontWeight="bold">Shield Active &bull; Zero Incidents</s-text>
+                      <s-text tone="subdued" variant="bodyXs">
+                        Your store is safe! Suspicious price drops and mass updates will be flagged here immediately.
+                      </s-text>
+                    </s-stack>
+                  </s-box>
+                ) : (
+                  <s-stack direction="block" gap="tight">
+                    {recentIncidents.map((inc) => (
+                      <s-box
+                        key={inc.id}
+                        padding="tight"
+                        borderWidth="base"
+                        borderRadius="base"
+                      >
+                        <s-stack direction="block" gap="tight">
+                          <s-stack direction="inline" align="space-between">
+                            <s-text fontWeight="semibold">{inc.name}</s-text>
+                            <s-badge tone={statusTone(inc.status)}>
+                              {inc.status}
+                            </s-badge>
+                          </s-stack>
+                          <s-stack direction="inline" gap="tight">
+                            <s-badge tone={severityTone(inc.severity)}>
+                              {inc.severity}
+                            </s-badge>
+                            <s-text tone="subdued">
+                              {inc.affectedCount} product{inc.affectedCount !== 1 ? "s" : ""}
+                            </s-text>
+                            <s-text tone="subdued">·</s-text>
+                            <s-text tone="subdued">{timeAgo(inc.createdAt)}</s-text>
+                          </s-stack>
+                          {inc.status === "OPEN" && (
+                            <s-link url={`/app/incidents/${inc.id}`}>
+                              Review &amp; Rollback →
+                            </s-link>
+                          )}
+                        </s-stack>
+                      </s-box>
+                    ))}
+                  </s-stack>
+                )}
+              </s-stack>
+            </s-box>
+          </s-card>
+
+          {/* Recent Activity */}
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-stack direction="inline" align="space-between">
+                  <s-text fontWeight="bold" variant="headingMd">
+                    Recent Activity
+                  </s-text>
+                  <s-link url="/app/activity">View all</s-link>
+                </s-stack>
+
+                {recentChanges.length === 0 ? (
+                  <s-box padding="base" style={{ background: "#fbfcfd", borderRadius: "8px", border: "1px dashed var(--p-color-border-subdued, #d2d5d8)" }}>
+                    <s-stack direction="block" gap="tight" align="center">
+                      <s-text variant="bodySm" fontWeight="bold">Listening for Updates</s-text>
+                      <s-text tone="subdued" variant="bodyXs">
+                        Product updates, price changes, and deletions will appear in real time.
+                      </s-text>
+                    </s-stack>
+                  </s-box>
+                ) : (
+                  <s-stack direction="block" gap="tight">
+                    {recentChanges.map((c) => (
+                      <s-box
+                        key={c.id}
+                        padding="tight"
+                        borderWidth="base"
+                        borderRadius="base"
+                      >
+                        <s-stack direction="inline" align="space-between">
+                          <s-stack direction="block" gap="extraTight">
+                            <s-text fontWeight="semibold">{c.productTitle}</s-text>
+                            <s-text tone="subdued">
+                              {fieldLabel(c.fieldName)}:{" "}
+                              <span style={{ textDecoration: "line-through" }}>
+                                {c.oldValue || "—"}
+                              </span>{" "}
+                              → <strong>{c.newValue || "—"}</strong>
+                            </s-text>
+                          </s-stack>
+                          <s-text tone="subdued">{timeAgo(c.changedAt)}</s-text>
+                        </s-stack>
+                      </s-box>
+                    ))}
+                  </s-stack>
+                )}
+              </s-stack>
+            </s-box>
+          </s-card>
+        </s-columns>
+      </s-section>
+
+      {/* ── Quick Actions Aside ── */}
+      <s-section slot="aside" heading="Quick Actions">
+        <s-stack direction="block" gap="tight">
+          <s-button url="/app/restore-points/new" variant="primary" fullWidth>
+            + Create Restore Point
           </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
-              }}
-              target="_blank"
-              variant="tertiary"
-            >
-              Edit product
-            </s-button>
+          <s-button url="/app/incidents" fullWidth>
+            View Incidents
+            {stats.openIncidents > 0 && ` (${stats.openIncidents} open)`}
+          </s-button>
+          <s-button url="/app/rules" fullWidth>
+            Manage Detection Rules
+          </s-button>
+          <s-button url="/app/activity" fullWidth>
+            Browse Activity Log
+          </s-button>
+          <s-button url="/app/rollback-history" fullWidth>
+            Rollback History
+          </s-button>
+        </s-stack>
+      </s-section>
+
+      {/* ── System Status Aside ── */}
+      <s-section slot="aside" heading="System Status">
+        <s-stack direction="block" gap="tight">
+          <s-stack direction="inline" gap="tight">
+            <s-badge tone={isInitialized ? "success" : "warning"}>
+              {isInitialized ? "Monitoring Active" : "Not Initialized"}
+            </s-badge>
+          </s-stack>
+          <s-stack direction="inline" gap="tight">
+            <s-badge tone="success">Webhooks Registered</s-badge>
+          </s-stack>
+          <s-stack direction="inline" gap="tight">
+            <s-badge tone="success">Database Connected</s-badge>
+          </s-stack>
+          {stats.totalRollbacks > 0 && (
+            <s-text tone="subdued">
+              {stats.totalRollbacks} successful rollback{stats.totalRollbacks !== 1 ? "s" : ""} completed
+            </s-text>
           )}
         </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
-            <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
+      </s-section>
 
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>metaobjectUpsert mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>
-                    {JSON.stringify(fetcher.data.metaobject, null, 2)}
-                  </code>
-                </pre>
-              </s-box>
+      {/* ── Getting Started Aside (only when not initialized) ── */}
+      {!isInitialized && (
+        <s-section slot="aside" heading="Getting Started">
+          <s-stack direction="block" gap="tight">
+            <s-stack direction="inline" gap="tight">
+              <s-text>1.</s-text>
+              <s-link url="/app/initialize">Initialize product snapshots</s-link>
             </s-stack>
-          </s-section>
-        )}
-      </s-section>
-
-      <s-section slot="aside" heading="App template specs">
-        <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
-          >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Custom data: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data"
-            target="_blank"
-          >
-            Metafields &amp; metaobjects
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
-        </s-paragraph>
-      </s-section>
-
-      <s-section slot="aside" heading="Next steps">
-        <s-unordered-list>
-          <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
-          </s-list-item>
-          <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
-          </s-list-item>
-        </s-unordered-list>
-      </s-section>
+            <s-stack direction="inline" gap="tight">
+              <s-text>2.</s-text>
+              <s-link url="/app/rules">Set up detection rules</s-link>
+            </s-stack>
+            <s-stack direction="inline" gap="tight">
+              <s-text>3.</s-text>
+              <s-link url="/app/restore-points">Create a restore point</s-link>
+            </s-stack>
+            <s-stack direction="inline" gap="tight">
+              <s-text>4.</s-text>
+              <s-link url="/app/settings">Configure alert email</s-link>
+            </s-stack>
+          </s-stack>
+        </s-section>
+      )}
     </s-page>
   );
+}
+
+export function ErrorBoundary() {
+  return boundary.error(useRouteError());
 }
 
 export const headers = (headersArgs) => {

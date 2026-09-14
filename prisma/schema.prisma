@@ -5,30 +5,200 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "mysql"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
-  refreshToken        String?
+  id                  String    @id @db.VarChar(255)
+  shop                String    @db.VarChar(255)
+  state               String    @db.VarChar(255)
+  isOnline            Boolean   @default(false)
+  scope               String?   @db.Text
+  expires             DateTime?
+  accessToken         String    @db.Text
+  userId              BigInt?
+  firstName           String?   @db.VarChar(255)
+  lastName            String?   @db.VarChar(255)
+  email               String?   @db.VarChar(255)
+  accountOwner        Boolean   @default(false)
+  locale              String?   @db.VarChar(100)
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?   @db.Text
   refreshTokenExpires DateTime?
+}
+
+// Stores current snapshot of product data for comparison
+model ProductSnapshot {
+  id              Int      @id @default(autoincrement())
+  shop            String   @db.VarChar(255)
+  productId       String   @db.VarChar(255)
+  title           String   @db.VarChar(500)
+  status          String   @db.VarChar(50)
+  vendor          String?  @db.VarChar(255)
+  productType     String?  @db.VarChar(255)
+  tags            String?  @db.Text
+  bodyHtml        String?  @db.LongText
+  handle          String?  @db.VarChar(255)
+  publishedAt     DateTime?
+  snapshotData    Json     // Full JSON snapshot
+  isDeleted       Boolean  @default(false)
+  deletedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([shop, productId])
+  @@index([shop])
+  @@index([shop, isDeleted])
+}
+
+// Each individual field change on a product
+model ChangeEvent {
+  id              Int       @id @default(autoincrement())
+  shop            String    @db.VarChar(255)
+  productId       String    @db.VarChar(255)
+  productTitle    String    @db.VarChar(500)
+  fieldName       String    @db.VarChar(255)  // e.g. "price", "title", "status"
+  variantId       String?   @db.VarChar(255)  // for variant-level changes
+  oldValue        String?   @db.LongText
+  newValue        String?   @db.LongText
+  changedAt       DateTime  @default(now())
+  incidentId      Int?
+  incident        Incident? @relation(fields: [incidentId], references: [id])
+
+  @@index([shop])
+  @@index([productId])
+  @@index([changedAt])
+  @@index([incidentId])
+}
+
+// Grouped suspicious/bulk changes
+model Incident {
+  id              Int       @id @default(autoincrement())
+  shop            String    @db.VarChar(255)
+  name            String    @db.VarChar(500)
+  severity        String    @db.VarChar(50)  // LOW, MEDIUM, HIGH, CRITICAL
+  status          String    @db.VarChar(50)  @default("OPEN") // OPEN, RESOLVED, IGNORED, ROLLED_BACK
+  affectedCount   Int       @default(0)
+  triggeredRuleId Int?
+  triggeredRule   DetectionRule? @relation(fields: [triggeredRuleId], references: [id])
+  changes         ChangeEvent[]
+  rollbackJobs    RollbackJob[]
+  createdAt       DateTime  @default(now())
+  resolvedAt      DateTime?
+  notes           String?   @db.Text
+
+  @@index([shop])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Detection rules for suspicious changes
+model DetectionRule {
+  id              Int       @id @default(autoincrement())
+  shop            String    @db.VarChar(255)
+  name            String    @db.VarChar(255)
+  isActive        Boolean   @default(true)
+  field           String    @db.VarChar(100)   // price, title, status, etc.
+  condition       String    @db.VarChar(100)   // DECREASE_BY_PERCENT, INCREASE_BY_PERCENT, CHANGED
+  threshold       Float?                        // e.g. 30 for 30%
+  minProducts     Int?                          // minimum affected products
+  windowMinutes   Int?      @default(10)        // time window in minutes
+  severity        String    @db.VarChar(50)    @default("HIGH")
+  incidents       Incident[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([shop, isActive])
+}
+
+// Rollback jobs (may cover multiple products)
+model RollbackJob {
+  id              Int       @id @default(autoincrement())
+  shop            String    @db.VarChar(255)
+  incidentId      Int?
+  incident        Incident? @relation(fields: [incidentId], references: [id])
+  restorePointId  Int?
+  restorePoint    RestorePoint? @relation(fields: [restorePointId], references: [id])
+  status          String    @db.VarChar(50)  @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED, PARTIAL
+  totalProducts   Int       @default(0)
+  processedCount  Int       @default(0)
+  successCount    Int       @default(0)
+  failedCount     Int       @default(0)
+  fieldsToRestore Json?     // which fields to restore
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+  results         RollbackResult[]
+
+  @@index([shop])
+  @@index([status])
+}
+
+// Per-product result of a rollback job
+model RollbackResult {
+  id              Int         @id @default(autoincrement())
+  rollbackJobId   Int
+  rollbackJob     RollbackJob @relation(fields: [rollbackJobId], references: [id])
+  productId       String      @db.VarChar(255)
+  productTitle    String      @db.VarChar(500)
+  status          String      @db.VarChar(50)  // SUCCESS, FAILED, SKIPPED
+  errorMessage    String?     @db.Text
+  restoredFields  Json?       // fields actually restored
+  createdAt       DateTime    @default(now())
+
+  @@index([rollbackJobId])
+}
+
+// Merchant-created restore points (manual snapshots)
+model RestorePoint {
+  id              Int       @id @default(autoincrement())
+  shop            String    @db.VarChar(255)
+  name            String    @db.VarChar(500)
+  description     String?   @db.Text
+  productCount    Int       @default(0)
+  status          String    @db.VarChar(50)  @default("CREATING") // CREATING, READY, RESTORING
+  snapshotData    Json?     // array of product snapshots
+  rollbackJobs    RollbackJob[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([shop])
+}
+
+// App-level settings per shop
+model AppSettings {
+  id                  Int     @id @default(autoincrement())
+  shop                String  @unique @db.VarChar(255)
+  alertEmail          String? @db.VarChar(255)
+  alertOnCritical     Boolean @default(true)
+  alertOnHigh         Boolean @default(true)
+  alertOnMedium       Boolean @default(false)
+  monitoringEnabled   Boolean @default(true)
+  bulkThreshold       Int     @default(20)   // products changed to trigger bulk detection
+  bulkWindowMinutes   Int     @default(10)
+  planId              String   @default("free") @db.VarChar(50)
+  slackWebhookUrl       String?  @db.VarChar(500)
+  circuitBreakerEnabled Boolean  @default(false)
+  circuitBreakerThreshold Int    @default(50)   // percentage drop (e.g. 50%)
+  circuitBreakerAction  String   @default("DRAFT") @db.VarChar(50) // DRAFT or AUTO_REVERT
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// Support tickets submitted by merchants
+model SupportTicket {
+  id        Int      @id @default(autoincrement())
+  shop      String   @db.VarChar(255)
+  subject   String   @db.VarChar(500)
+  category  String   @db.VarChar(100) @default("General")
+  message   String   @db.LongText
+  email     String?  @db.VarChar(255)
+  status    String   @db.VarChar(50)  @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, CLOSED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shop])
+  @@index([status])
 }
