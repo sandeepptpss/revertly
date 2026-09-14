@@ -2,6 +2,7 @@ import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { createMultiResourceRestorePoint } from "../backup.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -25,32 +26,40 @@ export const action = async ({ request }) => {
     const name = formData.get("name");
     const description = formData.get("description") || "";
 
-    // Create restore point record
-    const rp = await prisma.restorePoint.create({
-      data: {
-        shop,
-        name,
-        description,
-        status: "CREATING",
+    const includeProducts = formData.get("includeProducts") !== "0";
+    const includeThemes = formData.get("includeThemes") !== "0";
+    const includeCollections = formData.get("includeCollections") !== "0";
+    const includePages = formData.get("includePages") !== "0";
+
+    const result = await createMultiResourceRestorePoint({
+      admin,
+      shop,
+      name,
+      description,
+      options: {
+        includeProducts,
+        includeThemes,
+        includeCollections,
+        includePages,
+        includeMenus: includePages,
       },
     });
 
-    // Fetch all product snapshots
-    const snapshots = await prisma.productSnapshot.findMany({
-      where: { shop },
-      select: { productId: true, snapshotData: true, title: true },
-    });
+    if (!result.success) {
+      return { success: false, message: result.message || "Failed to create restore point." };
+    }
 
-    await prisma.restorePoint.update({
-      where: { id: rp.id },
-      data: {
-        status: "READY",
-        productCount: snapshots.length,
-        snapshotData: snapshots,
-      },
-    });
+    const s = result.summary;
+    const parts = [];
+    if (s.products > 0) parts.push(`${s.products} products`);
+    if (s.themes > 0) parts.push(`1 theme`);
+    if (s.collections > 0) parts.push(`${s.collections} collections`);
+    if (s.pages > 0) parts.push(`${s.pages} pages & menus`);
 
-    return { success: true, message: `Restore point "${name}" created with ${snapshots.length} products.` };
+    return {
+      success: true,
+      message: `Restore point "${name}" successfully created (${parts.join(", ") || "Full Store"}).`,
+    };
   }
 
   if (intent === "delete") {
@@ -88,8 +97,7 @@ export default function RestorePoints() {
       {/* Create Restore Point */}
       <s-section heading="Create New Restore Point">
         <s-paragraph>
-          A restore point captures the current state of all monitored products. You can
-          restore to this point at any time in the future.
+          A restore point captures the current state of your store — including <strong>Products, Active Theme (files &amp; settings), Collections (smart rules), and Pages</strong>. You can restore any component at any time.
         </s-paragraph>
         <fetcher.Form method="POST">
           <input type="hidden" name="intent" value="create" />
@@ -97,21 +105,21 @@ export default function RestorePoints() {
             <s-text-field
               name="name"
               label="Name"
-              placeholder="e.g. Before Summer Sale Pricing"
+              placeholder="e.g. Before Major Redesign &amp; Summer Sale"
               required
             />
             <s-text-field
               name="description"
               label="Description (optional)"
               multiline
-              placeholder="Notes about this restore point..."
+              placeholder="Notes about changes, apps installed, or campaign details..."
             />
             <s-button
               submit
               variant="primary"
               {...(isCreating ? { loading: true } : {})}
             >
-              Create Restore Point
+              Create Full Store Restore Point
             </s-button>
           </s-form-layout>
         </fetcher.Form>
@@ -122,7 +130,7 @@ export default function RestorePoints() {
         {restorePoints.length === 0 ? (
           <s-empty-state heading="No restore points">
             <s-paragraph>
-              Create restore points before major price changes or bulk updates so you
+              Create restore points before major price changes, theme edits, or app installs so you
               can recover quickly if something goes wrong.
             </s-paragraph>
           </s-empty-state>
@@ -133,29 +141,35 @@ export default function RestorePoints() {
                 <s-stack direction="block" gap="tight">
                   <s-stack direction="inline" align="space-between">
                     <s-stack direction="block" gap="tight">
-                      <s-text fontWeight="bold">{rp.name}</s-text>
+                      <s-stack direction="inline" gap="tight" align="center">
+                        <s-text fontWeight="bold">{rp.name}</s-text>
+                        <s-badge
+                          tone={
+                            rp.status === "READY"
+                              ? "success"
+                              : rp.status === "CREATING"
+                                ? "attention"
+                                : "critical"
+                          }
+                        >
+                          {rp.status}
+                        </s-badge>
+                      </s-stack>
                       {rp.description && (
                         <s-text tone="subdued">{rp.description}</s-text>
                       )}
-                      <s-text tone="subdued">
-                        {formatTime(rp.createdAt)} · {rp.productCount} products
-                      </s-text>
+                      <s-stack direction="inline" gap="tight" align="center">
+                        <s-text tone="subdued">{formatTime(rp.createdAt)}</s-text>
+                        <s-badge tone="info">{rp.productCount} products</s-badge>
+                        {rp.themeCount > 0 && <s-badge tone="success">1 Theme</s-badge>}
+                        {rp.collectionCount > 0 && <s-badge tone="info">{rp.collectionCount} Collections</s-badge>}
+                        {rp.pageCount > 0 && <s-badge tone="subdued">{rp.pageCount} Pages</s-badge>}
+                      </s-stack>
                     </s-stack>
-                    <s-badge
-                      tone={
-                        rp.status === "READY"
-                          ? "success"
-                          : rp.status === "CREATING"
-                            ? "attention"
-                            : "subdued"
-                      }
-                    >
-                      {rp.status}
-                    </s-badge>
                   </s-stack>
                   <s-stack direction="inline" gap="tight">
                     <s-button url={`/app/restore-points/${rp.id}`} variant="primary">
-                      Restore From This Point
+                      Restore / View Details
                     </s-button>
                     <fetcher.Form method="POST">
                       <input type="hidden" name="intent" value="delete" />

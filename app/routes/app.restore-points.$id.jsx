@@ -1,8 +1,16 @@
+import { useState } from "react";
 import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { rollbackProductFields } from "../monitor.server.js";
+import {
+  restoreThemeFilesWithSafety,
+  restoreCollection,
+  restorePage,
+  computeDiffLines,
+  fetchThemeBackup,
+} from "../backup.server.js";
 
 export const loader = async ({ request, params }) => {
   const { session } = await authenticate.admin(request);
@@ -78,11 +86,45 @@ export const loader = async ({ request, params }) => {
     }
   }
 
+  const themeData = restorePoint.themeData || null;
+  const collectionData = Array.isArray(restorePoint.collectionData) ? restorePoint.collectionData : [];
+  const pageData = Array.isArray(restorePoint.pageData) ? restorePoint.pageData : [];
+  const menuData = Array.isArray(restorePoint.menuData) ? restorePoint.menuData : [];
+
+  let themeDiffFiles = [];
+  if (themeData?.files?.length) {
+    let currentLiveFiles = [];
+    try {
+      const liveTheme = await fetchThemeBackup(admin);
+      currentLiveFiles = liveTheme?.files || [];
+    } catch (e) {
+      console.warn("Could not fetch live theme files for diffing:", e?.message);
+    }
+
+    const liveMap = Object.fromEntries(
+      currentLiveFiles.map((lf) => [lf.filename, lf.content])
+    );
+
+    themeDiffFiles = themeData.files.map((f) => {
+      const liveContent = liveMap[f.filename] ?? "";
+      const diff = computeDiffLines(liveContent, f.content || "");
+      return {
+        ...f,
+        diff,
+      };
+    });
+  }
+
   return {
     restorePoint,
     savedCount: savedProducts.length,
     differences,
     lastJob: restorePoint.rollbackJobs[0] || null,
+    themeData,
+    themeDiffFiles,
+    collectionData,
+    pageData,
+    menuData,
   };
 };
 
@@ -92,6 +134,62 @@ export const action = async ({ request, params }) => {
   const rpId = parseInt(params.id);
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "restore_theme") {
+    const restorePoint = await prisma.restorePoint.findFirst({
+      where: { id: rpId, shop },
+    });
+    const themeData = restorePoint?.themeData;
+    if (!themeData || !themeData.activeTheme || !themeData.files?.length) {
+      return { success: false, message: "No backed-up theme files available in this restore point." };
+    }
+
+    const mode = formData.get("mode") || "live";
+    const selectedFilesRaw = formData.get("selectedFiles");
+    let selectedFilenames = null;
+    if (selectedFilesRaw) {
+      try {
+        selectedFilenames = JSON.parse(selectedFilesRaw);
+      } catch (e) {
+        selectedFilenames = selectedFilesRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+    }
+
+    const res = await restoreThemeFilesWithSafety({
+      admin,
+      shop,
+      themeId: themeData.activeTheme.id,
+      themeName: themeData.activeTheme.name,
+      files: themeData.files,
+      selectedFilenames,
+      mode,
+    });
+    return res;
+  }
+
+  if (intent === "restore_collection") {
+    const colIndex = parseInt(formData.get("colIndex"));
+    const restorePoint = await prisma.restorePoint.findFirst({
+      where: { id: rpId, shop },
+    });
+    const cols = Array.isArray(restorePoint?.collectionData) ? restorePoint.collectionData : [];
+    const target = cols[colIndex];
+    if (!target) return { success: false, message: "Collection not found in snapshot." };
+    const res = await restoreCollection(admin, target);
+    return res.success ? { success: true, message: `Collection "${target.title}" successfully restored.` } : res;
+  }
+
+  if (intent === "restore_page") {
+    const pageIndex = parseInt(formData.get("pageIndex"));
+    const restorePoint = await prisma.restorePoint.findFirst({
+      where: { id: rpId, shop },
+    });
+    const pages = Array.isArray(restorePoint?.pageData) ? restorePoint.pageData : [];
+    const target = pages[pageIndex];
+    if (!target) return { success: false, message: "Page not found in snapshot." };
+    const res = await restorePage(admin, target);
+    return res.success ? { success: true, message: `Page "${target.title}" successfully restored.` } : res;
+  }
 
   if (intent !== "restore") return { success: false };
 
@@ -248,10 +346,34 @@ function formatTime(date) {
 }
 
 export default function RestorePointDetail() {
-  const { restorePoint, savedCount, differences, lastJob } = useLoaderData();
+  const {
+    restorePoint,
+    savedCount,
+    differences,
+    lastJob,
+    themeData,
+    themeDiffFiles,
+    collectionData,
+    pageData,
+  } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isRestoring = fetcher.state !== "idle";
+
+  const filesList = themeDiffFiles?.length > 0 ? themeDiffFiles : (themeData?.files || []);
+
+  const [selectedFiles, setSelectedFiles] = useState(
+    () => filesList.map((f) => f.filename)
+  );
+  const [expandedFile, setExpandedFile] = useState(null);
+
+  const toggleSelectAll = () => {
+    if (selectedFiles.length === filesList.length) {
+      setSelectedFiles([]);
+    } else {
+      setSelectedFiles(filesList.map((f) => f.filename));
+    }
+  };
 
   return (
     <s-page
@@ -259,19 +381,72 @@ export default function RestorePointDetail() {
       backAction={{ url: "/app/restore-points", label: "Restore Points" }}
     >
       <s-section>
-        <s-stack direction="inline" gap="loose">
-          <s-badge tone={restorePoint.status === "READY" ? "success" : "attention"}>
-            {restorePoint.status}
-          </s-badge>
-          <s-text tone="subdued">Created: {formatTime(restorePoint.createdAt)}</s-text>
-          <s-text tone="subdued">{savedCount} products saved</s-text>
+        <s-stack direction="block" gap="tight">
+          <s-stack direction="inline" gap="base" align="center">
+            <s-badge tone={restorePoint.status === "READY" ? "success" : "attention"}>
+              {restorePoint.status}
+            </s-badge>
+            <s-text tone="subdued">Created: {formatTime(restorePoint.createdAt)}</s-text>
+            <s-badge tone="info">{savedCount} Products</s-badge>
+            {themeData?.activeTheme && (
+              <s-badge tone="success">Theme: {themeData.activeTheme.name}</s-badge>
+            )}
+            {collectionData.length > 0 && (
+              <s-badge tone="info">{collectionData.length} Collections</s-badge>
+            )}
+            {pageData.length > 0 && (
+              <s-badge tone="subdued">{pageData.length} Pages</s-badge>
+            )}
+          </s-stack>
+          {restorePoint.description && (
+            <s-paragraph>{restorePoint.description}</s-paragraph>
+          )}
         </s-stack>
-        {restorePoint.description && (
-          <s-paragraph>{restorePoint.description}</s-paragraph>
-        )}
       </s-section>
 
-      {result?.message && (
+      {/* ── Draft Staging Preview Banner ── */}
+      {result?.isDraft && result?.previewUrl && (
+        <s-section>
+          <s-banner tone="success">
+            <s-stack direction="block" gap="tight">
+              <s-text fontWeight="bold">
+                🎉 Draft Staging Theme Created: "{result.draftThemeName}"
+              </s-text>
+              <s-paragraph>
+                Your backed-up theme files were safely deployed into an <strong>unpublished draft theme</strong> ({result.filesRestored} files restored). Your live storefront is 100% untouched! You can preview it now:
+              </s-paragraph>
+              <s-stack direction="inline" gap="base" align="center">
+                <s-button url={result.previewUrl} target="_blank" variant="primary">
+                  Open Storefront Preview ↗
+                </s-button>
+                {result.editorUrl && (
+                  <s-button url={result.editorUrl} target="_blank" variant="secondary">
+                    Open in Theme Customizer ↗
+                  </s-button>
+                )}
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        </s-section>
+      )}
+
+      {/* ── Live Safety Snapshot Banner ── */}
+      {result?.isLive && result?.safetyRpId && (
+        <s-section>
+          <s-banner tone="info">
+            <s-stack direction="inline" align="space-between" align-items="center">
+              <s-text>
+                🛡️ Live theme restored. Safety snapshot #{result.safetyRpId} was automatically saved before making changes.
+              </s-text>
+              <s-button url={`/app/restore-points/${result.safetyRpId}`} variant="secondary">
+                View Snapshot / 1-Click Undo
+              </s-button>
+            </s-stack>
+          </s-banner>
+        </s-section>
+      )}
+
+      {result?.message && !result?.isDraft && !result?.isLive && (
         <s-section>
           <s-banner tone={result.success ? "success" : "critical"}>
             {result.message}
@@ -279,13 +454,404 @@ export default function RestorePointDetail() {
         </s-section>
       )}
 
-      {/* Differences */}
+      {/* ── Active Theme Backup & Restore Section ── */}
+      {themeData?.activeTheme && (
+        <s-section heading="Theme Backup &amp; Code Protection">
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-stack direction="inline" align="space-between" align-items="center">
+                  <s-stack direction="block" gap="tight">
+                    <s-stack direction="inline" gap="tight" align="center">
+                      <s-text fontWeight="bold">
+                        {themeData.activeTheme.name}
+                      </s-text>
+                      <s-badge tone="success">{themeData.activeTheme.role}</s-badge>
+                    </s-stack>
+                    <s-text tone="subdued">
+                      {themeData.files?.length || 0} critical theme files &amp; settings backed up.
+                    </s-text>
+                  </s-stack>
+                  <s-stack direction="inline" gap="tight" align="center">
+                    <s-text tone="subdued">
+                      {selectedFiles.length} of {themeData.files?.length || 0} files selected
+                    </s-text>
+                    <s-button variant="tertiary" onClick={toggleSelectAll}>
+                      {selectedFiles.length === (themeData?.files?.length || 0)
+                        ? "Deselect All"
+                        : "Select All"}
+                    </s-button>
+                  </s-stack>
+                </s-stack>
+
+                {/* File-by-file Checklist & Visual Red/Green Diff Inspector */}
+                <s-stack direction="block" gap="tight">
+                  <s-text fontWeight="semibold">
+                    Protected Files (Inspect Line Diff &amp; Cherry-Pick):
+                  </s-text>
+                  {filesList.map((f) => {
+                    const isSelected = selectedFiles.includes(f.filename);
+                    const isExpanded = expandedFile === f.filename;
+                    const sizeKb = f.size ? Math.round((f.size / 1024) * 10) / 10 : 0;
+                    const hasDiff = f.diff && !f.diff.isIdentical;
+                    return (
+                      <s-card key={f.filename}>
+                        <s-box padding="tight">
+                          <s-stack direction="block" gap="tight">
+                            <s-stack direction="inline" align="space-between" align-items="center">
+                              <s-stack direction="inline" gap="tight" align="center">
+                                <input
+                                  type="checkbox"
+                                  id={`file-${f.filename}`}
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedFiles([...selectedFiles, f.filename]);
+                                    } else {
+                                      setSelectedFiles(
+                                        selectedFiles.filter((name) => name !== f.filename)
+                                      );
+                                    }
+                                  }}
+                                />
+                                <label
+                                  htmlFor={`file-${f.filename}`}
+                                  style={{
+                                    cursor: "pointer",
+                                    fontFamily: "monospace",
+                                    fontSize: "13px",
+                                  }}
+                                >
+                                  <strong>{f.filename}</strong>
+                                  {sizeKb > 0 ? ` (${sizeKb} KB)` : ""}
+                                </label>
+
+                                {f.diff?.isIdentical ? (
+                                  <span
+                                    style={{
+                                      color: "#57606a",
+                                      background: "#f1f3f5",
+                                      border: "1px solid #d0d7de",
+                                      padding: "1px 7px",
+                                      borderRadius: "10px",
+                                      fontSize: "11px",
+                                      fontWeight: "600",
+                                    }}
+                                  >
+                                    ✓ Identical to Live
+                                  </span>
+                                ) : (
+                                  <span style={{ display: "inline-flex", gap: "4px" }}>
+                                    {f.diff?.additions > 0 && (
+                                      <span
+                                        style={{
+                                          color: "#1a7f37",
+                                          background: "#dafbe1",
+                                          border: "1px solid #aceebb",
+                                          padding: "1px 6px",
+                                          borderRadius: "10px",
+                                          fontSize: "11px",
+                                          fontWeight: "700",
+                                        }}
+                                      >
+                                        +{f.diff.additions}
+                                      </span>
+                                    )}
+                                    {f.diff?.deletions > 0 && (
+                                      <span
+                                        style={{
+                                          color: "#cf222e",
+                                          background: "#ffebe9",
+                                          border: "1px solid #ffc1ba",
+                                          padding: "1px 6px",
+                                          borderRadius: "10px",
+                                          fontSize: "11px",
+                                          fontWeight: "700",
+                                        }}
+                                      >
+                                        -{f.diff.deletions}
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
+                              </s-stack>
+
+                              <s-button
+                                variant="tertiary"
+                                onClick={() => setExpandedFile(isExpanded ? null : f.filename)}
+                              >
+                                {isExpanded ? "Hide Code Diff ▲" : "View Code Diff ▼"}
+                              </s-button>
+                            </s-stack>
+
+                            {/* ── Visual Red/Green Line Diff Viewer ── */}
+                            {isExpanded && (
+                              <div
+                                style={{
+                                  border: "1px solid #d0d7de",
+                                  borderRadius: "6px",
+                                  overflow: "hidden",
+                                  fontFamily:
+                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+                                  fontSize: "12px",
+                                  lineHeight: "20px",
+                                  background: "#ffffff",
+                                  marginTop: "6px",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    background: "#f6f8fa",
+                                    padding: "6px 12px",
+                                    borderBottom: "1px solid #d0d7de",
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    fontSize: "11px",
+                                    color: "#57606a",
+                                    fontWeight: "600",
+                                  }}
+                                >
+                                  <span>
+                                    🔴 Red = Lines Removed from Live Theme &nbsp;|&nbsp; 🟢 Green = Backup Lines Restored
+                                  </span>
+                                  <span>
+                                    {hasDiff ? (
+                                      <span>
+                                        <span style={{ color: "#1a7f37", marginRight: "8px" }}>
+                                          +{f.diff.additions} additions
+                                        </span>
+                                        <span style={{ color: "#cf222e" }}>
+                                          -{f.diff.deletions} deletions
+                                        </span>
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: "#57606a" }}>100% In Sync with Live</span>
+                                    )}
+                                  </span>
+                                </div>
+
+                                <div style={{ maxHeight: "280px", overflowY: "auto" }}>
+                                  {f.diff?.lines?.length > 0 ? (
+                                    f.diff.lines.map((line, lIdx) => {
+                                      const isAdded = line.type === "added";
+                                      const isRemoved = line.type === "removed";
+                                      const isInfo = line.type === "info";
+                                      return (
+                                        <div
+                                          key={lIdx}
+                                          style={{
+                                            display: "flex",
+                                            background: isAdded
+                                              ? "#e6ffec"
+                                              : isRemoved
+                                                ? "#ffebe9"
+                                                : isInfo
+                                                  ? "#f6f8fa"
+                                                  : "#ffffff",
+                                            color: isAdded
+                                              ? "#1a7f37"
+                                              : isRemoved
+                                                ? "#cf222e"
+                                                : isInfo
+                                                  ? "#57606a"
+                                                  : "#24292f",
+                                            borderBottom: "1px solid #f0f2f5",
+                                          }}
+                                        >
+                                          {/* Line number gutter */}
+                                          <div
+                                            style={{
+                                              width: "42px",
+                                              paddingRight: "8px",
+                                              textAlign: "right",
+                                              color: "#8c959f",
+                                              userSelect: "none",
+                                              background: isAdded
+                                                ? "#ccffd8"
+                                                : isRemoved
+                                                  ? "#ffd7d5"
+                                                  : "#f6f8fa",
+                                              borderRight: "1px solid #d0d7de",
+                                              flexShrink: 0,
+                                              fontSize: "11px",
+                                            }}
+                                          >
+                                            {isRemoved
+                                              ? line.oldLineNum
+                                              : isAdded
+                                                ? line.newLineNum
+                                                : line.oldLineNum || line.newLineNum || " "}
+                                          </div>
+
+                                          {/* Diff Prefix Marker (+ / -) */}
+                                          <div
+                                            style={{
+                                              width: "22px",
+                                              textAlign: "center",
+                                              fontWeight: "bold",
+                                              userSelect: "none",
+                                              color: isAdded
+                                                ? "#1a7f37"
+                                                : isRemoved
+                                                  ? "#cf222e"
+                                                  : "#8c959f",
+                                              flexShrink: 0,
+                                            }}
+                                          >
+                                            {isAdded ? "+" : isRemoved ? "-" : " "}
+                                          </div>
+
+                                          {/* Code Content */}
+                                          <div
+                                            style={{
+                                              paddingLeft: "4px",
+                                              whiteSpace: "pre-wrap",
+                                              wordBreak: "break-all",
+                                              flexGrow: 1,
+                                            }}
+                                          >
+                                            {line.content || " "}
+                                          </div>
+                                        </div>
+                                      );
+                                    })
+                                  ) : (
+                                    <div style={{ padding: "12px", color: "#57606a" }}>
+                                      No content diff available.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </s-stack>
+                        </s-box>
+                      </s-card>
+                    );
+                  })}
+                </s-stack>
+
+                {/* Dual Action Buttons */}
+                <s-stack direction="inline" gap="base" align="center">
+                  <fetcher.Form method="POST">
+                    <input type="hidden" name="intent" value="restore_theme" />
+                    <input type="hidden" name="mode" value="draft" />
+                    <input
+                      type="hidden"
+                      name="selectedFiles"
+                      value={JSON.stringify(selectedFiles)}
+                    />
+                    <s-button
+                      submit
+                      variant="primary"
+                      disabled={selectedFiles.length === 0}
+                      {...(isRestoring ? { loading: true } : {})}
+                    >
+                      🛡️ Restore to Draft Theme (Preview First)
+                    </s-button>
+                  </fetcher.Form>
+
+                  <fetcher.Form method="POST">
+                    <input type="hidden" name="intent" value="restore_theme" />
+                    <input type="hidden" name="mode" value="live" />
+                    <input
+                      type="hidden"
+                      name="selectedFiles"
+                      value={JSON.stringify(selectedFiles)}
+                    />
+                    <s-button
+                      submit
+                      variant="secondary"
+                      tone="critical"
+                      disabled={selectedFiles.length === 0}
+                      {...(isRestoring ? { loading: true } : {})}
+                    >
+                      ⚡ Instant Restore to Live Theme
+                    </s-button>
+                  </fetcher.Form>
+                </s-stack>
+
+                <s-text tone="subdued" variant="bodySm">
+                  💡 <strong>Pro Tip:</strong> Select <strong>"Restore to Draft Theme"</strong> to safely preview your storefront without risking live store downtime. If restoring directly to live, Revertly will automatically capture a safety snapshot first.
+                </s-text>
+              </s-stack>
+            </s-box>
+          </s-card>
+        </s-section>
+      )}
+
+      {/* ── Collections Backup Section ── */}
+      {collectionData.length > 0 && (
+        <s-section heading={`${collectionData.length} Collections Protected`}>
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-paragraph>
+                  All automated smart rules and custom collection settings are preserved. If a collection is accidentally deleted or rules are broken, you can restore it below.
+                </s-paragraph>
+                <s-resource-list>
+                  {collectionData.slice(0, 8).map((col, idx) => (
+                    <s-resource-item key={col.id || idx} id={String(col.id || idx)}>
+                      <s-stack direction="inline" align="space-between" align-items="center">
+                        <s-stack direction="block" gap="tight">
+                          <s-text fontWeight="bold">{col.title}</s-text>
+                          <s-text tone="subdued">
+                            Handle: /{col.handle} · {col.ruleSet?.rules?.length || 0} smart rules
+                          </s-text>
+                        </s-stack>
+                        <fetcher.Form method="POST">
+                          <input type="hidden" name="intent" value="restore_collection" />
+                          <input type="hidden" name="colIndex" value={idx} />
+                          <s-button submit variant="secondary">
+                            Recreate / Restore
+                          </s-button>
+                        </fetcher.Form>
+                      </s-stack>
+                    </s-resource-item>
+                  ))}
+                </s-resource-list>
+              </s-stack>
+            </s-box>
+          </s-card>
+        </s-section>
+      )}
+
+      {/* ── Content Pages Backup Section ── */}
+      {pageData.length > 0 && (
+        <s-section heading={`${pageData.length} Content Pages Protected`}>
+          <s-card>
+            <s-box padding="base">
+              <s-resource-list>
+                {pageData.slice(0, 5).map((p, idx) => (
+                  <s-resource-item key={p.id || idx} id={String(p.id || idx)}>
+                    <s-stack direction="inline" align="space-between" align-items="center">
+                      <s-stack direction="block" gap="tight">
+                        <s-text fontWeight="bold">{p.title}</s-text>
+                        <s-text tone="subdued">Handle: /{p.handle}</s-text>
+                      </s-stack>
+                      <fetcher.Form method="POST">
+                        <input type="hidden" name="intent" value="restore_page" />
+                        <input type="hidden" name="pageIndex" value={idx} />
+                        <s-button submit variant="secondary">
+                          Restore Page
+                        </s-button>
+                      </fetcher.Form>
+                    </s-stack>
+                  </s-resource-item>
+                ))}
+              </s-resource-list>
+            </s-box>
+          </s-card>
+        </s-section>
+      )}
+
+      {/* ── Products Differences & Rollback ── */}
       <s-section
         heading={`${differences.length} products differ from restore point`}
       >
         {differences.length === 0 ? (
           <s-banner tone="success">
-            All products match this restore point. No changes detected.
+            All products match this restore point. No product changes detected.
           </s-banner>
         ) : (
           differences.map((d) => (
@@ -332,7 +898,7 @@ export default function RestorePointDetail() {
         </s-section>
       )}
 
-      {/* Restore Action */}
+      {/* Products Restore Action */}
       {differences.length > 0 && (
         <s-section>
           <fetcher.Form method="POST">
@@ -350,7 +916,7 @@ export default function RestorePointDetail() {
           </fetcher.Form>
           <s-paragraph>
             <s-text tone="subdued">
-              Only changed fields will be restored. Unaffected fields remain unchanged.
+              Only changed product fields will be restored. Unaffected fields remain unchanged.
             </s-text>
           </s-paragraph>
         </s-section>

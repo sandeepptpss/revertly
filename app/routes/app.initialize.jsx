@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { buildSnapshot } from "../monitor.server.js";
+import { createMultiResourceRestorePoint } from "../backup.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useFetcher, useLoaderData, useRouteError } from "react-router";
 
@@ -80,7 +81,31 @@ export const action = async ({ request }) => {
     }
   }
 
-  return { success: true, count: totalSaved };
+  // Auto-create initial Full Store Baseline if no restore points exist yet
+  let initialRpCreated = false;
+  const existingRp = await prisma.restorePoint.findFirst({ where: { shop } });
+  if (!existingRp) {
+    try {
+      await createMultiResourceRestorePoint({
+        admin,
+        shop,
+        name: "Initial Store Setup Baseline",
+        description: "Initial baseline snapshot capturing Products, Active Theme, and Collections.",
+        options: {
+          includeProducts: true,
+          includeThemes: true,
+          includeCollections: true,
+          includePages: true,
+          includeMenus: true,
+        },
+      });
+      initialRpCreated = true;
+    } catch (rpErr) {
+      console.warn("Initial baseline restore point creation warning:", rpErr?.message || rpErr);
+    }
+  }
+
+  return { success: true, count: totalSaved, initialRpCreated };
 };
 
 export default function InitialSnapshot() {
@@ -94,7 +119,7 @@ export default function InitialSnapshot() {
       <s-section>
         <s-paragraph>
           Before monitoring begins, Revertly needs to take an initial snapshot of your
-          products. This gives the system a baseline to compare future changes against.
+          products and store assets. This gives the system a baseline to compare future changes against.
         </s-paragraph>
         <s-paragraph>
           Currently tracking <strong>{result?.count ?? count}</strong> products.
@@ -102,7 +127,10 @@ export default function InitialSnapshot() {
 
         {result?.success && (
           <s-banner tone="success">
-            Snapshot complete! {result.count} products are now being monitored.
+            Snapshot complete! {result.count} products are now actively monitored
+            {result.initialRpCreated
+              ? ", and your first Full Store Baseline (Theme, Collections & Products) has been secured in Restore Points!"
+              : "."}
           </s-banner>
         )}
 
