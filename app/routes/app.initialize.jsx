@@ -28,6 +28,13 @@ export const action = async ({ request }) => {
           edges {
             node {
               id title status vendor productType tags handle bodyHtml publishedAt
+              metafields(first: 50) {
+                edges {
+                  node {
+                    id namespace key value type
+                  }
+                }
+              }
               variants(first: 100) {
                 edges {
                   node {

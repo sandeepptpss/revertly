@@ -162,6 +162,7 @@ model RestorePoint {
   collectionCount Int       @default(0)
   pageCount       Int       @default(0)
   menuCount       Int       @default(0)
+  articleCount    Int       @default(0)
   status          String    @db.VarChar(50)  @default("CREATING") // CREATING, READY, RESTORING
   backupType      String    @default("FULL") @db.VarChar(50)      // FULL, PRODUCTS, THEMES, COLLECTIONS
   snapshotData    Json?     // array of product snapshots
@@ -169,6 +170,7 @@ model RestorePoint {
   collectionData  Json?     // array of collections & ruleSets
   pageData        Json?     // array of pages
   menuData        Json?     // array of navigation menus
+  articleData     Json?     // array of blogs & articles
   rollbackJobs    RollbackJob[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

@@ -8,6 +8,8 @@ import {
   restoreThemeFilesWithSafety,
   restoreCollection,
   restorePage,
+  restoreArticle,
+  restoreProductMetafields,
   computeDiffLines,
   fetchThemeBackup,
 } from "../backup.server.js";
@@ -85,6 +87,26 @@ export const loader = async ({ request, params }) => {
       }
     }
 
+    // Check metafields
+    const savedMetafields = saved.snapshotData?.metafields || saved.metafields || [];
+    const currentMetafields = current?.metafields || [];
+    for (const sm of savedMetafields) {
+      const cm = currentMetafields.find((m) => m.namespace === sm.namespace && m.key === sm.key);
+      if (!cm) {
+        fieldDiffs.push({
+          field: `metafield.${sm.namespace}.${sm.key}`,
+          saved: String(sm.value ?? ""),
+          current: "(missing / deleted)",
+        });
+      } else if (String(cm.value ?? "") !== String(sm.value ?? "")) {
+        fieldDiffs.push({
+          field: `metafield.${sm.namespace}.${sm.key}`,
+          saved: String(sm.value ?? ""),
+          current: String(cm.value ?? ""),
+        });
+      }
+    }
+
     if (fieldDiffs.length > 0) {
       differences.push({
         productId: saved.productId,
@@ -98,6 +120,7 @@ export const loader = async ({ request, params }) => {
   const collectionData = Array.isArray(restorePoint.collectionData) ? restorePoint.collectionData : [];
   const pageData = Array.isArray(restorePoint.pageData) ? restorePoint.pageData : [];
   const menuData = Array.isArray(restorePoint.menuData) ? restorePoint.menuData : [];
+  const articleData = restorePoint.articleData || { blogs: [], articles: [] };
 
   let themeDiffFiles = [];
   if (themeData?.files?.length) {
@@ -133,6 +156,7 @@ export const loader = async ({ request, params }) => {
     collectionData,
     pageData,
     menuData,
+    articleData,
   };
 };
 
@@ -197,6 +221,18 @@ export const action = async ({ request, params }) => {
     if (!target) return { success: false, message: "Page not found in snapshot." };
     const res = await restorePage(admin, target);
     return res.success ? { success: true, message: `Page "${target.title}" successfully restored.` } : res;
+  }
+
+  if (intent === "restore_article") {
+    const articleIndex = parseInt(formData.get("articleIndex"));
+    const restorePoint = await prisma.restorePoint.findFirst({
+      where: { id: rpId, shop },
+    });
+    const articles = restorePoint?.articleData?.articles || [];
+    const target = articles[articleIndex];
+    if (!target) return { success: false, message: "Article not found in snapshot." };
+    const res = await restoreArticle(admin, target);
+    return res;
   }
 
   if (intent !== "restore") return { success: false };
@@ -306,6 +342,15 @@ export const action = async ({ request, params }) => {
 
     const result = await rollbackProductFields(admin, shop, productId, tempIds);
 
+    // Restore metafields if present in snapshot
+    if (Array.isArray(savedSnap.metafields) && savedSnap.metafields.length > 0) {
+      try {
+        await restoreProductMetafields(admin, productId, savedSnap.metafields);
+      } catch (mfErr) {
+        console.warn(`Product metafield restore warning (${productId}):`, mfErr?.message);
+      }
+    }
+
     // Clean up temp events
     await prisma.changeEvent.deleteMany({ where: { id: { in: tempIds } } });
 
@@ -363,6 +408,7 @@ export default function RestorePointDetail() {
     themeDiffFiles,
     collectionData,
     pageData,
+    articleData,
   } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
@@ -386,6 +432,9 @@ export default function RestorePointDetail() {
     { id: "products", label: `📦 Products (${differences.length} diff${differences.length === 1 ? "" : "s"})` },
     ...(collectionData.length > 0 ? [{ id: "collections", label: `🗂️ Collections (${collectionData.length})` }] : []),
     ...(pageData.length > 0 ? [{ id: "pages", label: `📄 Pages & Menus (${pageData.length})` }] : []),
+    ...((articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)
+      ? [{ id: "articles", label: `📝 Blogs & Articles (${articleData.articles?.length || 0})` }]
+      : []),
     ...(lastJob ? [{ id: "history", label: "🕒 History" }] : []),
   ];
 
@@ -405,21 +454,32 @@ export default function RestorePointDetail() {
     >
       <s-section>
         <s-stack direction="block" gap="tight">
-          <s-stack direction="inline" gap="base" align="center">
-            <s-badge tone={restorePoint.status === "READY" ? "success" : "attention"}>
-              {restorePoint.status}
-            </s-badge>
-            <s-text tone="subdued">Created: {formatTime(restorePoint.createdAt)}</s-text>
-            <s-badge tone="info">{savedCount} Products</s-badge>
-            {themeData?.activeTheme && (
-              <s-badge tone="success">Theme: {themeData.activeTheme.name}</s-badge>
-            )}
-            {collectionData.length > 0 && (
-              <s-badge tone="info">{collectionData.length} Collections</s-badge>
-            )}
-            {pageData.length > 0 && (
-              <s-badge tone="subdued">{pageData.length} Pages</s-badge>
-            )}
+          <s-stack direction="inline" align="space-between" align-items="center" wrap>
+            <s-stack direction="inline" gap="base" align="center" wrap>
+              <s-badge tone={restorePoint.status === "READY" ? "success" : "attention"}>
+                {restorePoint.status}
+              </s-badge>
+              <s-text tone="subdued">Created: {formatTime(restorePoint.createdAt)}</s-text>
+              <s-badge tone="info">{savedCount} Products</s-badge>
+              {themeData?.activeTheme && (
+                <s-badge tone="success">Theme: {themeData.activeTheme.name}</s-badge>
+              )}
+              {collectionData.length > 0 && (
+                <s-badge tone="info">{collectionData.length} Collections</s-badge>
+              )}
+              {pageData.length > 0 && (
+                <s-badge tone="subdued">{pageData.length} Pages</s-badge>
+              )}
+              {articleData?.articles?.length > 0 && (
+                <s-badge tone="success">{articleData.articles.length} Articles</s-badge>
+              )}
+            </s-stack>
+            <s-button
+              url={`/app/restore-points/${restorePoint.id}/export`}
+              variant="secondary"
+            >
+              ⬇️ Download Offline Backup (.json)
+            </s-button>
           </s-stack>
           {restorePoint.description && (
             <s-paragraph>{restorePoint.description}</s-paragraph>
@@ -878,6 +938,56 @@ export default function RestorePointDetail() {
                   </s-resource-item>
                 ))}
               </s-resource-list>
+            </s-box>
+          </s-card>
+        </s-section>
+      )}
+
+      {/* ── Blogs & Articles Backup Section ── */}
+      {activeTab === "articles" && (
+        <s-section heading={`${articleData?.articles?.length || 0} Blog Articles Protected`}>
+          <s-card>
+            <s-box padding="base">
+              <s-stack direction="block" gap="base">
+                <s-paragraph>
+                  Protect your store&apos;s SEO rankings, buying guides, and blog content. If an article is accidentally deleted or modified, you can restore it with 1 click.
+                </s-paragraph>
+                {(!articleData?.articles || articleData.articles.length === 0) ? (
+                  <s-empty-state heading="No blog articles found in this restore point">
+                    <s-paragraph>Articles published in your Shopify store will appear here in future backups.</s-paragraph>
+                  </s-empty-state>
+                ) : (
+                  <s-resource-list>
+                    {articleData.articles.map((art, idx) => (
+                      <s-resource-item key={art.id || idx} id={String(art.id || idx)}>
+                        <s-stack direction="inline" align="space-between" align-items="center">
+                          <s-stack direction="block" gap="tight">
+                            <s-stack direction="inline" gap="tight" align="center">
+                              <s-text fontWeight="bold">{art.title}</s-text>
+                              {art.isPublished ? (
+                                <s-badge tone="success">Published</s-badge>
+                              ) : (
+                                <s-badge tone="subdued">Draft</s-badge>
+                              )}
+                              {art.blogTitle && <s-badge tone="info">Blog: {art.blogTitle}</s-badge>}
+                            </s-stack>
+                            <s-text tone="subdued">
+                              Handle: /{art.handle} {art.tags?.length > 0 ? `· Tags: ${Array.isArray(art.tags) ? art.tags.join(", ") : art.tags}` : ""}
+                            </s-text>
+                          </s-stack>
+                          <fetcher.Form method="POST">
+                            <input type="hidden" name="intent" value="restore_article" />
+                            <input type="hidden" name="articleIndex" value={idx} />
+                            <s-button submit variant="secondary" {...(isRestoring ? { loading: true } : {})}>
+                              Restore Article
+                            </s-button>
+                          </fetcher.Form>
+                        </s-stack>
+                      </s-resource-item>
+                    ))}
+                  </s-resource-list>
+                )}
+              </s-stack>
             </s-box>
           </s-card>
         </s-section>

@@ -48,6 +48,17 @@ export async function fetchProductData(admin, productId) {
         handle
         bodyHtml
         publishedAt
+        metafields(first: 50) {
+          edges {
+            node {
+              id
+              namespace
+              key
+              value
+              type
+            }
+          }
+        }
         variants(first: 100) {
           edges {
             node {
@@ -87,6 +98,14 @@ export function buildSnapshot(product) {
     barcode: e.node.barcode,
   }));
 
+  const metafields = (product.metafields?.edges || []).map((e) => ({
+    id: e.node.id,
+    namespace: e.node.namespace,
+    key: e.node.key,
+    value: e.node.value,
+    type: e.node.type,
+  }));
+
   return {
     id: product.id,
     title: product.title,
@@ -100,6 +119,7 @@ export function buildSnapshot(product) {
     bodyHtml: product.bodyHtml,
     publishedAt: product.publishedAt,
     variants,
+    metafields,
   };
 }
 
@@ -250,7 +270,7 @@ export async function saveChangeEvents(shop, product, changes, incidentId) {
 /**
  * Check detection rules and create an incident if needed
  */
-export async function checkDetectionRules(shop, changes, productId) {
+export async function checkDetectionRules(shop, changes) {
   const rules = await prisma.detectionRule.findMany({
     where: { shop, isActive: true },
   });

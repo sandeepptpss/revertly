@@ -30,6 +30,7 @@ export const action = async ({ request }) => {
     const includeThemes = formData.get("includeThemes") !== "0";
     const includeCollections = formData.get("includeCollections") !== "0";
     const includePages = formData.get("includePages") !== "0";
+    const includeArticles = formData.get("includeArticles") !== "0";
 
     const result = await createMultiResourceRestorePoint({
       admin,
@@ -42,6 +43,7 @@ export const action = async ({ request }) => {
         includeCollections,
         includePages,
         includeMenus: includePages,
+        includeArticles,
       },
     });
 
@@ -55,6 +57,7 @@ export const action = async ({ request }) => {
     if (s.themes > 0) parts.push(`1 theme`);
     if (s.collections > 0) parts.push(`${s.collections} collections`);
     if (s.pages > 0) parts.push(`${s.pages} pages & menus`);
+    if (s.articles > 0) parts.push(`${s.articles} blog articles`);
 
     return {
       success: true,
@@ -164,6 +167,7 @@ export default function RestorePoints() {
                         {rp.themeCount > 0 && <s-badge tone="success">1 Theme</s-badge>}
                         {rp.collectionCount > 0 && <s-badge tone="info">{rp.collectionCount} Collections</s-badge>}
                         {rp.pageCount > 0 && <s-badge tone="subdued">{rp.pageCount} Pages</s-badge>}
+                        {rp.articleCount > 0 && <s-badge tone="success">{rp.articleCount} Articles</s-badge>}
                       </s-stack>
                     </s-stack>
                   </s-stack>

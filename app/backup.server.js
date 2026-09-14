@@ -614,11 +614,259 @@ export async function fetchMenusBackup(admin) {
 }
 
 // ============================================================================
-// 5. UNIFIED MULTI-RESOURCE RESTORE POINT CREATION
+// 5. BLOGS & ARTICLES BACKUP & RESTORE (SEO Content Shield)
 // ============================================================================
 
 /**
- * Orchestrates a complete store backup snapshot (Products, Themes, Collections, Pages, Menus)
+ * Fetches all blogs and published/draft articles with bodyHtml, tags, author, and handles
+ */
+export async function fetchBlogsAndArticlesBackup(admin) {
+  try {
+    const res = await admin.graphql(
+      `#graphql
+      query getBlogsWithArticles {
+        blogs(first: 25) {
+          nodes {
+            id
+            title
+            handle
+            commentPolicy
+            articles(first: 50) {
+              nodes {
+                id
+                title
+                handle
+                body: bodyHtml
+                summary: summaryHtml
+                tags
+                isPublished
+                publishedAt
+                image {
+                  url
+                  altText
+                }
+              }
+            }
+          }
+        }
+      }`
+    );
+    const json = await res.json();
+    const blogs = json.data?.blogs?.nodes || [];
+
+    const flattenedArticles = [];
+    for (const blog of blogs) {
+      const articles = blog.articles?.nodes || [];
+      for (const art of articles) {
+        flattenedArticles.push({
+          ...art,
+          blogId: blog.id,
+          blogTitle: blog.title,
+          blogHandle: blog.handle,
+        });
+      }
+    }
+
+    return {
+      blogs: blogs.map((b) => ({
+        id: b.id,
+        title: b.title,
+        handle: b.handle,
+        commentPolicy: b.commentPolicy,
+        articleCount: b.articles?.nodes?.length || 0,
+      })),
+      articles: flattenedArticles,
+    };
+  } catch (err) {
+    console.warn("fetchBlogsAndArticlesBackup warning (check scopes):", err?.message || err);
+    return { blogs: [], articles: [] };
+  }
+}
+
+/**
+ * Restores or recreates a blog article. If the article still exists, updates it;
+ * if deleted, recreates it within its blog.
+ */
+export async function restoreArticle(admin, article) {
+  if (!article || !article.title) {
+    return { success: false, message: "Invalid article data." };
+  }
+
+  try {
+    // 1. If article has an ID, try updating it in case it still exists
+    if (article.id) {
+      try {
+        const upRes = await admin.graphql(
+          `#graphql
+          mutation articleUpdate($id: ID!, $article: ArticleUpdateInput!) {
+            articleUpdate(id: $id, article: $article) {
+              article { id title handle }
+              userErrors { field message }
+            }
+          }`,
+          {
+            variables: {
+              id: article.id,
+              article: {
+                title: article.title,
+                bodyHtml: article.body || article.bodyHtml || "",
+                summaryHtml: article.summary || article.summaryHtml || "",
+                handle: article.handle || undefined,
+                isPublished: article.isPublished ?? true,
+                tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
+              },
+            },
+          }
+        );
+        const upJson = await upRes.json();
+        if (upJson.data?.articleUpdate?.article?.id) {
+          return {
+            success: true,
+            mode: "updated",
+            article: upJson.data.articleUpdate.article,
+            message: `Article "${article.title}" successfully restored to live store.`,
+          };
+        }
+      } catch (upErr) {
+        // Fallback to recreation if article was deleted
+      }
+    }
+
+    // 2. If update didn't match, verify blog exists or find target blog
+    let targetBlogId = article.blogId;
+    if (!targetBlogId) {
+      try {
+        const bRes = await admin.graphql(
+          `#graphql
+          query getFirstBlog {
+            blogs(first: 5) {
+              nodes { id title handle }
+            }
+          }`
+        );
+        const bJson = await bRes.json();
+        const firstBlog = bJson.data?.blogs?.nodes?.[0];
+        if (firstBlog) targetBlogId = firstBlog.id;
+      } catch (e) {
+        console.warn("Could not find blogs for article restoration:", e?.message);
+      }
+    }
+
+    if (!targetBlogId) {
+      return { success: false, message: "No target blog found to recreate this article in." };
+    }
+
+    const createRes = await admin.graphql(
+      `#graphql
+      mutation articleCreate($article: ArticleCreateInput!) {
+        articleCreate(article: $article) {
+          article { id title handle }
+          userErrors { field message }
+        }
+      }`,
+      {
+        variables: {
+          article: {
+            blogId: targetBlogId,
+            title: article.title,
+            bodyHtml: article.body || article.bodyHtml || "",
+            summaryHtml: article.summary || article.summaryHtml || "",
+            handle: article.handle || undefined,
+            isPublished: article.isPublished ?? true,
+            tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
+          },
+        },
+      }
+    );
+    const createJson = await createRes.json();
+    const userErrors = createJson.data?.articleCreate?.userErrors || [];
+    if (userErrors.length > 0) {
+      return { success: false, message: userErrors.map((e) => e.message).join(", ") };
+    }
+
+    return {
+      success: true,
+      mode: "created",
+      article: createJson.data?.articleCreate?.article,
+      message: `Article "${article.title}" successfully recreated in store.`,
+    };
+  } catch (err) {
+    console.error("restoreArticle error:", err?.message || err);
+    return { success: false, message: err?.message || "Failed to restore article." };
+  }
+}
+
+// ============================================================================
+// 6. PRODUCT METAFIELDS BACKUP & RESTORE
+// ============================================================================
+
+/**
+ * Restores or updates product metafields via Shopify metafieldsSet mutation
+ */
+export async function restoreProductMetafields(admin, productId, metafields) {
+  if (!metafields || metafields.length === 0) {
+    return { success: true, count: 0 };
+  }
+
+  const numericId = String(productId).replace("gid://shopify/Product/", "");
+  const ownerId = `gid://shopify/Product/${numericId}`;
+
+  const metafieldInputs = metafields
+    .filter((m) => m.namespace && m.key && m.value !== undefined && m.value !== null)
+    .map((m) => ({
+      ownerId,
+      namespace: m.namespace,
+      key: m.key,
+      value: String(m.value),
+      type: m.type || "single_line_text_field",
+    }));
+
+  if (metafieldInputs.length === 0) {
+    return { success: true, count: 0 };
+  }
+
+  try {
+    const res = await admin.graphql(
+      `#graphql
+      mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields {
+            id
+            namespace
+            key
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+      { variables: { metafields: metafieldInputs } }
+    );
+
+    const json = await res.json();
+    const userErrors = json.data?.metafieldsSet?.userErrors || [];
+    if (userErrors.length > 0) {
+      return {
+        success: false,
+        message: userErrors.map((e) => `${e.field}: ${e.message}`).join(", "),
+      };
+    }
+
+    const updated = json.data?.metafieldsSet?.metafields || [];
+    return { success: true, count: updated.length };
+  } catch (err) {
+    console.error("restoreProductMetafields error:", err?.message || err);
+    return { success: false, message: err?.message || "Failed to restore metafields." };
+  }
+}
+
+// ============================================================================
+// 7. UNIFIED MULTI-RESOURCE RESTORE POINT CREATION
+// ============================================================================
+
+/**
+ * Orchestrates a complete store backup snapshot (Products, Themes, Collections, Pages, Menus, Articles)
  * without blocking or breaking existing product flows.
  */
 export async function createMultiResourceRestorePoint({
@@ -632,6 +880,7 @@ export async function createMultiResourceRestorePoint({
     includeCollections: true,
     includePages: true,
     includeMenus: true,
+    includeArticles: true,
   },
 }) {
   // 1. Create the pending restore point
@@ -650,7 +899,7 @@ export async function createMultiResourceRestorePoint({
     const tasks = [];
 
     // Task 0: Products (from local snapshot baseline)
-    if (options.includeProducts) {
+    if (options.includeProducts !== false) {
       tasks.push(
         prisma.productSnapshot.findMany({
           where: { shop },
@@ -662,45 +911,54 @@ export async function createMultiResourceRestorePoint({
     }
 
     // Task 1: Theme & Assets
-    if (options.includeThemes) {
+    if (options.includeThemes !== false) {
       tasks.push(fetchThemeBackup(admin));
     } else {
       tasks.push(Promise.resolve(null));
     }
 
     // Task 2: Collections
-    if (options.includeCollections) {
+    if (options.includeCollections !== false) {
       tasks.push(fetchCollectionsBackup(admin));
     } else {
       tasks.push(Promise.resolve([]));
     }
 
     // Task 3: Pages
-    if (options.includePages) {
+    if (options.includePages !== false) {
       tasks.push(fetchPagesBackup(admin));
     } else {
       tasks.push(Promise.resolve([]));
     }
 
     // Task 4: Navigation Menus
-    if (options.includeMenus) {
+    if (options.includeMenus !== false) {
       tasks.push(fetchMenusBackup(admin));
     } else {
       tasks.push(Promise.resolve([]));
     }
 
-    const [prodRes, themeRes, colRes, pageRes, menuRes] = await Promise.allSettled(tasks);
+    // Task 5: Blogs & Articles
+    if (options.includeArticles !== false) {
+      tasks.push(fetchBlogsAndArticlesBackup(admin));
+    } else {
+      tasks.push(Promise.resolve({ blogs: [], articles: [] }));
+    }
+
+    const [prodRes, themeRes, colRes, pageRes, menuRes, articleRes] = await Promise.allSettled(tasks);
 
     const products = prodRes.status === "fulfilled" ? prodRes.value : [];
     const themeData = themeRes.status === "fulfilled" ? themeRes.value : null;
     const collections = colRes.status === "fulfilled" ? colRes.value : [];
     const pages = pageRes.status === "fulfilled" ? pageRes.value : [];
     const menus = menuRes.status === "fulfilled" ? menuRes.value : [];
+    const articleData = articleRes.status === "fulfilled" ? articleRes.value : { blogs: [], articles: [] };
 
     const themeCount = themeData?.activeTheme ? 1 : 0;
     const collectionCount = Array.isArray(collections) ? collections.length : 0;
     const pageCount = Array.isArray(pages) ? pages.length : 0;
     const menuCount = Array.isArray(menus) ? menus.length : 0;
+    const articleCount = Array.isArray(articleData?.articles) ? articleData.articles.length : 0;
 
     // Determine primary backup type
     let backupType = "FULL";
@@ -719,11 +977,13 @@ export async function createMultiResourceRestorePoint({
         collectionCount,
         pageCount,
         menuCount,
+        articleCount,
         snapshotData: products,
         themeData: themeData || undefined,
         collectionData: collections.length > 0 ? collections : undefined,
         pageData: pages.length > 0 ? pages : undefined,
         menuData: menus.length > 0 ? menus : undefined,
+        articleData: articleCount > 0 || (articleData.blogs && articleData.blogs.length > 0) ? articleData : undefined,
       },
     });
 
@@ -736,6 +996,7 @@ export async function createMultiResourceRestorePoint({
         collections: collectionCount,
         pages: pageCount,
         menus: menuCount,
+        articles: articleCount,
       },
     };
   } catch (err) {
