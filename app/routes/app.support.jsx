@@ -136,7 +136,7 @@ export default function Support() {
                 <s-stack direction="block" gap="tight">
                   <s-text><strong>{link.title}</strong></s-text>
                   <s-text tone="subdued">{link.desc}</s-text>
-                  <s-link url={link.url} target="_blank">
+                  <s-link href={link.url} target="_blank">
                     Open →
                   </s-link>
                 </s-stack>
@@ -259,7 +259,7 @@ export default function Support() {
       <s-section slot="aside" heading="System Status">
         <s-stack direction="block" gap="tight">
           <s-badge tone="success">All Systems Operational</s-badge>
-          <s-link url="https://status.revertly.app" target="_blank">
+          <s-link href="https://status.revertly.app" target="_blank">
             View status page →
           </s-link>
         </s-stack>
@@ -270,7 +270,7 @@ export default function Support() {
         <s-stack direction="block" gap="tight">
           <s-text>
             Email:{" "}
-            <s-link url="mailto:support@revertly.app">
+            <s-link href="mailto:support@revertly.app">
               support@revertly.app
             </s-link>
           </s-text>

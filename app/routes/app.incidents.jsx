@@ -181,7 +181,7 @@ export default function Incidents() {
                     </s-stack>
                   )}
                   {inc.status !== "OPEN" && (
-                    <s-link url={`/app/incidents/${inc.id}`}>
+                    <s-link href={`/app/incidents/${inc.id}`}>
                       View details
                     </s-link>
                   )}

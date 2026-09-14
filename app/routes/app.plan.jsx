@@ -413,7 +413,7 @@ export default function Plan() {
             <s-text tone="subdued" variant="bodyXs">
               All plans include automated snapshot tracking. Charges are billed in USD every 30 days. You can upgrade, downgrade, or cancel anytime directly in Shopify.
             </s-text>
-            <s-link url="/app/support">
+            <s-link href="/app/support">
               Need help choosing? Contact developer support
             </s-link>
           </s-stack>

@@ -137,7 +137,7 @@ export default function Dashboard() {
                   {isInitialized ? "Actively tracked" : "Not initialized yet"}
                 </s-text>
                 {!isInitialized && (
-                  <s-link url="/app/initialize">Initialize now →</s-link>
+                  <s-link href="/app/initialize">Initialize now →</s-link>
                 )}
               </s-stack>
             </s-box>
@@ -154,7 +154,7 @@ export default function Dashboard() {
                 <s-text tone="subdued">
                   {stats.todayChanges === 0 ? "No changes in last 24h" : "In the last 24 hours"}
                 </s-text>
-                <s-link url="/app/activity">View activity →</s-link>
+                <s-link href="/app/activity">View activity →</s-link>
               </s-stack>
             </s-box>
           </s-card>
@@ -170,7 +170,7 @@ export default function Dashboard() {
                 <s-text tone={stats.openIncidents > 0 ? "critical" : "subdued"}>
                   {stats.openIncidents > 0 ? "Requires attention" : "All clear"}
                 </s-text>
-                <s-link url="/app/incidents">View incidents →</s-link>
+                <s-link href="/app/incidents">View incidents →</s-link>
               </s-stack>
             </s-box>
           </s-card>
@@ -186,7 +186,7 @@ export default function Dashboard() {
                 <s-text tone="subdued">
                   {stats.readyRestorePoints === 0 ? "None created yet" : "Ready to restore"}
                 </s-text>
-                <s-link url="/app/restore-points">
+                <s-link href="/app/restore-points">
                   {stats.readyRestorePoints === 0 ? "Create one →" : "Manage →"}
                 </s-link>
               </s-stack>
@@ -206,7 +206,7 @@ export default function Dashboard() {
                   <s-text fontWeight="bold" variant="headingMd">
                     Recent Incidents
                   </s-text>
-                  <s-link url="/app/incidents">View all</s-link>
+                  <s-link href="/app/incidents">View all</s-link>
                 </s-stack>
 
                 {recentIncidents.length === 0 ? (
@@ -245,7 +245,7 @@ export default function Dashboard() {
                             <s-text tone="subdued">{timeAgo(inc.createdAt)}</s-text>
                           </s-stack>
                           {inc.status === "OPEN" && (
-                            <s-link url={`/app/incidents/${inc.id}`}>
+                            <s-link href={`/app/incidents/${inc.id}`}>
                               Review &amp; Rollback →
                             </s-link>
                           )}
@@ -266,7 +266,7 @@ export default function Dashboard() {
                   <s-text fontWeight="bold" variant="headingMd">
                     Recent Activity
                   </s-text>
-                  <s-link url="/app/activity">View all</s-link>
+                  <s-link href="/app/activity">View all</s-link>
                 </s-stack>
 
                 {recentChanges.length === 0 ? (
@@ -360,19 +360,19 @@ export default function Dashboard() {
           <s-stack direction="block" gap="tight">
             <s-stack direction="inline" gap="tight">
               <s-text>1.</s-text>
-              <s-link url="/app/initialize">Initialize product snapshots</s-link>
+              <s-link href="/app/initialize">Initialize product snapshots</s-link>
             </s-stack>
             <s-stack direction="inline" gap="tight">
               <s-text>2.</s-text>
-              <s-link url="/app/rules">Set up detection rules</s-link>
+              <s-link href="/app/rules">Set up detection rules</s-link>
             </s-stack>
             <s-stack direction="inline" gap="tight">
               <s-text>3.</s-text>
-              <s-link url="/app/restore-points">Create a restore point</s-link>
+              <s-link href="/app/restore-points">Create a restore point</s-link>
             </s-stack>
             <s-stack direction="inline" gap="tight">
               <s-text>4.</s-text>
-              <s-link url="/app/settings">Configure alert email</s-link>
+              <s-link href="/app/settings">Configure alert email</s-link>
             </s-stack>
           </s-stack>
         </s-section>

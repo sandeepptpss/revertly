@@ -175,7 +175,7 @@ export default function Activity() {
         {totalPages > 1 && (
           <s-stack direction="inline" gap="base">
             {page > 1 && (
-              <s-link url={`/app/activity?page=${page - 1}&field=${field}&product=${product}`}>
+              <s-link href={`/app/activity?page=${page - 1}&field=${field}&product=${product}`}>
                 ← Previous
               </s-link>
             )}
@@ -183,7 +183,7 @@ export default function Activity() {
               Page {page} of {totalPages}
             </s-text>
             {page < totalPages && (
-              <s-link url={`/app/activity?page=${page + 1}&field=${field}&product=${product}`}>
+              <s-link href={`/app/activity?page=${page + 1}&field=${field}&product=${product}`}>
                 Next →
               </s-link>
             )}

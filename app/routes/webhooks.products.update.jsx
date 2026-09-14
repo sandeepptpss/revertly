@@ -46,7 +46,15 @@ export const action = async ({ request }) => {
 
     const product = payload;
     const numericId = String(product.id);
-    const newSnap = buildSnapshotFromPayload(product);
+
+    const prevRecord = await prisma.productSnapshot.findUnique({
+      where: { shop_productId: { shop, productId: numericId } },
+    });
+
+    const newSnap = {
+      ...buildSnapshotFromPayload(product),
+      metafields: prevRecord?.snapshotData?.metafields || [],
+    };
 
     const upsertData = {
       shop,
@@ -63,10 +71,6 @@ export const action = async ({ request }) => {
       isDeleted: false,
       deletedAt: null,
     };
-
-    const prevRecord = await prisma.productSnapshot.findUnique({
-      where: { shop_productId: { shop, productId: numericId } },
-    });
 
     if (!prevRecord) {
       await prisma.productSnapshot.create({ data: upsertData });

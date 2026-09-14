@@ -70,12 +70,12 @@ export default function RollbackHistory() {
                           {job.status}
                         </s-badge>
                         {job.incident && (
-                          <s-link url={`/app/incidents/${job.incident.id}`}>
+                          <s-link href={`/app/incidents/${job.incident.id}`}>
                             Incident: {job.incident.name}
                           </s-link>
                         )}
                         {job.restorePoint && (
-                          <s-link url={`/app/restore-points/${job.restorePoint.id}`}>
+                          <s-link href={`/app/restore-points/${job.restorePoint.id}`}>
                             Restore Point: {job.restorePoint.name}
                           </s-link>
                         )}
