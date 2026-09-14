@@ -1008,3 +1008,255 @@ export async function createMultiResourceRestorePoint({
     return { success: false, message: err?.message || "Failed to create restore point." };
   }
 }
+
+// ============================================================================
+// 8. ORDERS & CUSTOMERS DATA VAULT (Dispute Defense & Tax Audit Archive)
+// ============================================================================
+
+/**
+ * Synchronizes orders from Shopify Admin GraphQL into the encrypted OrderArchive vault
+ */
+export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
+  try {
+    let cursor = null;
+    let savedCount = 0;
+    let hasNextPage = true;
+
+    while (hasNextPage && savedCount < maxOrders) {
+      const fetchCount = Math.min(50, maxOrders - savedCount);
+      const res = await admin.graphql(
+        `#graphql
+        query getOrdersVault($first: Int!, $cursor: String) {
+          orders(first: $first, after: $cursor, sortKey: CREATED_AT, reverse: true) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              name
+              createdAt
+              processedAt
+              financialStatus
+              fulfillmentStatus
+              totalPriceSet {
+                shopMoney {
+                  amount
+                  currencyCode
+                }
+              }
+              customer {
+                id
+                displayName
+                email
+                phone
+              }
+              shippingAddress {
+                name
+                address1
+                city
+                province
+                country
+                zip
+              }
+              lineItems(first: 30) {
+                nodes {
+                  id
+                  title
+                  quantity
+                  sku
+                  originalUnitPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  variant {
+                    id
+                    title
+                    sku
+                  }
+                }
+              }
+            }
+          }
+        }`,
+        { variables: { first: fetchCount, cursor } }
+      );
+
+      const json = await res.json();
+      const orderNodes = json.data?.orders?.nodes || [];
+      if (orderNodes.length === 0) break;
+
+      for (const ord of orderNodes) {
+        const orderId = String(ord.id).replace("gid://shopify/Order/", "");
+        const customerName = ord.customer?.displayName || ord.shippingAddress?.name || "Guest";
+        const customerEmail = ord.customer?.email || null;
+        const totalPrice = ord.totalPriceSet?.shopMoney?.amount || "0.00";
+        const currency = ord.totalPriceSet?.shopMoney?.currencyCode || "USD";
+        const processedAt = ord.processedAt ? new Date(ord.processedAt) : ord.createdAt ? new Date(ord.createdAt) : new Date();
+
+        await prisma.orderArchive.upsert({
+          where: { shop_orderId: { shop, orderId } },
+          create: {
+            shop,
+            orderId,
+            orderNumber: ord.name || `#${orderId}`,
+            customerEmail,
+            customerName,
+            totalPrice,
+            currency,
+            financialStatus: ord.financialStatus,
+            fulfillmentStatus: ord.fulfillmentStatus,
+            processedAt,
+            orderData: ord,
+          },
+          update: {
+            customerEmail,
+            customerName,
+            totalPrice,
+            financialStatus: ord.financialStatus,
+            fulfillmentStatus: ord.fulfillmentStatus,
+            orderData: ord,
+          },
+        });
+        savedCount++;
+      }
+
+      hasNextPage = json.data?.orders?.pageInfo?.hasNextPage || false;
+      cursor = json.data?.orders?.pageInfo?.endCursor || null;
+    }
+
+    return { success: true, count: savedCount };
+  } catch (err) {
+    console.error("syncOrdersVault error:", err?.message || err);
+    return { success: false, message: err?.message || "Failed to sync orders." };
+  }
+}
+
+/**
+ * Synchronizes customer profiles from Shopify Admin GraphQL into CustomerArchive
+ */
+export async function syncCustomersVault(admin, shop, { maxCustomers = 100 } = {}) {
+  try {
+    let cursor = null;
+    let savedCount = 0;
+    let hasNextPage = true;
+
+    while (hasNextPage && savedCount < maxCustomers) {
+      const fetchCount = Math.min(50, maxCustomers - savedCount);
+      const res = await admin.graphql(
+        `#graphql
+        query getCustomersVault($first: Int!, $cursor: String) {
+          customers(first: $first, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              displayName
+              firstName
+              lastName
+              email
+              phone
+              numberOfOrders
+              amountSpent {
+                amount
+                currencyCode
+              }
+              tags
+              defaultAddress {
+                address1
+                city
+                province
+                country
+                zip
+              }
+            }
+          }
+        }`,
+        { variables: { first: fetchCount, cursor } }
+      );
+
+      const json = await res.json();
+      const custNodes = json.data?.customers?.nodes || [];
+      if (custNodes.length === 0) break;
+
+      for (const cust of custNodes) {
+        const customerId = String(cust.id).replace("gid://shopify/Customer/", "");
+        const ordersCount = cust.numberOfOrders ? parseInt(cust.numberOfOrders) : 0;
+        const totalSpent = cust.amountSpent?.amount || "0.00";
+
+        await prisma.customerArchive.upsert({
+          where: { shop_customerId: { shop, customerId } },
+          create: {
+            shop,
+            customerId,
+            email: cust.email || null,
+            firstName: cust.firstName || "",
+            lastName: cust.lastName || "",
+            phone: cust.phone || null,
+            ordersCount,
+            totalSpent,
+            customerData: cust,
+          },
+          update: {
+            email: cust.email || null,
+            firstName: cust.firstName || "",
+            lastName: cust.lastName || "",
+            phone: cust.phone || null,
+            ordersCount,
+            totalSpent,
+            customerData: cust,
+          },
+        });
+        savedCount++;
+      }
+
+      hasNextPage = json.data?.customers?.pageInfo?.hasNextPage || false;
+      cursor = json.data?.customers?.pageInfo?.endCursor || null;
+    }
+
+    return { success: true, count: savedCount };
+  } catch (err) {
+    console.error("syncCustomersVault error:", err?.message || err);
+    return { success: false, message: err?.message || "Failed to sync customers." };
+  }
+}
+
+/**
+ * Converts order archives into a clean, accountant-ready CSV string with Excel UTF-8 BOM
+ */
+export function generateOrdersCsv(orders = []) {
+  const headers = [
+    "Order Number",
+    "Processed At",
+    "Customer Name",
+    "Customer Email",
+    "Financial Status",
+    "Fulfillment Status",
+    "Total Price",
+    "Currency",
+    "Line Items Count",
+    "Shipping City",
+    "Shipping Country",
+  ];
+
+  const rows = orders.map((o) => {
+    const raw = o.orderData || {};
+    const itemsCount = raw.lineItems?.nodes?.length || 0;
+    const city = raw.shippingAddress?.city || "";
+    const country = raw.shippingAddress?.country || "";
+
+    return [
+      o.orderNumber,
+      o.processedAt ? new Date(o.processedAt).toISOString() : "",
+      o.customerName || "",
+      o.customerEmail || "",
+      o.financialStatus || "",
+      o.fulfillmentStatus || "",
+      o.totalPrice,
+      o.currency,
+      itemsCount,
+      city,
+      country,
+    ].map((val) => `"${String(val).replace(/"/g, '""')}"`);
+  });
+
+  return "\uFEFF" + [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+}

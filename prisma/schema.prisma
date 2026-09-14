@@ -163,19 +163,65 @@ model RestorePoint {
   pageCount       Int       @default(0)
   menuCount       Int       @default(0)
   articleCount    Int       @default(0)
+  orderCount      Int       @default(0)
+  customerCount   Int       @default(0)
   status          String    @db.VarChar(50)  @default("CREATING") // CREATING, READY, RESTORING
-  backupType      String    @default("FULL") @db.VarChar(50)      // FULL, PRODUCTS, THEMES, COLLECTIONS
+  backupType      String    @default("FULL") @db.VarChar(50)      // FULL, PRODUCTS, THEMES, COLLECTIONS, VAULT
   snapshotData    Json?     // array of product snapshots
   themeData       Json?     // active theme metadata & critical file contents
   collectionData  Json?     // array of collections & ruleSets
   pageData        Json?     // array of pages
   menuData        Json?     // array of navigation menus
   articleData     Json?     // array of blogs & articles
+  orderData       Json?     // array/snapshot of orders
+  customerData    Json?     // array/snapshot of customers
   rollbackJobs    RollbackJob[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   @@index([shop])
+}
+
+// Historical Orders Vault for Tax & Chargeback Protection
+model OrderArchive {
+  id                Int      @id @default(autoincrement())
+  shop              String   @db.VarChar(255)
+  orderId           String   @db.VarChar(255)
+  orderNumber       String   @db.VarChar(100)
+  customerEmail     String?  @db.VarChar(255)
+  customerName      String?  @db.VarChar(255)
+  totalPrice        String   @db.VarChar(50)
+  currency          String   @default("USD") @db.VarChar(10)
+  financialStatus   String?  @db.VarChar(50)
+  fulfillmentStatus String?  @db.VarChar(50)
+  processedAt       DateTime?
+  orderData         Json
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([shop, orderId])
+  @@index([shop, orderNumber])
+  @@index([shop, customerEmail])
+  @@index([shop, processedAt])
+}
+
+// Customers Archive for Contact & Profile Security
+model CustomerArchive {
+  id              Int      @id @default(autoincrement())
+  shop            String   @db.VarChar(255)
+  customerId      String   @db.VarChar(255)
+  email           String?  @db.VarChar(255)
+  firstName       String?  @db.VarChar(255)
+  lastName        String?  @db.VarChar(255)
+  phone           String?  @db.VarChar(100)
+  ordersCount     Int      @default(0)
+  totalSpent      String?  @db.VarChar(50)
+  customerData    Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([shop, customerId])
+  @@index([shop, email])
 }
 
 // App-level settings per shop

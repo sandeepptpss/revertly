@@ -7,7 +7,7 @@ name = "revertly"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,write_products,read_inventory,read_themes,write_themes,read_content,write_content,read_online_store_navigation,write_online_store_navigation"
+scopes = "read_products,write_products,read_inventory,read_themes,write_themes,read_content,write_content,read_online_store_navigation,write_online_store_navigation,read_orders,read_customers"
 
 [webhooks]
 api_version = "2026-10"
@@ -31,6 +31,18 @@ api_version = "2026-10"
   [[webhooks.subscriptions]]
   uri = "/webhooks/themes/publish"
   topics = [ "themes/publish" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = [ "shop/redact" ]
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
