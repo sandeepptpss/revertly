@@ -36,7 +36,7 @@ export const action = async ({ request }) => {
         isActive: true,
       },
     });
-    return { success: true, message: "Rule created." };
+    return { success: true, message: "Rule created successfully." };
   }
 
   if (intent === "toggle") {
@@ -77,165 +77,283 @@ export default function Rules() {
 
   return (
     <s-page heading="Detection Rules" inlineSize="large">
+
+      {/* ── Action Result Banner ── */}
       {result?.message && (
-        <s-section>
-          <s-banner tone={result.success ? "success" : "critical"}>
-            {result.message}
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>{result.success ? "✅" : "⚠️"}</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
-      {/* Create Rule Header / Form */}
-      <s-section>
-        {!showCreateForm ? (
-          <s-stack direction="inline" align="space-between" align-items="center">
-            <s-text tone="subdued">
-              Define automated rules to alert and prevent malicious or accidental catalog changes.
-            </s-text>
-            <s-button variant="primary" onClick={() => setShowCreateForm(true)}>
-              + Create New Rule
-            </s-button>
-          </s-stack>
-        ) : (
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-stack direction="inline" align="space-between" align-items="center">
-                  <s-text fontWeight="bold" variant="headingMd">Create New Detection Rule</s-text>
-                  <s-button variant="tertiary" onClick={() => setShowCreateForm(false)}>
-                    Close
-                  </s-button>
-                </s-stack>
-                <fetcher.Form method="POST" onSubmit={() => setShowCreateForm(false)}>
-                  <input type="hidden" name="intent" value="create" />
-                  <s-form-layout>
-                    <s-form-layout-group>
-                      <s-text-field
-                        name="name"
-                        label="Rule Name"
-                        placeholder="e.g. Critical Price Drop (>30%)"
-                        required
-                      />
-                    </s-form-layout-group>
-                    <s-form-layout-group condensed>
-                      <s-select name="field" label="Monitor Field">
-                        {FIELDS.map((f) => (
-                          <s-option key={f} value={f}>{f}</s-option>
-                        ))}
-                      </s-select>
-                      <s-select name="condition" label="Condition">
-                        {CONDITIONS.map((c) => (
-                          <s-option key={c} value={c}>{c.replace(/_/g, " ")}</s-option>
-                        ))}
-                      </s-select>
-                      <s-select name="severity" label="Severity">
-                        {SEVERITIES.map((s) => (
-                          <s-option key={s} value={s}>{s}</s-option>
-                        ))}
-                      </s-select>
-                    </s-form-layout-group>
-                    <s-form-layout-group condensed>
-                      <s-text-field
-                        name="threshold"
-                        label="Threshold (%)"
-                        type="number"
-                        placeholder="30"
-                        helpText="For percent-based conditions"
-                      />
-                      <s-text-field
-                        name="minProducts"
-                        label="Min Products"
-                        type="number"
-                        placeholder="20"
-                        helpText="Trigger when N+ products affected"
-                      />
-                      <s-text-field
-                        name="windowMinutes"
-                        label="Time Window (min)"
-                        type="number"
-                        placeholder="10"
-                        helpText="Within time window"
-                      />
-                    </s-form-layout-group>
-                    <s-stack direction="inline" gap="tight">
-                      <s-button submit variant="primary" {...(isSaving ? { loading: true } : {})}>
-                        Save Rule
-                      </s-button>
-                      <s-button variant="secondary" onClick={() => setShowCreateForm(false)}>
-                        Cancel
-                      </s-button>
-                    </s-stack>
-                  </s-form-layout>
-                </fetcher.Form>
-              </s-stack>
-            </s-box>
-          </s-card>
-        )}
-      </s-section>
+      {/* ── Top Header Hero ── */}
+      <div className="rv-hero-banner">
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+              Automated Anomaly &amp; Crash Detection
+            </strong>
+            <span className="rv-badge rv-badge-info">
+              {rules.length} Configured Rule{rules.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            Define automated guardrails to instantly detect unauthorized price cuts, bulk tag wipes, or accidental status changes.
+          </p>
+        </div>
 
-      {/* Rules List */}
-      <s-section heading={`${rules.length} detection rule${rules.length !== 1 ? "s" : ""}`}>
-        {rules.length === 0 ? (
-          <s-empty-state heading="No rules yet">
-            <s-paragraph>
-              Create detection rules to automatically identify suspicious product changes.
-            </s-paragraph>
-          </s-empty-state>
-        ) : (
-          <s-resource-list>
-            {rules.map((rule) => (
-              <s-resource-item key={rule.id} id={String(rule.id)}>
-                <s-stack direction="block" gap="tight">
-                  <s-stack direction="inline" align="space-between">
-                    <s-stack direction="block" gap="tight">
-                      <s-text fontWeight="bold" variant="bodyMd">{rule.name}</s-text>
-                      <s-stack direction="inline" gap="tight" blockAlign="center" wrap>
-                        <s-badge tone="info">{rule.field}</s-badge>
-                        <s-badge tone="attention">{rule.condition.replace(/_/g, " ")}{rule.threshold ? ` (${rule.threshold}%)` : ""}</s-badge>
-                        {rule.minProducts ? <s-badge tone="subdued">{rule.minProducts}+ products</s-badge> : null}
-                        {rule.windowMinutes ? <s-badge tone="subdued">within {rule.windowMinutes}m</s-badge> : null}
-                      </s-stack>
-                    </s-stack>
-                    <s-stack direction="inline" gap="tight">
-                      <s-badge
-                        tone={
-                          {
-                            CRITICAL: "critical",
-                            HIGH: "warning",
-                            MEDIUM: "attention",
-                            LOW: "success",
-                          }[rule.severity]
-                        }
+        <button
+          type="button"
+          onClick={() => setShowCreateForm(!showCreateForm)}
+          className="rv-btn rv-btn-primary"
+        >
+          {showCreateForm ? "✕ Close Form" : "+ Create New Rule"}
+        </button>
+      </div>
+
+      {/* ── Create Rule Form ── */}
+      {showCreateForm && (
+        <div className="rv-card" style={{ border: "2px solid #005bd3", marginBottom: "24px" }}>
+          <div className="rv-card-header" style={{ background: "var(--rv-info-surface)" }}>
+            <h3 className="rv-card-title" style={{ color: "#0045a1" }}>
+              <span>⚙️</span> New Catalog Anomaly Rule
+            </h3>
+            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+              Evaluated on every product update event
+            </span>
+          </div>
+
+          <div className="rv-card-body">
+            <fetcher.Form method="POST" onSubmit={() => setShowCreateForm(false)}>
+              <input type="hidden" name="intent" value="create" />
+
+              <div className="rv-form-field">
+                <label className="rv-form-label">Rule Name *</label>
+                <input
+                  type="text"
+                  name="name"
+                  required
+                  placeholder="e.g. Severe Price Crash (≥ 30% drop)"
+                  className="rv-input"
+                />
+                <span className="rv-form-help">Clear label describing the trigger condition.</span>
+              </div>
+
+              <div className="rv-form-grid" style={{ marginBottom: "16px" }}>
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Monitored Field</label>
+                  <select name="field" className="rv-select">
+                    {FIELDS.map((f) => (
+                      <option key={f} value={f}>{f}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Trigger Condition</label>
+                  <select name="condition" className="rv-select">
+                    {CONDITIONS.map((c) => (
+                      <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Severity Level</label>
+                  <select name="severity" className="rv-select" defaultValue="HIGH">
+                    {SEVERITIES.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="rv-form-grid" style={{ marginBottom: "20px" }}>
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Threshold (%)</label>
+                  <input
+                    type="number"
+                    name="threshold"
+                    placeholder="30"
+                    className="rv-input"
+                  />
+                  <span className="rv-form-help">For percentage increases or drops.</span>
+                </div>
+
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Min Affected Products</label>
+                  <input
+                    type="number"
+                    name="minProducts"
+                    placeholder="10"
+                    className="rv-input"
+                  />
+                  <span className="rv-form-help">Minimum products to trigger incident.</span>
+                </div>
+
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Time Window (Minutes)</label>
+                  <input
+                    type="number"
+                    name="windowMinutes"
+                    defaultValue="10"
+                    className="rv-input"
+                  />
+                  <span className="rv-form-help">Aggregation window in minutes.</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="rv-btn rv-btn-primary"
+                  style={{ fontWeight: 600, padding: "10px 20px" }}
+                >
+                  {isSaving ? "Saving Rule..." : "Save Detection Rule"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateForm(false)}
+                  className="rv-btn rv-btn-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </fetcher.Form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Rules List / Empty State ── */}
+      {rules.length === 0 ? (
+        <div className="rv-empty-state">
+          <div className="rv-empty-icon-circle">⚙️</div>
+          <div className="rv-empty-title">No Custom Detection Rules Configured</div>
+          <div className="rv-empty-desc">
+            Detection rules monitor for sudden price drops, unauthorized product deletions, or bulk changes by apps.
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowCreateForm(true)}
+            className="rv-btn rv-btn-primary"
+          >
+            + Create Your First Detection Rule
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          {rules.map((rule) => {
+            const isCritical = rule.severity === "CRITICAL";
+
+            return (
+              <div
+                key={rule.id}
+                className="rv-card"
+                style={{
+                  borderLeft: `4px solid ${
+                    isCritical ? "var(--rv-critical)" : rule.isActive ? "var(--rv-primary)" : "var(--rv-border)"
+                  }`,
+                  margin: 0,
+                  opacity: rule.isActive ? 1 : 0.75,
+                }}
+              >
+                <div
+                  className="rv-card-body"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "16px",
+                  }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                      <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+                        {rule.name}
+                      </strong>
+                      <span
+                        className={`rv-badge ${
+                          rule.severity === "CRITICAL"
+                            ? "rv-badge-critical"
+                            : rule.severity === "HIGH"
+                            ? "rv-badge-warning"
+                            : "rv-badge-info"
+                        }`}
                       >
                         {rule.severity}
-                      </s-badge>
-                      <s-badge tone={rule.isActive ? "success" : "subdued"}>
-                        {rule.isActive ? "Active" : "Inactive"}
-                      </s-badge>
-                    </s-stack>
-                  </s-stack>
-                  <s-stack direction="inline" gap="tight">
-                    <fetcher.Form method="POST">
+                      </span>
+                      <span className={`rv-badge ${rule.isActive ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                        {rule.isActive ? "Active" : "Disabled"}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "2px" }}>
+                      <span className="rv-badge rv-badge-neutral">Field: {rule.field}</span>
+                      <span className="rv-badge rv-badge-warning">
+                        Condition: {rule.condition.replace(/_/g, " ")}{rule.threshold ? ` (≥ ${rule.threshold}%)` : ""}
+                      </span>
+                      {rule.minProducts && (
+                        <span className="rv-badge rv-badge-neutral">{rule.minProducts}+ products</span>
+                      )}
+                      {rule.windowMinutes && (
+                        <span className="rv-badge rv-badge-neutral">within {rule.windowMinutes}m</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <fetcher.Form method="POST" style={{ display: "inline" }}>
                       <input type="hidden" name="intent" value="toggle" />
                       <input type="hidden" name="ruleId" value={rule.id} />
-                      <s-button submit variant="secondary">
-                        {rule.isActive ? "Disable" : "Enable"}
-                      </s-button>
+                      <button
+                        type="submit"
+                        className="rv-btn rv-btn-secondary"
+                        style={{ fontSize: "13px" }}
+                      >
+                        {rule.isActive ? "⏸️ Disable" : "▶️ Enable"}
+                      </button>
                     </fetcher.Form>
-                    <fetcher.Form method="POST">
+
+                    <fetcher.Form method="POST" style={{ display: "inline" }}>
                       <input type="hidden" name="intent" value="delete" />
                       <input type="hidden" name="ruleId" value={rule.id} />
-                      <s-button submit tone="critical" variant="tertiary">
+                      <button
+                        type="submit"
+                        onClick={(e) => {
+                          if (!confirm(`Delete rule "${rule.name}"?`)) {
+                            e.preventDefault();
+                          }
+                        }}
+                        className="rv-btn rv-btn-subtle"
+                        style={{ fontSize: "13px", color: "var(--rv-critical)" }}
+                      >
                         Delete
-                      </s-button>
+                      </button>
                     </fetcher.Form>
-                  </s-stack>
-                </s-stack>
-              </s-resource-item>
-            ))}
-          </s-resource-list>
-        )}
-      </s-section>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
     </s-page>
   );
 }

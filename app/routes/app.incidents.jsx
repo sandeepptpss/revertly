@@ -1,4 +1,4 @@
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -58,26 +58,6 @@ function formatTime(date) {
   return new Date(date).toLocaleString();
 }
 
-function severityTone(severity) {
-  const map = {
-    CRITICAL: "critical",
-    HIGH: "warning",
-    MEDIUM: "attention",
-    LOW: "success",
-  };
-  return map[severity] || "info";
-}
-
-function statusTone(status) {
-  const map = {
-    OPEN: "critical",
-    RESOLVED: "success",
-    IGNORED: "subdued",
-    ROLLED_BACK: "success",
-  };
-  return map[status] || "info";
-}
-
 export default function Incidents() {
   const { incidents, currentStatus } = useLoaderData();
   const fetcher = useFetcher();
@@ -97,100 +77,194 @@ export default function Incidents() {
 
   return (
     <s-page heading="Incidents" inlineSize="large">
-      {/* Action feedback banner */}
+
+      {/* ── Action Feedback Toast / Banner ── */}
       {result?.message && (
-        <s-section>
-          <s-banner tone={result.success ? "success" : "critical"}>
-            {result.message}
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>{result.success ? "✅" : "⚠️"}</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
-      {/* Status filter tabs */}
-      <s-section>
-        <s-stack direction="inline" gap="tight" wrap>
-          {statuses.map((s) => (
-            <s-button
-              key={s.id || "all"}
-              url={`/app/incidents${s.id ? `?status=${s.id}` : ""}`}
-              variant={s.id === currentStatus ? "primary" : "secondary"}
-            >
-              {s.label}
-            </s-button>
-          ))}
-        </s-stack>
-      </s-section>
+      {/* ── Filter Toolbar & Navigation ── */}
+      <div className="rv-filter-bar">
+        <div className="rv-pills-row" style={{ margin: 0 }}>
+          {statuses.map((s) => {
+            const isActive = s.id === currentStatus;
+            return (
+              <Link
+                key={s.id || "all"}
+                to={`/app/incidents${s.id ? `?status=${s.id}` : ""}`}
+                className={`rv-pill ${isActive ? "rv-pill-active" : ""}`}
+              >
+                {s.label}
+              </Link>
+            );
+          })}
+        </div>
 
-      <s-section heading={`${incidents.length} incidents`}>
-        {incidents.length === 0 ? (
-          <s-empty-state heading="No incidents">
-            <s-paragraph>
-              Incidents are created when suspicious or bulk product changes are
-              detected. Your store is safe!
-            </s-paragraph>
-          </s-empty-state>
-        ) : (
-          <s-resource-list>
-            {incidents.map((inc) => (
-              <s-resource-item key={inc.id} id={String(inc.id)}>
-                <s-stack direction="block" gap="tight">
-                  <s-stack direction="inline" align="space-between">
-                    <s-text fontWeight="bold">{inc.name}</s-text>
-                    <s-stack direction="inline" gap="tight">
-                      <s-badge tone={severityTone(inc.severity)}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
+            {incidents.length} incident{incidents.length !== 1 ? "s" : ""}
+          </span>
+          <Link to="/app/rules" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
+            ⚙️ Configure Rules →
+          </Link>
+        </div>
+      </div>
+
+      {/* ── Incidents List / Empty State ── */}
+      {incidents.length === 0 ? (
+        <div className="rv-empty-state">
+          <div className="rv-empty-icon-circle" style={{ background: "#e8f5e9", color: "#16a34a" }}>
+            🛡️
+          </div>
+          <div className="rv-empty-title">
+            {currentStatus ? `No ${currentStatus.toLowerCase()} incidents` : "All Clear — Zero Incidents Detected"}
+          </div>
+          <div className="rv-empty-desc">
+            {currentStatus
+              ? `There are currently no incidents matching the "${currentStatus}" filter.`
+              : "Revertly monitors your catalog 24/7. When unauthorized bulk changes, price crashes, or rule violations occur, they will be quarantined here for 1-click rollback."}
+          </div>
+          <div style={{ display: "flex", gap: "10px" }}>
+            {currentStatus ? (
+              <Link to="/app/incidents" className="rv-btn rv-btn-secondary">
+                View All Incidents
+              </Link>
+            ) : (
+              <Link to="/app/rules" className="rv-btn rv-btn-primary">
+                Review Detection Rules
+              </Link>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          {incidents.map((inc) => {
+            const isCritical = inc.severity === "CRITICAL";
+            const isOpen = inc.status === "OPEN";
+
+            return (
+              <div
+                key={inc.id}
+                className="rv-card"
+                style={{
+                  borderLeft: `4px solid ${
+                    isCritical ? "var(--rv-critical)" : isOpen ? "var(--rv-warning)" : "var(--rv-border)"
+                  }`,
+                  margin: 0,
+                }}
+              >
+                <div
+                  className="rv-card-body"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "16px",
+                  }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                      <Link
+                        to={`/app/incidents/${inc.id}`}
+                        style={{ fontSize: "15px", fontWeight: 700, color: "var(--rv-text)", textDecoration: "none" }}
+                      >
+                        {inc.name}
+                      </Link>
+                      <span
+                        className={`rv-badge ${
+                          inc.severity === "CRITICAL"
+                            ? "rv-badge-critical"
+                            : inc.severity === "HIGH"
+                            ? "rv-badge-warning"
+                            : "rv-badge-info"
+                        }`}
+                      >
                         {inc.severity}
-                      </s-badge>
-                      <s-badge tone={statusTone(inc.status)}>
+                      </span>
+                      <span
+                        className={`rv-badge ${
+                          inc.status === "OPEN"
+                            ? "rv-badge-critical"
+                            : inc.status === "RESOLVED"
+                            ? "rv-badge-success"
+                            : "rv-badge-neutral"
+                        }`}
+                      >
                         {inc.status}
-                      </s-badge>
-                    </s-stack>
-                  </s-stack>
-                  <s-stack direction="inline" gap="loose">
-                    <s-text tone="subdued">
-                      {formatTime(inc.createdAt)}
-                    </s-text>
-                    <s-text tone="subdued">
-                      {inc.affectedCount} product
-                      {inc.affectedCount !== 1 ? "s" : ""} affected
-                    </s-text>
-                    <s-text tone="subdued">
-                      {inc._count.changes} change events
-                    </s-text>
-                  </s-stack>
-                  {inc.status === "OPEN" && (
-                    <s-stack direction="inline" gap="tight">
-                      <s-button
-                        url={`/app/incidents/${inc.id}`}
-                        variant="primary"
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "14px", fontSize: "12px", color: "var(--rv-text-subdued)", flexWrap: "wrap" }}>
+                      <span>🕒 Detected: {formatTime(inc.createdAt)}</span>
+                      <span>·</span>
+                      <span>📦 <strong>{inc.affectedCount}</strong> product{inc.affectedCount !== 1 ? "s" : ""} affected</span>
+                      <span>·</span>
+                      <span>📋 <strong>{inc._count.changes}</strong> change events recorded</span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    {isOpen ? (
+                      <>
+                        <Link
+                          to={`/app/incidents/${inc.id}`}
+                          className="rv-btn rv-btn-critical"
+                          style={{ fontSize: "13px" }}
+                        >
+                          ⚡ Review &amp; Rollback
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => handleAction("resolve", inc.id)}
+                          className="rv-btn rv-btn-secondary"
+                          style={{ fontSize: "13px", color: "var(--rv-primary)" }}
+                        >
+                          ✓ Resolve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAction("ignore", inc.id)}
+                          className="rv-btn rv-btn-subtle"
+                          style={{ fontSize: "13px" }}
+                        >
+                          Ignore
+                        </button>
+                      </>
+                    ) : (
+                      <Link
+                        to={`/app/incidents/${inc.id}`}
+                        className="rv-btn rv-btn-secondary"
+                        style={{ fontSize: "13px" }}
                       >
-                        Review &amp; Rollback
-                      </s-button>
-                      <s-button
-                        onClick={() => handleAction("resolve", inc.id)}
-                        variant="secondary"
-                        tone="success"
-                      >
-                        Resolve
-                      </s-button>
-                      <s-button
-                        onClick={() => handleAction("ignore", inc.id)}
-                        variant="secondary"
-                      >
-                        Ignore
-                      </s-button>
-                    </s-stack>
-                  )}
-                  {inc.status !== "OPEN" && (
-                    <s-link href={`/app/incidents/${inc.id}`}>
-                      View details
-                    </s-link>
-                  )}
-                </s-stack>
-              </s-resource-item>
-            ))}
-          </s-resource-list>
-        )}
-      </s-section>
+                        Inspect Details →
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
     </s-page>
   );
 }

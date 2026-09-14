@@ -1,4 +1,4 @@
-import { useLoaderData, useRouteError } from "react-router";
+import { useLoaderData, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -66,319 +66,387 @@ function fieldLabel(fn) {
     .replace(/^./, (s) => s.toUpperCase());
 }
 
-function severityTone(s) {
-  return { CRITICAL: "critical", HIGH: "warning", MEDIUM: "attention", LOW: "success" }[s] || "info";
-}
-
-function statusTone(s) {
-  return { OPEN: "critical", RESOLVED: "success", IGNORED: "subdued", ROLLED_BACK: "success" }[s] || "info";
-}
-
 export default function Dashboard() {
   const { stats, recentChanges, recentIncidents, isInitialized } = useLoaderData();
 
   return (
     <s-page heading="Dashboard" inlineSize="large">
 
-      {/* ── Onboarding Banner (only when not initialized) ── */}
-      {!isInitialized && (
-        <s-section>
-          <s-banner
-            title="Welcome to Revertly!"
-            tone="info"
-            action={{ content: "Initialize Monitoring", url: "/app/initialize" }}
-          >
-            <s-paragraph>
-              Start monitoring your products in seconds. Click <strong>Initialize Monitoring</strong> to take
-              a snapshot of all current products — this gives Revertly a baseline to detect future changes.
-            </s-paragraph>
-          </s-banner>
-        </s-section>
-      )}
+      {/* ── Top Hero Protection Status ── */}
+      <div className="rv-hero-banner">
+        <div className="rv-hero-status">
+          <div
+            className="rv-pulse-indicator"
+            style={{ background: isInitialized ? "#008060" : "#d97706" }}
+          />
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
+              <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+                {isInitialized ? "Catalog Watchdog Active" : "Catalog Monitoring Setup Required"}
+              </strong>
+              <span className={`rv-badge ${isInitialized ? "rv-badge-success" : "rv-badge-warning"}`}>
+                {isInitialized ? "Protected" : "Action Needed"}
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+              {isInitialized
+                ? `${stats.totalProducts.toLocaleString()} products actively guarded against accidental price crashes, CSV mistakes, and deletions.`
+                : "Initialize your store baseline snapshot to start monitoring catalog changes and prevent revenue loss."}
+            </p>
+          </div>
+        </div>
 
-      {/* ── Alert: Open Incidents ── */}
-      {stats.openIncidents > 0 ? (
-        <s-section>
-          <s-banner
-            title={`${stats.openIncidents} open incident${stats.openIncidents > 1 ? "s" : ""} require your attention`}
-            tone="critical"
-            action={{ content: "Review Incidents", url: "/app/incidents" }}
-          >
-            <s-paragraph>
-              Suspicious product changes have been detected. Review and rollback if needed.
-            </s-paragraph>
-          </s-banner>
-        </s-section>
-      ) : isInitialized ? (
-        <s-section>
-          <s-banner
-            title="Catalog Watchdog Active — Store is Protected"
-            tone="success"
-          >
-            <s-paragraph>
-              All products are actively protected against accidental price crashes and bulk changes. Zero open incidents.
-            </s-paragraph>
-          </s-banner>
-        </s-section>
-      ) : null}
-
-
-
-      {/* ── Stats Cards ── */}
-      <s-section heading="Overview">
-        <s-columns columns="4">
-          {/* Monitored Products */}
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="tight">
-                <s-text tone="subdued">Monitored Products</s-text>
-                <s-heading level="2">
-                  {stats.totalProducts.toLocaleString()}
-                </s-heading>
-                <s-text tone="subdued">
-                  {isInitialized ? "Actively tracked" : "Not initialized yet"}
-                </s-text>
-                {!isInitialized && (
-                  <s-link href="/app/initialize">Initialize now →</s-link>
-                )}
-              </s-stack>
-            </s-box>
-          </s-card>
-
-          {/* Changes Today */}
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="tight">
-                <s-text tone="subdued">Changes Today</s-text>
-                <s-heading level="2">
-                  {stats.todayChanges.toLocaleString()}
-                </s-heading>
-                <s-text tone="subdued">
-                  {stats.todayChanges === 0 ? "No changes in last 24h" : "In the last 24 hours"}
-                </s-text>
-                <s-link href="/app/activity">View activity →</s-link>
-              </s-stack>
-            </s-box>
-          </s-card>
-
-          {/* Open Incidents */}
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="tight">
-                <s-text tone="subdued">Open Incidents</s-text>
-                <s-heading level="2">
-                  {stats.openIncidents.toLocaleString()}
-                </s-heading>
-                <s-text tone={stats.openIncidents > 0 ? "critical" : "subdued"}>
-                  {stats.openIncidents > 0 ? "Requires attention" : "All clear"}
-                </s-text>
-                <s-link href="/app/incidents">View incidents →</s-link>
-              </s-stack>
-            </s-box>
-          </s-card>
-
-          {/* Restore Points */}
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="tight">
-                <s-text tone="subdued">Restore Points</s-text>
-                <s-heading level="2">
-                  {stats.readyRestorePoints.toLocaleString()}
-                </s-heading>
-                <s-text tone="subdued">
-                  {stats.readyRestorePoints === 0 ? "None created yet" : "Ready to restore"}
-                </s-text>
-                <s-link href="/app/restore-points">
-                  {stats.readyRestorePoints === 0 ? "Create one →" : "Manage →"}
-                </s-link>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-columns>
-      </s-section>
-
-      {/* ── Two Column Layout: Incidents + Activity ── */}
-      <s-section>
-        <s-columns columns="2">
-          {/* Recent Incidents */}
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-stack direction="inline" align="space-between">
-                  <s-text fontWeight="bold" variant="headingMd">
-                    Recent Incidents
-                  </s-text>
-                  <s-link href="/app/incidents">View all</s-link>
-                </s-stack>
-
-                {recentIncidents.length === 0 ? (
-                  <s-box padding="base" borderWidth="base" borderRadius="base" borderColor="subdued" background="surface-secondary">
-                    <s-stack direction="block" gap="tight" align="center">
-                      <s-text variant="bodySm" fontWeight="bold">🛡️ Shield Active &bull; Zero Incidents</s-text>
-                      <s-text tone="subdued" variant="bodyXs">
-                        Your store is safe! Suspicious price drops and mass updates will be flagged here immediately.
-                      </s-text>
-                    </s-stack>
-                  </s-box>
-                ) : (
-                  <s-stack direction="block" gap="tight">
-                    {recentIncidents.map((inc) => (
-                      <s-box
-                        key={inc.id}
-                        padding="tight"
-                        borderWidth="base"
-                        borderRadius="base"
-                      >
-                        <s-stack direction="block" gap="tight">
-                          <s-stack direction="inline" align="space-between">
-                            <s-text fontWeight="semibold">{inc.name}</s-text>
-                            <s-badge tone={statusTone(inc.status)}>
-                              {inc.status}
-                            </s-badge>
-                          </s-stack>
-                          <s-stack direction="inline" gap="tight">
-                            <s-badge tone={severityTone(inc.severity)}>
-                              {inc.severity}
-                            </s-badge>
-                            <s-text tone="subdued">
-                              {inc.affectedCount} product{inc.affectedCount !== 1 ? "s" : ""}
-                            </s-text>
-                            <s-text tone="subdued">·</s-text>
-                            <s-text tone="subdued">{timeAgo(inc.createdAt)}</s-text>
-                          </s-stack>
-                          {inc.status === "OPEN" && (
-                            <s-link href={`/app/incidents/${inc.id}`}>
-                              Review &amp; Rollback →
-                            </s-link>
-                          )}
-                        </s-stack>
-                      </s-box>
-                    ))}
-                  </s-stack>
-                )}
-              </s-stack>
-            </s-box>
-          </s-card>
-
-          {/* Recent Activity */}
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-stack direction="inline" align="space-between">
-                  <s-text fontWeight="bold" variant="headingMd">
-                    Recent Activity
-                  </s-text>
-                  <s-link href="/app/activity">View all</s-link>
-                </s-stack>
-
-                {recentChanges.length === 0 ? (
-                  <s-box padding="base" borderWidth="base" borderRadius="base" borderColor="subdued" background="surface-secondary">
-                    <s-stack direction="block" gap="tight" align="center">
-                      <s-text variant="bodySm" fontWeight="bold">📡 Listening for Updates</s-text>
-                      <s-text tone="subdued" variant="bodyXs">
-                        Product updates, price changes, and deletions will appear in real time.
-                      </s-text>
-                    </s-stack>
-                  </s-box>
-                ) : (
-                  <s-stack direction="block" gap="tight">
-                    {recentChanges.map((c) => (
-                      <s-box
-                        key={c.id}
-                        padding="tight"
-                        borderWidth="base"
-                        borderRadius="base"
-                      >
-                        <s-stack direction="inline" align="space-between">
-                          <s-stack direction="block" gap="extraTight">
-                            <s-text fontWeight="semibold">{c.productTitle}</s-text>
-                            <s-text tone="subdued">
-                              {fieldLabel(c.fieldName)}:{" "}
-                              <span style={{ textDecoration: "line-through" }}>
-                                {c.oldValue || "—"}
-                              </span>{" "}
-                              → <strong>{c.newValue || "—"}</strong>
-                            </s-text>
-                          </s-stack>
-                          <s-text tone="subdued">{timeAgo(c.changedAt)}</s-text>
-                        </s-stack>
-                      </s-box>
-                    ))}
-                  </s-stack>
-                )}
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-columns>
-      </s-section>
-
-      {/* ── Quick Actions Aside ── */}
-      <s-section slot="aside" heading="Quick Actions">
-        <s-stack direction="block" gap="tight">
-          <s-button url="/app/restore-points" variant="primary" fullWidth>
-            + Create Restore Point
-          </s-button>
-          <s-button url="/app/incidents" fullWidth>
-            View Incidents
-            {stats.openIncidents > 0 && ` (${stats.openIncidents} open)`}
-          </s-button>
-          <s-button url="/app/rules" fullWidth>
-            Manage Detection Rules
-          </s-button>
-          <s-button url="/app/activity" fullWidth>
-            Browse Activity Log
-          </s-button>
-          <s-button url="/app/rollback-history" fullWidth>
-            Rollback History
-          </s-button>
-        </s-stack>
-      </s-section>
-
-      {/* ── System Status Aside ── */}
-      <s-section slot="aside" heading="System Status">
-        <s-stack direction="block" gap="tight">
-          <s-stack direction="inline" gap="tight">
-            <s-badge tone={isInitialized ? "success" : "warning"}>
-              {isInitialized ? "Monitoring Active" : "Not Initialized"}
-            </s-badge>
-          </s-stack>
-          <s-stack direction="inline" gap="tight">
-            <s-badge tone="success">Webhooks Registered</s-badge>
-          </s-stack>
-          <s-stack direction="inline" gap="tight">
-            <s-badge tone="success">Database Connected</s-badge>
-          </s-stack>
-          {stats.totalRollbacks > 0 && (
-            <s-text tone="subdued">
-              {stats.totalRollbacks} successful rollback{stats.totalRollbacks !== 1 ? "s" : ""} completed
-            </s-text>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {!isInitialized ? (
+            <Link to="/app/initialize" className="rv-btn rv-btn-primary">
+              ⚡ Initialize Monitoring Now
+            </Link>
+          ) : (
+            <>
+              <Link to="/app/restore-points" className="rv-btn rv-btn-primary">
+                + Create Restore Point
+              </Link>
+              <Link to="/app/vault" className="rv-btn rv-btn-secondary">
+                Orders Vault
+              </Link>
+            </>
           )}
-        </s-stack>
-      </s-section>
+        </div>
+      </div>
 
-      {/* ── Getting Started Aside (only when not initialized) ── */}
-      {!isInitialized && (
-        <s-section slot="aside" heading="Getting Started">
-          <s-stack direction="block" gap="tight">
-            <s-stack direction="inline" gap="tight">
-              <s-text>1.</s-text>
-              <s-link href="/app/initialize">Initialize product snapshots</s-link>
-            </s-stack>
-            <s-stack direction="inline" gap="tight">
-              <s-text>2.</s-text>
-              <s-link href="/app/rules">Set up detection rules</s-link>
-            </s-stack>
-            <s-stack direction="inline" gap="tight">
-              <s-text>3.</s-text>
-              <s-link href="/app/restore-points">Create a restore point</s-link>
-            </s-stack>
-            <s-stack direction="inline" gap="tight">
-              <s-text>4.</s-text>
-              <s-link href="/app/settings">Configure alert email</s-link>
-            </s-stack>
-          </s-stack>
-        </s-section>
+      {/* ── Open Incidents Warning Banner ── */}
+      {stats.openIncidents > 0 && (
+        <div
+          style={{
+            background: "var(--rv-critical-surface)",
+            border: "1px solid var(--rv-critical-border)",
+            borderRadius: "var(--rv-radius-md)",
+            padding: "16px 20px",
+            marginBottom: "20px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "12px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <span style={{ fontSize: "22px" }}>⚠️</span>
+            <div>
+              <strong style={{ color: "var(--rv-critical)", fontSize: "14px" }}>
+                {stats.openIncidents} open incident{stats.openIncidents > 1 ? "s" : ""} require your attention
+              </strong>
+              <p style={{ margin: "2px 0 0", fontSize: "13px", color: "#771919" }}>
+                Suspicious product changes or sudden price drops have been flagged. Review and rollback immediately.
+              </p>
+            </div>
+          </div>
+          <Link to="/app/incidents" className="rv-btn rv-btn-critical">
+            Review Incidents →
+          </Link>
+        </div>
       )}
+
+      {/* ── 4 KPI Stats Grid ── */}
+      <div className="rv-stat-grid">
+        {/* Monitored Products */}
+        <div className="rv-stat-card">
+          <div>
+            <div className="rv-stat-card-top">
+              <span className="rv-stat-label">Monitored Products</span>
+              <div className="rv-stat-icon-wrapper rv-stat-icon-blue">📦</div>
+            </div>
+            <div className="rv-stat-number">{stats.totalProducts.toLocaleString()}</div>
+            <div className="rv-stat-subtext">
+              <span
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "50%",
+                  background: isInitialized ? "#10b981" : "#f59e0b",
+                  display: "inline-block",
+                }}
+              />
+              {isInitialized ? "Real-time tracking active" : "Baseline not initialized"}
+            </div>
+          </div>
+          <Link
+            to={isInitialized ? "/app/initialize" : "/app/initialize"}
+            className="rv-stat-link"
+          >
+            {isInitialized ? "Sync snapshots →" : "Initialize now →"}
+          </Link>
+        </div>
+
+        {/* Changes Today */}
+        <div className="rv-stat-card">
+          <div>
+            <div className="rv-stat-card-top">
+              <span className="rv-stat-label">Changes Today</span>
+              <div className="rv-stat-icon-wrapper rv-stat-icon-purple">🕒</div>
+            </div>
+            <div className="rv-stat-number">{stats.todayChanges.toLocaleString()}</div>
+            <div className="rv-stat-subtext">
+              {stats.todayChanges === 0 ? "No product edits in 24h" : "Logged in the last 24 hours"}
+            </div>
+          </div>
+          <Link to="/app/activity" className="rv-stat-link">
+            View activity log →
+          </Link>
+        </div>
+
+        {/* Open Incidents */}
+        <div className="rv-stat-card">
+          <div>
+            <div className="rv-stat-card-top">
+              <span className="rv-stat-label">Open Incidents</span>
+              <div
+                className={`rv-stat-icon-wrapper ${stats.openIncidents > 0 ? "rv-stat-icon-red" : "rv-stat-icon-green"}`}
+              >
+                {stats.openIncidents > 0 ? "🚨" : "🛡️"}
+              </div>
+            </div>
+            <div
+              className="rv-stat-number"
+              style={{ color: stats.openIncidents > 0 ? "var(--rv-critical)" : "inherit" }}
+            >
+              {stats.openIncidents.toLocaleString()}
+            </div>
+            <div className="rv-stat-subtext">
+              {stats.openIncidents > 0 ? "Requires your review" : "Store catalog is all clear"}
+            </div>
+          </div>
+          <Link to="/app/incidents" className="rv-stat-link">
+            {stats.openIncidents > 0 ? "Resolve incidents →" : "View incidents →"}
+          </Link>
+        </div>
+
+        {/* Restore Points */}
+        <div className="rv-stat-card">
+          <div>
+            <div className="rv-stat-card-top">
+              <span className="rv-stat-label">Restore Points</span>
+              <div className="rv-stat-icon-wrapper rv-stat-icon-green">💾</div>
+            </div>
+            <div className="rv-stat-number">{stats.readyRestorePoints.toLocaleString()}</div>
+            <div className="rv-stat-subtext">
+              {stats.readyRestorePoints === 0 ? "None created yet" : "Ready for 1-click restore"}
+            </div>
+          </div>
+          <Link to="/app/restore-points" className="rv-stat-link">
+            {stats.readyRestorePoints === 0 ? "Create your first →" : "Manage backups →"}
+          </Link>
+        </div>
+      </div>
+
+      {/* ── Quick Action Shortcuts ── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          flexWrap: "wrap",
+          marginBottom: "24px",
+        }}
+      >
+        <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--rv-text-subdued)", textTransform: "uppercase", letterSpacing: "0.5px", marginRight: "6px" }}>
+          Quick Navigation:
+        </span>
+        <Link to="/app/activity" className="rv-pill">
+          📋 Activity Log
+        </Link>
+        <Link to="/app/incidents" className="rv-pill">
+          🚨 Incidents
+        </Link>
+        <Link to="/app/restore-points" className="rv-pill">
+          💾 Restore Points
+        </Link>
+        <Link to="/app/vault" className="rv-pill">
+          🏛️ Data Vault
+        </Link>
+        <Link to="/app/rules" className="rv-pill">
+          ⚙️ Detection Rules
+        </Link>
+        <Link to="/app/rollback-history" className="rv-pill">
+          ⏪ Rollback History
+        </Link>
+        <Link to="/app/settings" className="rv-pill">
+          🔧 Settings
+        </Link>
+      </div>
+
+      {/* ── Main Two Column Feed: Recent Incidents + Recent Activity ── */}
+      <div className="rv-two-col" style={{ marginBottom: "24px" }}>
+        
+        {/* Left: Recent Incidents */}
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>🚨</span> Recent Incidents
+            </h3>
+            <Link to="/app/incidents" style={{ fontSize: "13px", color: "var(--rv-info)", fontWeight: 500, textDecoration: "none" }}>
+              View all →
+            </Link>
+          </div>
+
+          <div>
+            {recentIncidents.length === 0 ? (
+              <div className="rv-empty-state" style={{ border: "none", margin: 0, padding: "36px 20px" }}>
+                <div className="rv-empty-icon-circle" style={{ background: "#e8f5e9", color: "#16a34a" }}>
+                  🛡️
+                </div>
+                <div className="rv-empty-title">Zero Incidents Detected</div>
+                <div className="rv-empty-desc">
+                  Your store is completely protected. Any bulk changes or steep price drops will be flagged here immediately.
+                </div>
+                <Link to="/app/rules" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
+                  Configure Detection Rules
+                </Link>
+              </div>
+            ) : (
+              recentIncidents.map((inc) => (
+                <div key={inc.id} className="rv-item-card">
+                  <div className="rv-item-main">
+                    <div className="rv-item-title">
+                      <span>{inc.name}</span>
+                      <span
+                        className={`rv-badge ${
+                          inc.status === "OPEN"
+                            ? "rv-badge-critical"
+                            : inc.status === "RESOLVED"
+                            ? "rv-badge-success"
+                            : "rv-badge-neutral"
+                        }`}
+                      >
+                        {inc.status}
+                      </span>
+                    </div>
+                    <div className="rv-item-meta">
+                      <span
+                        className={`rv-badge ${
+                          inc.severity === "CRITICAL"
+                            ? "rv-badge-critical"
+                            : inc.severity === "HIGH"
+                            ? "rv-badge-warning"
+                            : "rv-badge-info"
+                        }`}
+                      >
+                        {inc.severity}
+                      </span>
+                      <span>{inc.affectedCount} product{inc.affectedCount !== 1 ? "s" : ""} affected</span>
+                      <span>·</span>
+                      <span>{timeAgo(inc.createdAt)}</span>
+                    </div>
+                  </div>
+                  <div>
+                    {inc.status === "OPEN" ? (
+                      <Link to={`/app/incidents/${inc.id}`} className="rv-btn rv-btn-critical" style={{ fontSize: "12px", padding: "6px 12px" }}>
+                        Review &amp; Rollback
+                      </Link>
+                    ) : (
+                      <Link to={`/app/incidents/${inc.id}`} className="rv-btn rv-btn-secondary" style={{ fontSize: "12px", padding: "6px 12px" }}>
+                        Details
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Right: Recent Activity */}
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>📋</span> Recent Activity Log
+            </h3>
+            <Link to="/app/activity" style={{ fontSize: "13px", color: "var(--rv-info)", fontWeight: 500, textDecoration: "none" }}>
+              View all →
+            </Link>
+          </div>
+
+          <div>
+            {recentChanges.length === 0 ? (
+              <div className="rv-empty-state" style={{ border: "none", margin: 0, padding: "36px 20px" }}>
+                <div className="rv-empty-icon-circle" style={{ background: "#f0fdf4", color: "#008060" }}>
+                  📡
+                </div>
+                <div className="rv-empty-title">Listening for Updates</div>
+                <div className="rv-empty-desc">
+                  When you or an app edit product prices, titles, or inventory, change records will appear here in real time.
+                </div>
+                <Link to="/app/activity" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
+                  Open Activity Stream
+                </Link>
+              </div>
+            ) : (
+              recentChanges.map((c) => (
+                <div key={c.id} className="rv-item-card">
+                  <div className="rv-item-main" style={{ maxWidth: "70%" }}>
+                    <div className="rv-item-title" style={{ fontSize: "13px", fontWeight: 600 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {c.productTitle}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "2px" }}>
+                      <span className="rv-badge rv-badge-neutral" style={{ fontSize: "11px" }}>
+                        {fieldLabel(c.fieldName)}
+                      </span>
+                      <span className="rv-diff-old">{c.oldValue || "—"}</span>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>→</span>
+                      <span className="rv-diff-new">{c.newValue || "—"}</span>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", whiteSpace: "nowrap" }}>
+                    {timeAgo(c.changedAt)}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+      </div>
+
+      {/* ── System Status & Protection Guardrails ── */}
+      <div className="rv-card">
+        <div className="rv-card-header">
+          <h3 className="rv-card-title">
+            <span>⚙️</span> System Guardrails &amp; Protection Status
+          </h3>
+          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+            Shop: <code>{stats.shop || "Connected"}</code>
+          </span>
+        </div>
+        <div className="rv-card-body" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981" }} />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>Webhooks Active</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981" }} />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>Prisma Database Connected</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981" }} />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>Automated Snapshots Running</span>
+            </div>
+            {stats.totalRollbacks > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <span className="rv-badge rv-badge-success">
+                  {stats.totalRollbacks} rollbacks performed safely
+                </span>
+              </div>
+            )}
+          </div>
+          <Link to="/app/settings" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
+            Adjust Protection Settings →
+          </Link>
+        </div>
+      </div>
+
     </s-page>
   );
 }

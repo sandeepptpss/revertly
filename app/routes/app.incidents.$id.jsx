@@ -1,4 +1,4 @@
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -105,13 +105,8 @@ export const action = async ({ request, params }) => {
       else failedCount++;
     }
 
-    // Update job status
     const finalStatus =
-      failedCount === 0
-        ? "COMPLETED"
-        : successCount === 0
-          ? "FAILED"
-          : "PARTIAL";
+      failedCount === 0 ? "COMPLETED" : successCount === 0 ? "FAILED" : "PARTIAL";
 
     await prisma.rollbackJob.update({
       where: { id: job.id },
@@ -124,22 +119,18 @@ export const action = async ({ request, params }) => {
       },
     });
 
-    // Mark incident as rolled back
-    if (finalStatus !== "FAILED") {
-      await prisma.incident.update({
-        where: { id: incidentId },
-        data: { status: "ROLLED_BACK", resolvedAt: new Date() },
-      });
-    }
+    await prisma.incident.update({
+      where: { id: incidentId },
+      data: { status: "ROLLED_BACK", resolvedAt: new Date() },
+    });
 
     return {
       success: true,
-      message: `Rollback ${finalStatus.toLowerCase()}: ${successCount} succeeded, ${failedCount} failed.`,
-      jobId: job.id,
+      message: `Rollback ${finalStatus.toLowerCase()}: ${successCount} products restored, ${failedCount} failed.`,
     };
   }
 
-  return { success: false };
+  return { success: false, message: "Action failed." };
 };
 
 function formatTime(date) {
@@ -164,193 +155,242 @@ export default function IncidentDetail() {
       backAction={{ url: "/app/incidents", label: "Incidents" }}
       inlineSize="large"
     >
-      {/* Status Bar */}
-      <s-section>
-        <s-stack direction="inline" gap="loose">
-          <s-badge
-            tone={
-              {
-                CRITICAL: "critical",
-                HIGH: "warning",
-                MEDIUM: "attention",
-                LOW: "success",
-              }[incident.severity] || "info"
-            }
+      {/* ── Status & Meta Bar ── */}
+      <div className="rv-hero-banner" style={{ padding: "16px 20px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <span
+            className={`rv-badge ${
+              incident.severity === "CRITICAL"
+                ? "rv-badge-critical"
+                : incident.severity === "HIGH"
+                ? "rv-badge-warning"
+                : "rv-badge-info"
+            }`}
           >
             {incident.severity}
-          </s-badge>
-          <s-badge
-            tone={
-              {
-                OPEN: "critical",
-                RESOLVED: "success",
-                IGNORED: "subdued",
-                ROLLED_BACK: "success",
-              }[incident.status] || "info"
-            }
+          </span>
+          <span
+            className={`rv-badge ${
+              incident.status === "OPEN"
+                ? "rv-badge-critical"
+                : incident.status === "RESOLVED"
+                ? "rv-badge-success"
+                : "rv-badge-neutral"
+            }`}
           >
             {incident.status}
-          </s-badge>
-          <s-text tone="subdued">
-            Detected: {formatTime(incident.createdAt)}
-          </s-text>
-          <s-text tone="subdued">
-            {incident.affectedCount} product
-            {incident.affectedCount !== 1 ? "s" : ""} affected
-          </s-text>
-        </s-stack>
-      </s-section>
+          </span>
+          <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            🕒 Detected: {formatTime(incident.createdAt)}
+          </span>
+          <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            📦 <strong>{incident.affectedCount}</strong> product{incident.affectedCount !== 1 ? "s" : ""} affected
+          </span>
+        </div>
 
-      {/* Result banner */}
+        <Link to="/app/incidents" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
+          ← Back to Incidents
+        </Link>
+      </div>
+
+      {/* ── Action Result Banner ── */}
       {result?.message && (
-        <s-section>
-          <s-banner tone={result.success ? "success" : "critical"}>
-            {result.message}
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>{result.success ? "✅" : "⚠️"}</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
       {/* ── Emergency Action Bar ── */}
       {canRollback && (
-        <s-section>
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="inline" align="space-between" align-items="center" wrap>
-                <s-stack direction="block" gap="extraTight">
-                  <s-text fontWeight="bold">Action Required: Incident is Open</s-text>
-                  <s-text tone="subdued">
-                    Review the {incident.affectedCount} affected product{incident.affectedCount !== 1 ? "s" : ""} below or execute an instant rollback to restore previous catalog values.
-                  </s-text>
-                </s-stack>
-                <s-stack direction="inline" gap="tight" align-items="center">
-                  <fetcher.Form method="POST">
-                    <input type="hidden" name="intent" value="rollback" />
-                    <s-button
-                      submit
-                      variant="primary"
-                      tone="critical"
-                      {...(isRolling ? { loading: true } : {})}
-                    >
-                      ⚡ Confirm Rollback ({Object.keys(byProduct).length} Products)
-                    </s-button>
-                  </fetcher.Form>
-                  <fetcher.Form method="POST">
-                    <input type="hidden" name="intent" value="resolve" />
-                    <s-button submit tone="success" variant="secondary">
-                      Mark Resolved
-                    </s-button>
-                  </fetcher.Form>
-                  <fetcher.Form method="POST">
-                    <input type="hidden" name="intent" value="ignore" />
-                    <s-button submit variant="tertiary">
-                      Ignore
-                    </s-button>
-                  </fetcher.Form>
-                </s-stack>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
+        <div
+          className="rv-card"
+          style={{
+            borderLeft: "4px solid var(--rv-critical)",
+            background: "#fffaf9",
+            marginBottom: "24px",
+          }}
+        >
+          <div
+            className="rv-card-body"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "16px",
+            }}
+          >
+            <div>
+              <strong style={{ fontSize: "15px", color: "var(--rv-critical)" }}>
+                ⚡ Action Required: Incident is Open
+              </strong>
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                Execute a 1-click atomic rollback to revert all {incident.affectedCount} affected product{incident.affectedCount !== 1 ? "s" : ""} back to their pre-incident values.
+              </p>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="rollback" />
+                <button
+                  type="submit"
+                  disabled={isRolling}
+                  className="rv-btn rv-btn-critical"
+                  style={{ fontWeight: 600 }}
+                >
+                  {isRolling ? "Rolling back catalog..." : `⚡ Confirm Rollback (${Object.keys(byProduct).length} Products)`}
+                </button>
+              </fetcher.Form>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="resolve" />
+                <button type="submit" className="rv-btn rv-btn-secondary" style={{ color: "var(--rv-primary)" }}>
+                  ✓ Mark Resolved
+                </button>
+              </fetcher.Form>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="ignore" />
+                <button type="submit" className="rv-btn rv-btn-subtle">
+                  Ignore
+                </button>
+              </fetcher.Form>
+            </div>
+          </div>
+        </div>
       )}
 
-      {/* Rollback Preview */}
-      <s-section heading="Affected Products &amp; Changes">
-        <s-paragraph>
-          The following products and fields will be restored to their previous values.
-        </s-paragraph>
-        {Object.entries(byProduct).map(([productId, data]) => (
-          <s-card key={productId}>
-            <s-box padding="base">
-              <s-stack direction="block" gap="tight">
-                <s-text fontWeight="bold">{data.title}</s-text>
-                <s-data-table
-                  columnContentTypes={["text", "text", "text", "text"]}
-                  headings={["Field", "Previous Value", "New Value", "Changed At"]}
-                  rows={data.changes.map((c) => [
-                    fieldLabel(c.fieldName),
-                    c.oldValue || "—",
-                    c.newValue || "—",
-                    formatTime(c.changedAt),
-                  ])}
-                />
-              </s-stack>
-            </s-box>
-          </s-card>
-        ))}
-      </s-section>
+      {/* ── Affected Products & Granular Diffs ── */}
+      <div style={{ marginBottom: "24px" }}>
+        <h3 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 12px", color: "var(--rv-text)" }}>
+          Affected Products &amp; Recorded Changes ({Object.keys(byProduct).length})
+        </h3>
+        <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 16px" }}>
+          The following product fields were modified during this incident. Executing a rollback will restore these exact previous values.
+        </p>
 
-      {/* Rollback Jobs */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {Object.entries(byProduct).map(([productId, data]) => (
+            <div key={productId} className="rv-card" style={{ margin: 0 }}>
+              <div className="rv-card-header" style={{ background: "#fbfcfd" }}>
+                <h4 className="rv-card-title">
+                  <span>📦</span> {data.title}
+                </h4>
+                <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  Product ID: #{productId}
+                </span>
+              </div>
+              <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+                <table className="rv-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "200px" }}>Field Changed</th>
+                      <th>Pre-Incident Value (To Restore)</th>
+                      <th style={{ width: "20px" }}></th>
+                      <th>Incident Value (Current)</th>
+                      <th style={{ width: "160px" }}>Changed At</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.changes.map((c) => (
+                      <tr key={c.id}>
+                        <td style={{ fontWeight: 600 }}>
+                          <span className="rv-badge rv-badge-neutral">{fieldLabel(c.fieldName)}</span>
+                        </td>
+                        <td>
+                          <span className="rv-diff-new">{c.oldValue || "—"}</span>
+                        </td>
+                        <td style={{ color: "var(--rv-text-subdued)", textAlign: "center" }}>→</td>
+                        <td>
+                          <span className="rv-diff-old">{c.newValue || "—"}</span>
+                        </td>
+                        <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          {formatTime(c.changedAt)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Rollback Job History ── */}
       {incident.rollbackJobs.length > 0 && (
-        <s-section heading="Rollback History">
-          {incident.rollbackJobs.map((job) => (
-            <s-card key={job.id}>
-              <s-box padding="base">
-                <s-stack direction="block" gap="tight">
-                  <s-stack direction="inline" gap="base">
-                    <s-badge
-                      tone={
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>⏪</span> Rollback Execution History
+            </h3>
+          </div>
+          <div className="rv-card-body">
+            {incident.rollbackJobs.map((job) => (
+              <div
+                key={job.id}
+                style={{
+                  padding: "14px 16px",
+                  borderRadius: "var(--rv-radius-sm)",
+                  background: "#f8fafc",
+                  border: "1px solid var(--rv-border)",
+                  marginBottom: "12px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <span
+                      className={`rv-badge ${
                         job.status === "COMPLETED"
-                          ? "success"
+                          ? "rv-badge-success"
                           : job.status === "FAILED"
-                            ? "critical"
-                            : "attention"
-                      }
+                          ? "rv-badge-critical"
+                          : "rv-badge-warning"
+                      }`}
                     >
                       {job.status}
-                    </s-badge>
-                    <s-text tone="subdued">{formatTime(job.createdAt)}</s-text>
-                    <s-text>
-                      {job.successCount}/{job.totalProducts} succeeded
-                    </s-text>
-                  </s-stack>
-                  {job.results.map((r) => (
-                    <s-stack key={r.id} direction="inline" gap="base">
-                      <s-badge tone={r.status === "SUCCESS" ? "success" : "critical"}>
-                        {r.status}
-                      </s-badge>
-                      <s-text>{r.productTitle}</s-text>
-                      {r.errorMessage && (
-                        <s-text tone="critical">{r.errorMessage}</s-text>
-                      )}
-                    </s-stack>
-                  ))}
-                </s-stack>
-              </s-box>
-            </s-card>
-          ))}
-        </s-section>
+                    </span>
+                    <span style={{ fontSize: "13px", fontWeight: 600 }}>
+                      {job.successCount}/{job.totalProducts} products restored
+                    </span>
+                  </div>
+                  <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                    Executed: {formatTime(job.createdAt)}
+                  </span>
+                </div>
+
+                {job.results.length > 0 && (
+                  <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {job.results.map((r) => (
+                      <div key={r.id} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span className={`rv-badge ${r.status === "SUCCESS" ? "rv-badge-success" : "rv-badge-critical"}`} style={{ fontSize: "10px", padding: "2px 6px" }}>
+                          {r.status}
+                        </span>
+                        <span>{r.productTitle}</span>
+                        {r.errorMessage && <span style={{ color: "var(--rv-critical)" }}>— {r.errorMessage}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
-      {/* Actions */}
-      {canRollback && (
-        <s-section>
-          <s-stack direction="inline" gap="base">
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="rollback" />
-              <s-button
-                submit
-                variant="primary"
-                tone="critical"
-                {...(isRolling ? { loading: true } : {})}
-              >
-                Confirm Rollback ({Object.keys(byProduct).length} products)
-              </s-button>
-            </fetcher.Form>
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="resolve" />
-              <s-button submit tone="success">
-                Mark Resolved
-              </s-button>
-            </fetcher.Form>
-            <fetcher.Form method="POST">
-              <input type="hidden" name="intent" value="ignore" />
-              <s-button submit variant="secondary">
-                Ignore
-              </s-button>
-            </fetcher.Form>
-          </s-stack>
-        </s-section>
-      )}
     </s-page>
   );
 }

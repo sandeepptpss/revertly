@@ -267,213 +267,208 @@ export default function Plan() {
 
   return (
     <s-page heading="Plans & Billing" inlineSize="large">
-      {/* Success banner */}
+
+      {/* ── Success Feedback Banner ── */}
       {result?.success && (
-        <s-section>
-          <s-banner tone="success">{result.message}</s-banner>
-        </s-section>
-      )}
-
-      {/* ── Current Plan Usage Summary ── */}
-      <s-section>
-        <s-card>
-          <s-box padding="400">
-            <s-stack direction="inline" align="space-between" gap="400" blockAlign="center" wrap>
-              <s-stack direction="block" gap="100">
-                <s-text tone="subdued" variant="bodyXs" fontWeight="bold">
-                  YOUR CURRENT PLAN
-                </s-text>
-                <s-stack direction="inline" gap="200" blockAlign="center">
-                  <s-text variant="headingMd" fontWeight="bold">
-                    {activePlan.charAt(0).toUpperCase() + activePlan.slice(1)} Plan
-                  </s-text>
-                  <s-badge tone="success">Active</s-badge>
-                </s-stack>
-              </s-stack>
-              <s-stack direction="inline" gap="500" wrap>
-                <s-stack direction="block" gap="050">
-                  <s-text tone="subdued" variant="bodyXs">Products Monitored</s-text>
-                  <s-text variant="bodySm" fontWeight="bold">
-                    {usage.productCount.toLocaleString()} /{" "}
-                    {limits.products === Infinity ? "Unlimited" : limits.products.toLocaleString()}
-                  </s-text>
-                </s-stack>
-                <s-stack direction="block" gap="050">
-                  <s-text tone="subdued" variant="bodyXs">Restore Points</s-text>
-                  <s-text variant="bodySm" fontWeight="bold">
-                    {usage.restorePointCount} / {limits.restorePoints === Infinity ? "Unlimited" : limits.restorePoints}
-                  </s-text>
-                </s-stack>
-                <s-stack direction="block" gap="050">
-                  <s-text tone="subdued" variant="bodyXs">Active Rules</s-text>
-                  <s-text variant="bodySm" fontWeight="bold">
-                    {usage.ruleCount} / {limits.rules === Infinity ? "Unlimited" : limits.rules}
-                  </s-text>
-                </s-stack>
-              </s-stack>
-            </s-stack>
-          </s-box>
-        </s-card>
-      </s-section>
-
-      {/* ── Main Pricing Header ── */}
-      <s-section>
-        <s-stack direction="block" gap="100">
-          <s-text variant="headingLg" fontWeight="bold">Choose Your Protection Plan</s-text>
-          <s-text tone="subdued" variant="bodyMd">
-            Scale your peace of mind as your store grows. All paid plans include a 14-day free trial. Upgrade, downgrade, or cancel anytime.
-          </s-text>
-        </s-stack>
-      </s-section>
-
-      {/* ── Five Cards Responsive Grid ── */}
-      <s-section>
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: "16px",
-            alignItems: "stretch",
+            background: "var(--rv-primary-surface)",
+            border: "1px solid var(--rv-primary-border)",
+            color: "var(--rv-primary)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
           }}
         >
-          {PLANS.map((plan) => {
-            const isCurrent = activePlan === plan.id;
-            const isGrowth = plan.id === "growth";
-            const isBusiness = plan.id === "business";
-            const isEnterprise = plan.id === "enterprise";
-
-            let borderColor = "transparent";
-            let bgColor = "transparent";
-            if (isGrowth) {
-              borderColor = "#005bd3";
-              bgColor = "rgba(0, 91, 211, 0.03)";
-            } else if (isBusiness) {
-              borderColor = "#2c6ecb";
-              bgColor = "rgba(44, 110, 203, 0.02)";
-            } else if (isEnterprise) {
-              borderColor = "#5c6ac4";
-              bgColor = "rgba(92, 106, 196, 0.03)";
-            }
-
-            return (
-              <s-card key={plan.id}>
-                <div
-                  style={{
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "space-between",
-                    borderRadius: "10px",
-                    border: `2px solid ${borderColor}`,
-                    background: bgColor,
-                    transition: "all 0.2s ease",
-                  }}
-                >
-                  <s-box padding="400">
-                    <s-stack direction="block" gap="300">
-                      {/* Header */}
-                      <s-stack direction="block" gap="100">
-                        <s-stack direction="inline" align="space-between" blockAlign="center" gap="100">
-                          <s-text variant="headingMd" fontWeight="bold">
-                            {plan.name}
-                          </s-text>
-                          {isCurrent ? (
-                            <s-badge tone="success">Current</s-badge>
-                          ) : isGrowth ? (
-                            <s-badge tone="info">Most Popular</s-badge>
-                          ) : isBusiness ? (
-                            <s-badge tone="magic">Store Shield</s-badge>
-                          ) : isEnterprise ? (
-                            <s-badge tone="attention">Shopify Plus</s-badge>
-                          ) : null}
-                        </s-stack>
-                        
-                        <s-stack direction="inline" align="baseline" gap="050">
-                          <s-text variant="heading2xl" fontWeight="bold">
-                            {plan.price}
-                          </s-text>
-                          {plan.period && (
-                            <s-text tone="subdued" variant="bodySm">
-                              {plan.period}
-                            </s-text>
-                          )}
-                        </s-stack>
-                        
-                        <s-text tone="subdued" variant="bodyXs">
-                          {plan.category}
-                        </s-text>
-                      </s-stack>
-
-                      <div style={{ borderTop: "1px solid var(--p-color-border-subdued, #e1e3e5)" }} />
-
-                      {/* Features List */}
-                      <s-stack direction="block" gap="200">
-                        <s-text variant="bodyXs" fontWeight="bold">What&apos;s included:</s-text>
-                        <s-stack direction="block" gap="150">
-                          {plan.features.map((feature, idx) => (
-                            <s-stack key={idx} direction="inline" gap="150" blockAlign="start">
-                              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" style={{ minWidth: "12px", marginTop: "2px" }}>
-                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" fill="#008060" />
-                              </svg>
-                              <s-text variant="bodyXs">{feature}</s-text>
-                            </s-stack>
-                          ))}
-                        </s-stack>
-                      </s-stack>
-                    </s-stack>
-
-                    {/* Actions */}
-                    <s-box paddingBlockStart="400">
-                      <s-stack direction="block" gap="150" align="center">
-                        {isCurrent ? (
-                          <s-button disabled fullWidth>
-                            Active Plan
-                          </s-button>
-                        ) : (
-                          <fetcher.Form method="POST" style={{ width: "100%" }}>
-                            <input type="hidden" name="planId" value={plan.id} />
-                            <s-button
-                              submit
-                              variant={isGrowth ? "primary" : "secondary"}
-                              fullWidth
-                              loading={isSubmitting}
-                            >
-                              {plan.id === "free" ? "Downgrade to Free" : `Choose ${plan.name}`}
-                            </s-button>
-                          </fetcher.Form>
-                        )}
-                        {plan.subtext ? (
-                          <s-text tone="success" variant="bodyXs" fontWeight="bold">
-                            {plan.subtext}
-                          </s-text>
-                        ) : (
-                          <s-text tone="subdued" variant="bodyXs">
-                            {plan.footerText}
-                          </s-text>
-                        )}
-                      </s-stack>
-                    </s-box>
-                  </s-box>
-                </div>
-              </s-card>
-            );
-          })}
+          <span>✅</span>
+          <span>{result.message}</span>
         </div>
-      </s-section>
+      )}
 
-      {/* ── Guarantee & Disclaimer ── */}
-      <s-section>
-        <s-box paddingBlockStart="400">
-          <s-stack direction="block" gap="100" align="center">
-            <s-text tone="subdued" variant="bodyXs">
-              All plans include automated snapshot tracking. Charges are billed in USD every 30 days. You can upgrade, downgrade, or cancel anytime directly in Shopify.
-            </s-text>
-            <s-link href="/app/support">
-              Need help choosing? Contact developer support
-            </s-link>
-          </s-stack>
-        </s-box>
-      </s-section>
+      {/* ── Current Plan Usage Summary Hero ── */}
+      <div className="rv-hero-banner">
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <span style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
+              YOUR CURRENT SUBSCRIPTION
+            </span>
+            <span className="rv-badge rv-badge-success">Active</span>
+          </div>
+          <h2 style={{ margin: "0 0 6px", fontSize: "22px", fontWeight: 800, color: "var(--rv-text)" }}>
+            {activePlan.charAt(0).toUpperCase() + activePlan.slice(1)} Plan
+          </h2>
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            Automated monitoring, catalog baseline protection, and multi-resource restore points.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "24px", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Products Monitored</div>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+              {usage.productCount.toLocaleString()} / {limits.products === Infinity ? "Unlimited" : limits.products.toLocaleString()}
+            </strong>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Restore Points</div>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+              {usage.restorePointCount} / {limits.restorePoints === Infinity ? "Unlimited" : limits.restorePoints}
+            </strong>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Detection Rules</div>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+              {usage.ruleCount} / {limits.rules === Infinity ? "Unlimited" : limits.rules}
+            </strong>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Heading ── */}
+      <div style={{ marginBottom: "20px" }}>
+        <h3 style={{ fontSize: "18px", fontWeight: 700, margin: "0 0 4px", color: "var(--rv-text)" }}>
+          Choose Your Store Protection Plan
+        </h3>
+        <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: 0 }}>
+          Scale your peace of mind as your catalog expands. All paid plans include a 14-day free trial. Upgrade, downgrade, or cancel anytime.
+        </p>
+      </div>
+
+      {/* ── 5 Cards Responsive Grid ── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(215px, 1fr))",
+          gap: "16px",
+          alignItems: "stretch",
+          marginBottom: "32px",
+        }}
+      >
+        {PLANS.map((plan) => {
+          const isCurrent = activePlan === plan.id;
+          const isGrowth = plan.id === "growth";
+          const isBusiness = plan.id === "business";
+          const isEnterprise = plan.id === "enterprise";
+
+          let cardBorder = "1px solid var(--rv-border)";
+          let cardBg = "#ffffff";
+          let badge = null;
+
+          if (isCurrent) {
+            badge = <span className="rv-badge rv-badge-success">Current Plan</span>;
+          } else if (isGrowth) {
+            cardBorder = "2px solid #005bd3";
+            badge = <span className="rv-badge rv-badge-info">Most Popular</span>;
+          } else if (isBusiness) {
+            cardBorder = "2px solid #6366f1";
+            badge = <span className="rv-badge rv-badge-warning">Store Shield</span>;
+          } else if (isEnterprise) {
+            cardBorder = "2px solid #8b5cf6";
+            badge = <span className="rv-badge rv-badge-neutral">Shopify Plus</span>;
+          }
+
+          return (
+            <div
+              key={plan.id}
+              className="rv-card"
+              style={{
+                border: cardBorder,
+                background: cardBg,
+                margin: 0,
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                boxShadow: isGrowth ? "0 4px 12px rgba(0, 91, 211, 0.12)" : "var(--rv-shadow-sm)",
+              }}
+            >
+              <div className="rv-card-body" style={{ display: "flex", flexDirection: "column", height: "100%", justifyContent: "space-between", padding: "20px" }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                    <span style={{ fontSize: "16px", fontWeight: 700, color: "var(--rv-text)" }}>
+                      {plan.name}
+                    </span>
+                    {badge}
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "baseline", gap: "4px", marginBottom: "4px" }}>
+                    <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
+                      {plan.price}
+                    </span>
+                    {plan.period && (
+                      <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        {plan.period}
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "16px" }}>
+                    {plan.category}
+                  </div>
+
+                  <div style={{ borderTop: "1px solid var(--rv-border)", marginBottom: "14px" }} />
+
+                  {/* Features List */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "20px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
+                      What&apos;s Included:
+                    </span>
+                    {plan.features.map((feature, idx) => (
+                      <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "12px", lineHeight: 1.4 }}>
+                        <span style={{ color: "#008060", fontWeight: "bold" }}>✓</span>
+                        <span style={{ color: "var(--rv-text)" }}>{feature}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Bottom Action Button */}
+                <div style={{ borderTop: "1px solid #f1f2f3", paddingTop: "14px", marginTop: "auto" }}>
+                  {isCurrent ? (
+                    <button
+                      type="button"
+                      disabled
+                      className="rv-btn"
+                      style={{ width: "100%", background: "#f1f2f3", color: "#6d7175", cursor: "default", fontWeight: 600 }}
+                    >
+                      ✓ Active Plan
+                    </button>
+                  ) : (
+                    <fetcher.Form method="POST" style={{ width: "100%" }}>
+                      <input type="hidden" name="planId" value={plan.id} />
+                      <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        className={`rv-btn ${isGrowth ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        style={{ width: "100%", fontWeight: 600 }}
+                      >
+                        {plan.id === "free" ? "Downgrade to Free" : `Choose ${plan.name}`}
+                      </button>
+                    </fetcher.Form>
+                  )}
+
+                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: plan.subtext ? "var(--rv-primary)" : "var(--rv-text-subdued)", fontWeight: plan.subtext ? 600 : 400 }}>
+                    {plan.subtext || plan.footerText}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Footer Info ── */}
+      <div style={{ textAlign: "center", padding: "16px 20px", color: "var(--rv-text-subdued)", fontSize: "12px" }}>
+        All plans include automated snapshot tracking. Charges are processed through Shopify Billing in USD. You can upgrade, downgrade, or cancel anytime directly in your Shopify Admin.
+        <div style={{ marginTop: "6px" }}>
+          Need custom volume limits or agency onboarding? <Link to="/app/support" style={{ color: "var(--rv-info)" }}>Contact Developer Support →</Link>
+        </div>
+      </div>
+
     </s-page>
   );
 }

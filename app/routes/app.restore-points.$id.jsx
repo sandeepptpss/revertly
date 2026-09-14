@@ -452,661 +452,653 @@ export default function RestorePointDetail() {
       backAction={{ url: "/app/restore-points", label: "Restore Points" }}
       inlineSize="large"
     >
-      <s-section>
-        <s-stack direction="block" gap="tight">
-          <s-stack direction="inline" align="space-between" align-items="center" wrap>
-            <s-stack direction="inline" gap="base" align="center" wrap>
-              <s-badge tone={restorePoint.status === "READY" ? "success" : "attention"}>
-                {restorePoint.status}
-              </s-badge>
-              <s-text tone="subdued">Created: {formatTime(restorePoint.createdAt)}</s-text>
-              <s-badge tone="info">{savedCount} Products</s-badge>
-              {themeData?.activeTheme && (
-                <s-badge tone="success">Theme: {themeData.activeTheme.name}</s-badge>
-              )}
-              {collectionData.length > 0 && (
-                <s-badge tone="info">{collectionData.length} Collections</s-badge>
-              )}
-              {pageData.length > 0 && (
-                <s-badge tone="subdued">{pageData.length} Pages</s-badge>
-              )}
-              {articleData?.articles?.length > 0 && (
-                <s-badge tone="success">{articleData.articles.length} Articles</s-badge>
-              )}
-            </s-stack>
-            <s-button
-              url={`/app/restore-points/${restorePoint.id}/export`}
-              variant="secondary"
+      {/* ── Top Header Hero Banner ── */}
+      <div className="rv-hero-banner" style={{ padding: "16px 20px" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "4px" }}>
+            <span
+              className={`rv-badge ${
+                restorePoint.status === "READY"
+                  ? "rv-badge-success"
+                  : restorePoint.status === "CREATING"
+                  ? "rv-badge-warning"
+                  : "rv-badge-critical"
+              }`}
             >
-              ⬇️ Download Offline Backup (.json)
-            </s-button>
-          </s-stack>
+              {restorePoint.status}
+            </span>
+            <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+              🕒 Created: {formatTime(restorePoint.createdAt)}
+            </span>
+            <span className="rv-badge rv-badge-info">{savedCount} Products</span>
+            {themeData?.activeTheme && (
+              <span className="rv-badge rv-badge-success">Theme: {themeData.activeTheme.name}</span>
+            )}
+            {collectionData.length > 0 && (
+              <span className="rv-badge rv-badge-info">{collectionData.length} Collections</span>
+            )}
+            {pageData.length > 0 && (
+              <span className="rv-badge rv-badge-neutral">{pageData.length} Pages</span>
+            )}
+            {articleData?.articles?.length > 0 && (
+              <span className="rv-badge rv-badge-success">{articleData.articles.length} Articles</span>
+            )}
+          </div>
           {restorePoint.description && (
-            <s-paragraph>{restorePoint.description}</s-paragraph>
+            <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+              {restorePoint.description}
+            </p>
           )}
-        </s-stack>
-      </s-section>
+        </div>
 
-      {/* ── Navigation Tabs ── */}
-      <s-section>
-        <s-stack direction="inline" gap="tight" wrap>
-          {tabs.map((tab) => (
-            <s-button
-              key={tab.id}
-              variant={activeTab === tab.id ? "primary" : "secondary"}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </s-button>
-          ))}
-        </s-stack>
-      </s-section>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <a
+            href={`/app/restore-points/${restorePoint.id}/export`}
+            className="rv-btn rv-btn-secondary"
+            style={{ fontSize: "13px" }}
+          >
+            ⬇️ Download Offline Backup (.json)
+          </a>
+          <Link to="/app/restore-points" className="rv-btn rv-btn-subtle" style={{ fontSize: "13px" }}>
+            ← All Restore Points
+          </Link>
+        </div>
+      </div>
+
+      {/* ── Navigation Pills ── */}
+      <div className="rv-pills-row">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={`rv-pill ${activeTab === tab.id ? "rv-pill-active" : ""}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
       {/* ── Draft Staging Preview Banner ── */}
       {result?.isDraft && result?.previewUrl && (
-        <s-section>
-          <s-banner tone="success">
-            <s-stack direction="block" gap="tight">
-              <s-text fontWeight="bold">
-                🎉 Draft Staging Theme Created: &ldquo;{result.draftThemeName}&rdquo;
-              </s-text>
-              <s-paragraph>
-                Your backed-up theme files were safely deployed into an <strong>unpublished draft theme</strong> ({result.filesRestored} files restored). Your live storefront is 100% untouched! You can preview it now:
-              </s-paragraph>
-              <s-stack direction="inline" gap="base" align="center">
-                <s-button url={result.previewUrl} target="_blank" variant="primary">
-                  Open Storefront Preview ↗
-                </s-button>
-                {result.editorUrl && (
-                  <s-button url={result.editorUrl} target="_blank" variant="secondary">
-                    Open in Theme Customizer ↗
-                  </s-button>
-                )}
-              </s-stack>
-            </s-stack>
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: "var(--rv-primary-surface)",
+            border: "1px solid var(--rv-primary-border)",
+            borderRadius: "var(--rv-radius-md)",
+            padding: "16px 20px",
+            marginBottom: "20px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+            <span style={{ fontSize: "18px" }}>🎉</span>
+            <strong style={{ color: "var(--rv-primary)", fontSize: "15px" }}>
+              Draft Staging Theme Created: &ldquo;{result.draftThemeName}&rdquo;
+            </strong>
+          </div>
+          <p style={{ margin: "0 0 12px", fontSize: "13px", color: "var(--rv-text)" }}>
+            Your backed-up theme files were safely deployed into an <strong>unpublished draft theme</strong> ({result.filesRestored} files restored). Your live storefront is 100% untouched!
+          </p>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <a
+              href={result.previewUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rv-btn rv-btn-primary"
+              style={{ fontSize: "13px" }}
+            >
+              Open Storefront Preview ↗
+            </a>
+            {result.editorUrl && (
+              <a
+                href={result.editorUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rv-btn rv-btn-secondary"
+                style={{ fontSize: "13px" }}
+              >
+                Open in Theme Customizer ↗
+              </a>
+            )}
+          </div>
+        </div>
       )}
 
       {/* ── Live Safety Snapshot Banner ── */}
       {result?.isLive && result?.safetyRpId && (
-        <s-section>
-          <s-banner tone="info">
-            <s-stack direction="inline" align="space-between" align-items="center">
-              <s-text>
-                🛡️ Live theme restored. Safety snapshot #{result.safetyRpId} was automatically saved before making changes.
-              </s-text>
-              <s-button url={`/app/restore-points/${result.safetyRpId}`} variant="secondary">
-                View Snapshot / 1-Click Undo
-              </s-button>
-            </s-stack>
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: "var(--rv-info-surface)",
+            border: "1px solid var(--rv-info-border)",
+            borderRadius: "var(--rv-radius-md)",
+            padding: "14px 18px",
+            marginBottom: "20px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span style={{ fontSize: "13px", color: "#0045a1" }}>
+            🛡️ Live theme restored. Safety snapshot #{result.safetyRpId} was automatically saved before making changes.
+          </span>
+          <Link
+            to={`/app/restore-points/${result.safetyRpId}`}
+            className="rv-btn rv-btn-secondary"
+            style={{ fontSize: "12px" }}
+          >
+            View Snapshot / 1-Click Undo
+          </Link>
+        </div>
       )}
 
+      {/* ── Generic Message Banner ── */}
       {result?.message && !result?.isDraft && !result?.isLive && (
-        <s-section>
-          <s-banner tone={result.success ? "success" : "critical"}>
-            {result.message}
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>{result.success ? "✅" : "⚠️"}</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
       {/* ── Active Theme Backup & Restore Section ── */}
       {activeTab === "theme" && themeData?.activeTheme && (
-        <s-section heading="Theme Backup &amp; Code Protection">
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-stack direction="inline" align="space-between" align-items="center">
-                  <s-stack direction="block" gap="tight">
-                    <s-stack direction="inline" gap="tight" align="center">
-                      <s-text fontWeight="bold">
-                        {themeData.activeTheme.name}
-                      </s-text>
-                      <s-badge tone="success">{themeData.activeTheme.role}</s-badge>
-                    </s-stack>
-                    <s-text tone="subdued">
-                      {themeData.files?.length || 0} critical theme files &amp; settings backed up.
-                    </s-text>
-                  </s-stack>
-                  <s-stack direction="inline" gap="tight" align="center">
-                    <s-text tone="subdued">
-                      {selectedFiles.length} of {themeData.files?.length || 0} files selected
-                    </s-text>
-                    <s-button variant="tertiary" onClick={toggleSelectAll}>
-                      {selectedFiles.length === (themeData?.files?.length || 0)
-                        ? "Deselect All"
-                        : "Select All"}
-                    </s-button>
-                  </s-stack>
-                </s-stack>
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <div>
+              <h3 className="rv-card-title">
+                <span>🎨</span> {themeData.activeTheme.name}
+              </h3>
+              <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                {themeData.files?.length || 0} critical theme files &amp; settings backed up ({themeData.activeTheme.role} theme).
+              </p>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                {selectedFiles.length} of {themeData.files?.length || 0} files selected
+              </span>
+              <button type="button" onClick={toggleSelectAll} className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
+                {selectedFiles.length === (themeData?.files?.length || 0) ? "Deselect All" : "Select All"}
+              </button>
+            </div>
+          </div>
 
-                {/* File-by-file Checklist & Visual Red/Green Diff Inspector */}
-                <s-stack direction="block" gap="tight">
-                  <s-text fontWeight="semibold">
-                    Protected Files (Inspect Line Diff &amp; Cherry-Pick):
-                  </s-text>
-                  {filesList.map((f) => {
-                    const isSelected = selectedFiles.includes(f.filename);
-                    const isExpanded = expandedFile === f.filename;
-                    const sizeKb = f.size ? Math.round((f.size / 1024) * 10) / 10 : 0;
-                    const hasDiff = f.diff && !f.diff.isIdentical;
-                    return (
-                      <s-card key={f.filename}>
-                        <s-box padding="tight">
-                          <s-stack direction="block" gap="tight">
-                            <s-stack direction="inline" align="space-between" align-items="center">
-                              <s-stack direction="inline" gap="tight" align="center">
-                                <input
-                                  type="checkbox"
-                                  id={`file-${f.filename}`}
-                                  checked={isSelected}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setSelectedFiles([...selectedFiles, f.filename]);
-                                    } else {
-                                      setSelectedFiles(
-                                        selectedFiles.filter((name) => name !== f.filename)
-                                      );
-                                    }
-                                  }}
-                                />
-                                <label
-                                  htmlFor={`file-${f.filename}`}
+          <div className="rv-card-body">
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
+              {filesList.map((f) => {
+                const isSelected = selectedFiles.includes(f.filename);
+                const isExpanded = expandedFile === f.filename;
+                const sizeKb = f.size ? Math.round((f.size / 1024) * 10) / 10 : 0;
+                const hasDiff = f.diff && !f.diff.isIdentical;
+
+                return (
+                  <div
+                    key={f.filename}
+                    style={{
+                      border: "1px solid var(--rv-border)",
+                      borderRadius: "var(--rv-radius-sm)",
+                      padding: "12px 14px",
+                      background: isSelected ? "#fcfdfd" : "#fafbfb",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <input
+                          type="checkbox"
+                          id={`file-${f.filename}`}
+                          checked={isSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedFiles([...selectedFiles, f.filename]);
+                            } else {
+                              setSelectedFiles(selectedFiles.filter((name) => name !== f.filename));
+                            }
+                          }}
+                        />
+                        <label
+                          htmlFor={`file-${f.filename}`}
+                          style={{ cursor: "pointer", fontFamily: "monospace", fontSize: "13px" }}
+                        >
+                          <strong>{f.filename}</strong>
+                          {sizeKb > 0 ? ` (${sizeKb} KB)` : ""}
+                        </label>
+
+                        {f.diff?.isIdentical ? (
+                          <span className="rv-badge rv-badge-neutral" style={{ fontSize: "11px" }}>
+                            ✓ Identical to Live
+                          </span>
+                        ) : (
+                          <span style={{ display: "inline-flex", gap: "4px" }}>
+                            {f.diff?.additions > 0 && (
+                              <span className="rv-badge rv-badge-success" style={{ fontSize: "11px" }}>
+                                +{f.diff.additions}
+                              </span>
+                            )}
+                            {f.diff?.deletions > 0 && (
+                              <span className="rv-badge rv-badge-critical" style={{ fontSize: "11px" }}>
+                                -{f.diff.deletions}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setExpandedFile(isExpanded ? null : f.filename)}
+                        className="rv-btn rv-btn-subtle"
+                        style={{ fontSize: "12px" }}
+                      >
+                        {isExpanded ? "Hide Code Diff ▲" : "View Code Diff ▼"}
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <div
+                        style={{
+                          border: "1px solid #d0d7de",
+                          borderRadius: "6px",
+                          overflow: "hidden",
+                          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                          fontSize: "12px",
+                          lineHeight: "20px",
+                          background: "#ffffff",
+                          marginTop: "10px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            background: "#f6f8fa",
+                            padding: "6px 12px",
+                            borderBottom: "1px solid #d0d7de",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            fontSize: "11px",
+                            color: "#57606a",
+                            fontWeight: "600",
+                          }}
+                        >
+                          <span>🔴 Red = Lines Removed &nbsp;|&nbsp; 🟢 Green = Backup Lines Restored</span>
+                          <span>
+                            {hasDiff ? (
+                              <span>
+                                <span style={{ color: "#1a7f37", marginRight: "8px" }}>+{f.diff.additions} additions</span>
+                                <span style={{ color: "#cf222e" }}>-{f.diff.deletions} deletions</span>
+                              </span>
+                            ) : (
+                              <span>100% In Sync with Live</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div style={{ maxHeight: "280px", overflowY: "auto" }}>
+                          {f.diff?.lines?.length > 0 ? (
+                            f.diff.lines.map((line, lIdx) => {
+                              const isAdded = line.type === "added";
+                              const isRemoved = line.type === "removed";
+                              const isInfo = line.type === "info";
+                              return (
+                                <div
+                                  key={lIdx}
                                   style={{
-                                    cursor: "pointer",
-                                    fontFamily: "monospace",
-                                    fontSize: "13px",
+                                    display: "flex",
+                                    background: isAdded ? "#e6ffec" : isRemoved ? "#ffebe9" : isInfo ? "#f6f8fa" : "#ffffff",
+                                    color: isAdded ? "#1a7f37" : isRemoved ? "#cf222e" : isInfo ? "#57606a" : "#24292f",
+                                    borderBottom: "1px solid #f0f2f5",
                                   }}
                                 >
-                                  <strong>{f.filename}</strong>
-                                  {sizeKb > 0 ? ` (${sizeKb} KB)` : ""}
-                                </label>
-
-                                {f.diff?.isIdentical ? (
-                                  <span
+                                  <div
                                     style={{
-                                      color: "#57606a",
-                                      background: "#f1f3f5",
-                                      border: "1px solid #d0d7de",
-                                      padding: "1px 7px",
-                                      borderRadius: "10px",
+                                      width: "42px",
+                                      paddingRight: "8px",
+                                      textAlign: "right",
+                                      color: "#8c959f",
+                                      userSelect: "none",
+                                      background: isAdded ? "#ccffd8" : isRemoved ? "#ffd7d5" : "#f6f8fa",
+                                      borderRight: "1px solid #d0d7de",
+                                      flexShrink: 0,
                                       fontSize: "11px",
-                                      fontWeight: "600",
                                     }}
                                   >
-                                    ✓ Identical to Live
-                                  </span>
-                                ) : (
-                                  <span style={{ display: "inline-flex", gap: "4px" }}>
-                                    {f.diff?.additions > 0 && (
-                                      <span
-                                        style={{
-                                          color: "#1a7f37",
-                                          background: "#dafbe1",
-                                          border: "1px solid #aceebb",
-                                          padding: "1px 6px",
-                                          borderRadius: "10px",
-                                          fontSize: "11px",
-                                          fontWeight: "700",
-                                        }}
-                                      >
-                                        +{f.diff.additions}
-                                      </span>
-                                    )}
-                                    {f.diff?.deletions > 0 && (
-                                      <span
-                                        style={{
-                                          color: "#cf222e",
-                                          background: "#ffebe9",
-                                          border: "1px solid #ffc1ba",
-                                          padding: "1px 6px",
-                                          borderRadius: "10px",
-                                          fontSize: "11px",
-                                          fontWeight: "700",
-                                        }}
-                                      >
-                                        -{f.diff.deletions}
-                                      </span>
-                                    )}
-                                  </span>
-                                )}
-                              </s-stack>
-
-                              <s-button
-                                variant="tertiary"
-                                onClick={() => setExpandedFile(isExpanded ? null : f.filename)}
-                              >
-                                {isExpanded ? "Hide Code Diff ▲" : "View Code Diff ▼"}
-                              </s-button>
-                            </s-stack>
-
-                            {/* ── Visual Red/Green Line Diff Viewer ── */}
-                            {isExpanded && (
-                              <div
-                                style={{
-                                  border: "1px solid #d0d7de",
-                                  borderRadius: "6px",
-                                  overflow: "hidden",
-                                  fontFamily:
-                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-                                  fontSize: "12px",
-                                  lineHeight: "20px",
-                                  background: "#ffffff",
-                                  marginTop: "6px",
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    background: "#f6f8fa",
-                                    padding: "6px 12px",
-                                    borderBottom: "1px solid #d0d7de",
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    alignItems: "center",
-                                    fontSize: "11px",
-                                    color: "#57606a",
-                                    fontWeight: "600",
-                                  }}
-                                >
-                                  <span>
-                                    🔴 Red = Lines Removed from Live Theme &nbsp;|&nbsp; 🟢 Green = Backup Lines Restored
-                                  </span>
-                                  <span>
-                                    {hasDiff ? (
-                                      <span>
-                                        <span style={{ color: "#1a7f37", marginRight: "8px" }}>
-                                          +{f.diff.additions} additions
-                                        </span>
-                                        <span style={{ color: "#cf222e" }}>
-                                          -{f.diff.deletions} deletions
-                                        </span>
-                                      </span>
-                                    ) : (
-                                      <span style={{ color: "#57606a" }}>100% In Sync with Live</span>
-                                    )}
-                                  </span>
+                                    {isRemoved ? line.oldLineNum : isAdded ? line.newLineNum : line.oldLineNum || line.newLineNum || " "}
+                                  </div>
+                                  <div style={{ width: "22px", textAlign: "center", fontWeight: "bold", userSelect: "none", flexShrink: 0 }}>
+                                    {isAdded ? "+" : isRemoved ? "-" : " "}
+                                  </div>
+                                  <div style={{ paddingLeft: "4px", whiteSpace: "pre-wrap", wordBreak: "break-all", flexGrow: 1 }}>
+                                    {line.content || " "}
+                                  </div>
                                 </div>
+                              );
+                            })
+                          ) : (
+                            <div style={{ padding: "12px", color: "#57606a" }}>No content diff available.</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
 
-                                <div style={{ maxHeight: "280px", overflowY: "auto" }}>
-                                  {f.diff?.lines?.length > 0 ? (
-                                    f.diff.lines.map((line, lIdx) => {
-                                      const isAdded = line.type === "added";
-                                      const isRemoved = line.type === "removed";
-                                      const isInfo = line.type === "info";
-                                      return (
-                                        <div
-                                          key={lIdx}
-                                          style={{
-                                            display: "flex",
-                                            background: isAdded
-                                              ? "#e6ffec"
-                                              : isRemoved
-                                                ? "#ffebe9"
-                                                : isInfo
-                                                  ? "#f6f8fa"
-                                                  : "#ffffff",
-                                            color: isAdded
-                                              ? "#1a7f37"
-                                              : isRemoved
-                                                ? "#cf222e"
-                                                : isInfo
-                                                  ? "#57606a"
-                                                  : "#24292f",
-                                            borderBottom: "1px solid #f0f2f5",
-                                          }}
-                                        >
-                                          {/* Line number gutter */}
-                                          <div
-                                            style={{
-                                              width: "42px",
-                                              paddingRight: "8px",
-                                              textAlign: "right",
-                                              color: "#8c959f",
-                                              userSelect: "none",
-                                              background: isAdded
-                                                ? "#ccffd8"
-                                                : isRemoved
-                                                  ? "#ffd7d5"
-                                                  : "#f6f8fa",
-                                              borderRight: "1px solid #d0d7de",
-                                              flexShrink: 0,
-                                              fontSize: "11px",
-                                            }}
-                                          >
-                                            {isRemoved
-                                              ? line.oldLineNum
-                                              : isAdded
-                                                ? line.newLineNum
-                                                : line.oldLineNum || line.newLineNum || " "}
-                                          </div>
+            {/* Dual Safe Theme Restore Actions */}
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", paddingTop: "12px", borderTop: "1px solid var(--rv-border)" }}>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="restore_theme" />
+                <input type="hidden" name="mode" value="draft" />
+                <input type="hidden" name="selectedFiles" value={JSON.stringify(selectedFiles)} />
+                <button
+                  type="submit"
+                  disabled={selectedFiles.length === 0 || isRestoring}
+                  className="rv-btn rv-btn-primary"
+                  style={{ fontWeight: 600 }}
+                >
+                  🛡️ Restore to Draft Theme (Safe Preview First)
+                </button>
+              </fetcher.Form>
 
-                                          {/* Diff Prefix Marker (+ / -) */}
-                                          <div
-                                            style={{
-                                              width: "22px",
-                                              textAlign: "center",
-                                              fontWeight: "bold",
-                                              userSelect: "none",
-                                              color: isAdded
-                                                ? "#1a7f37"
-                                                : isRemoved
-                                                  ? "#cf222e"
-                                                  : "#8c959f",
-                                              flexShrink: 0,
-                                            }}
-                                          >
-                                            {isAdded ? "+" : isRemoved ? "-" : " "}
-                                          </div>
-
-                                          {/* Code Content */}
-                                          <div
-                                            style={{
-                                              paddingLeft: "4px",
-                                              whiteSpace: "pre-wrap",
-                                              wordBreak: "break-all",
-                                              flexGrow: 1,
-                                            }}
-                                          >
-                                            {line.content || " "}
-                                          </div>
-                                        </div>
-                                      );
-                                    })
-                                  ) : (
-                                    <div style={{ padding: "12px", color: "#57606a" }}>
-                                      No content diff available.
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </s-stack>
-                        </s-box>
-                      </s-card>
-                    );
-                  })}
-                </s-stack>
-
-                {/* Dual Action Buttons */}
-                <s-stack direction="inline" gap="base" align="center">
-                  <fetcher.Form method="POST">
-                    <input type="hidden" name="intent" value="restore_theme" />
-                    <input type="hidden" name="mode" value="draft" />
-                    <input
-                      type="hidden"
-                      name="selectedFiles"
-                      value={JSON.stringify(selectedFiles)}
-                    />
-                    <s-button
-                      submit
-                      variant="primary"
-                      disabled={selectedFiles.length === 0}
-                      {...(isRestoring ? { loading: true } : {})}
-                    >
-                      🛡️ Restore to Draft Theme (Preview First)
-                    </s-button>
-                  </fetcher.Form>
-
-                  <fetcher.Form method="POST">
-                    <input type="hidden" name="intent" value="restore_theme" />
-                    <input type="hidden" name="mode" value="live" />
-                    <input
-                      type="hidden"
-                      name="selectedFiles"
-                      value={JSON.stringify(selectedFiles)}
-                    />
-                    <s-button
-                      submit
-                      variant="secondary"
-                      tone="critical"
-                      disabled={selectedFiles.length === 0}
-                      {...(isRestoring ? { loading: true } : {})}
-                    >
-                      ⚡ Instant Restore to Live Theme
-                    </s-button>
-                  </fetcher.Form>
-                </s-stack>
-
-                <s-text tone="subdued" variant="bodySm">
-                  💡 <strong>Pro Tip:</strong> Select <strong>&ldquo;Restore to Draft Theme&rdquo;</strong> to safely preview your storefront without risking live store downtime. If restoring directly to live, Revertly will automatically capture a safety snapshot first.
-                </s-text>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="restore_theme" />
+                <input type="hidden" name="mode" value="live" />
+                <input type="hidden" name="selectedFiles" value={JSON.stringify(selectedFiles)} />
+                <button
+                  type="submit"
+                  disabled={selectedFiles.length === 0 || isRestoring}
+                  className="rv-btn rv-btn-secondary"
+                  style={{ color: "var(--rv-critical)" }}
+                  onClick={(e) => {
+                    if (!confirm("Restore directly to live storefront? A safety backup will be captured first.")) {
+                      e.preventDefault();
+                    }
+                  }}
+                >
+                  ⚡ Instant Restore to Live Theme
+                </button>
+              </fetcher.Form>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Collections Backup Section ── */}
       {activeTab === "collections" && collectionData.length > 0 && (
-        <s-section heading={`${collectionData.length} Collections Protected`}>
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-paragraph>
-                  All automated smart rules and custom collection settings are preserved. If a collection is accidentally deleted or rules are broken, you can restore it below.
-                </s-paragraph>
-                <s-resource-list>
-                  {collectionData.map((col, idx) => (
-                    <s-resource-item key={col.id || idx} id={String(col.id || idx)}>
-                      <s-stack direction="inline" align="space-between" align-items="center">
-                        <s-stack direction="block" gap="tight">
-                          <s-text fontWeight="bold">{col.title}</s-text>
-                          <s-text tone="subdued">
-                            Handle: /{col.handle} · {col.ruleSet?.rules?.length || 0} smart rules
-                          </s-text>
-                        </s-stack>
-                        <fetcher.Form method="POST">
-                          <input type="hidden" name="intent" value="restore_collection" />
-                          <input type="hidden" name="colIndex" value={idx} />
-                          <s-button submit variant="secondary">
-                            Recreate / Restore
-                          </s-button>
-                        </fetcher.Form>
-                      </s-stack>
-                    </s-resource-item>
-                  ))}
-                </s-resource-list>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>🗂️</span> Protected Collections ({collectionData.length})
+            </h3>
+          </div>
+          <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+            <table className="rv-table">
+              <thead>
+                <tr>
+                  <th>Collection Title</th>
+                  <th>Handle</th>
+                  <th>Rules Preserved</th>
+                  <th style={{ textAlign: "right" }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collectionData.map((col, idx) => (
+                  <tr key={col.id || idx}>
+                    <td style={{ fontWeight: 600 }}>{col.title}</td>
+                    <td style={{ color: "var(--rv-text-subdued)" }}>/{col.handle}</td>
+                    <td>
+                      <span className="rv-badge rv-badge-info">
+                        {col.ruleSet?.rules?.length || 0} smart rules
+                      </span>
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <fetcher.Form method="POST" style={{ display: "inline" }}>
+                        <input type="hidden" name="intent" value="restore_collection" />
+                        <input type="hidden" name="colIndex" value={idx} />
+                        <button type="submit" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px", padding: "6px 12px" }}>
+                          Recreate / Restore
+                        </button>
+                      </fetcher.Form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
-      {/* ── Content Pages Backup Section ── */}
+      {/* ── Pages Backup Section ── */}
       {activeTab === "pages" && pageData.length > 0 && (
-        <s-section heading={`${pageData.length} Content Pages Protected`}>
-          <s-card>
-            <s-box padding="base">
-              <s-resource-list>
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>📄</span> Protected Content Pages ({pageData.length})
+            </h3>
+          </div>
+          <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+            <table className="rv-table">
+              <thead>
+                <tr>
+                  <th>Page Title</th>
+                  <th>Handle</th>
+                  <th style={{ textAlign: "right" }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
                 {pageData.map((p, idx) => (
-                  <s-resource-item key={p.id || idx} id={String(p.id || idx)}>
-                    <s-stack direction="inline" align="space-between" align-items="center">
-                      <s-stack direction="block" gap="tight">
-                        <s-text fontWeight="bold">{p.title}</s-text>
-                        <s-text tone="subdued">Handle: /{p.handle}</s-text>
-                      </s-stack>
-                      <fetcher.Form method="POST">
+                  <tr key={p.id || idx}>
+                    <td style={{ fontWeight: 600 }}>{p.title}</td>
+                    <td style={{ color: "var(--rv-text-subdued)" }}>/{p.handle}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <fetcher.Form method="POST" style={{ display: "inline" }}>
                         <input type="hidden" name="intent" value="restore_page" />
                         <input type="hidden" name="pageIndex" value={idx} />
-                        <s-button submit variant="secondary">
+                        <button type="submit" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px", padding: "6px 12px" }}>
                           Restore Page
-                        </s-button>
+                        </button>
                       </fetcher.Form>
-                    </s-stack>
-                  </s-resource-item>
+                    </td>
+                  </tr>
                 ))}
-              </s-resource-list>
-            </s-box>
-          </s-card>
-        </s-section>
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
       {/* ── Blogs & Articles Backup Section ── */}
       {activeTab === "articles" && (
-        <s-section heading={`${articleData?.articles?.length || 0} Blog Articles Protected`}>
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-paragraph>
-                  Protect your store&apos;s SEO rankings, buying guides, and blog content. If an article is accidentally deleted or modified, you can restore it with 1 click.
-                </s-paragraph>
-                {(!articleData?.articles || articleData.articles.length === 0) ? (
-                  <s-empty-state heading="No blog articles found in this restore point">
-                    <s-paragraph>Articles published in your Shopify store will appear here in future backups.</s-paragraph>
-                  </s-empty-state>
-                ) : (
-                  <s-resource-list>
-                    {articleData.articles.map((art, idx) => (
-                      <s-resource-item key={art.id || idx} id={String(art.id || idx)}>
-                        <s-stack direction="inline" align="space-between" align-items="center">
-                          <s-stack direction="block" gap="tight">
-                            <s-stack direction="inline" gap="tight" align="center">
-                              <s-text fontWeight="bold">{art.title}</s-text>
-                              {art.isPublished ? (
-                                <s-badge tone="success">Published</s-badge>
-                              ) : (
-                                <s-badge tone="subdued">Draft</s-badge>
-                              )}
-                              {art.blogTitle && <s-badge tone="info">Blog: {art.blogTitle}</s-badge>}
-                            </s-stack>
-                            <s-text tone="subdued">
-                              Handle: /{art.handle} {art.tags?.length > 0 ? `· Tags: ${Array.isArray(art.tags) ? art.tags.join(", ") : art.tags}` : ""}
-                            </s-text>
-                          </s-stack>
-                          <fetcher.Form method="POST">
-                            <input type="hidden" name="intent" value="restore_article" />
-                            <input type="hidden" name="articleIndex" value={idx} />
-                            <s-button submit variant="secondary" {...(isRestoring ? { loading: true } : {})}>
-                              Restore Article
-                            </s-button>
-                          </fetcher.Form>
-                        </s-stack>
-                      </s-resource-item>
-                    ))}
-                  </s-resource-list>
-                )}
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>📝</span> Protected Blog Articles ({articleData?.articles?.length || 0})
+            </h3>
+          </div>
+          {(!articleData?.articles || articleData.articles.length === 0) ? (
+            <div className="rv-empty-state" style={{ border: "none" }}>
+              <div className="rv-empty-icon-circle">📝</div>
+              <div className="rv-empty-title">No blog articles in this restore point</div>
+              <div className="rv-empty-desc">Published articles will appear here automatically in future restore points.</div>
+            </div>
+          ) : (
+            <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+              <table className="rv-table">
+                <thead>
+                  <tr>
+                    <th>Article Title</th>
+                    <th>Status</th>
+                    <th>Blog</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {articleData.articles.map((art, idx) => (
+                    <tr key={art.id || idx}>
+                      <td style={{ fontWeight: 600 }}>{art.title}</td>
+                      <td>
+                        <span className={`rv-badge ${art.isPublished ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                          {art.isPublished ? "Published" : "Draft"}
+                        </span>
+                      </td>
+                      <td style={{ color: "var(--rv-text-subdued)" }}>{art.blogTitle || "Blog"}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <fetcher.Form method="POST" style={{ display: "inline" }}>
+                          <input type="hidden" name="intent" value="restore_article" />
+                          <input type="hidden" name="articleIndex" value={idx} />
+                          <button type="submit" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px", padding: "6px 12px" }}>
+                            Restore Article
+                          </button>
+                        </fetcher.Form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Products Differences & Rollback ── */}
       {activeTab === "products" && (
-        <>
+        <div>
           {differences.length > 0 && (
-            <s-section>
-              <s-card>
-                <s-box padding="base">
-                  <s-stack direction="inline" align="space-between" align-items="center">
-                    <s-stack direction="block" gap="extraTight">
-                      <s-text fontWeight="bold">Catalog Differences Detected</s-text>
-                      <s-text tone="subdued">
-                        {differences.length} product{differences.length !== 1 ? "s differ" : " differs"} from this restore point.
-                      </s-text>
-                    </s-stack>
-                    <fetcher.Form method="POST">
-                      <input type="hidden" name="intent" value="restore" />
-                      <s-button
-                        submit
-                        variant="primary"
-                        tone="critical"
-                        {...(isRestoring ? { loading: true } : {})}
-                      >
-                        ⚡ Restore {differences.length} Products to Snapshot
-                      </s-button>
-                    </fetcher.Form>
-                  </s-stack>
-                </s-box>
-              </s-card>
-            </s-section>
-          )}
-
-          <s-section
-            heading={`${differences.length} products differ from restore point`}
-          >
-            {differences.length === 0 ? (
-              <s-banner tone="success">
-                All products match this restore point. No product changes detected.
-              </s-banner>
-            ) : (
-              differences.map((d) => (
-                <s-card key={d.productId}>
-                  <s-box padding="base">
-                    <s-stack direction="block" gap="tight">
-                      <s-text fontWeight="bold">{d.title}</s-text>
-                      <s-data-table
-                        columnContentTypes={["text", "text", "text"]}
-                        headings={["Field", "Saved (Restore Point)", "Current"]}
-                        rows={d.diffs.map((df) => [df.field, String(df.saved), String(df.current)])}
-                      />
-                    </s-stack>
-                  </s-box>
-                </s-card>
-              ))
-            )}
-          </s-section>
-
-          {differences.length > 0 && (
-            <s-section>
-              <fetcher.Form method="POST">
-                <input type="hidden" name="intent" value="restore" />
-                <s-stack direction="inline" gap="base">
-                  <s-button
-                    submit
-                    variant="primary"
-                    tone="critical"
-                    {...(isRestoring ? { loading: true } : {})}
+            <div
+              className="rv-card"
+              style={{
+                borderLeft: "4px solid var(--rv-critical)",
+                background: "#fffaf9",
+                marginBottom: "20px",
+              }}
+            >
+              <div
+                className="rv-card-body"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: "16px",
+                }}
+              >
+                <div>
+                  <strong style={{ fontSize: "15px", color: "var(--rv-critical)" }}>
+                    Catalog Drift Detected: {differences.length} Products Differ
+                  </strong>
+                  <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                    These products were modified since this snapshot was taken. Reverting will restore only modified fields.
+                  </p>
+                </div>
+                <fetcher.Form method="POST">
+                  <input type="hidden" name="intent" value="restore" />
+                  <button
+                    type="submit"
+                    disabled={isRestoring}
+                    className="rv-btn rv-btn-critical"
+                    style={{ fontWeight: 600 }}
                   >
-                    Restore {differences.length} Products to This Point
-                  </s-button>
-                </s-stack>
-              </fetcher.Form>
-              <s-paragraph>
-                <s-text tone="subdued">
-                  Only changed product fields will be restored. Unaffected fields remain unchanged.
-                </s-text>
-              </s-paragraph>
-            </s-section>
+                    {isRestoring ? "Restoring products..." : `⚡ Restore ${differences.length} Products to Snapshot`}
+                  </button>
+                </fetcher.Form>
+              </div>
+            </div>
           )}
-        </>
+
+          {differences.length === 0 ? (
+            <div className="rv-empty-state">
+              <div className="rv-empty-icon-circle" style={{ background: "#e8f5e9", color: "#16a34a" }}>
+                ✓
+              </div>
+              <div className="rv-empty-title">100% In Sync with Restore Point</div>
+              <div className="rv-empty-desc">
+                All products in your catalog match this restore point. No price drops or discrepancy diffs detected.
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              {differences.map((d) => (
+                <div key={d.productId} className="rv-card" style={{ margin: 0 }}>
+                  <div className="rv-card-header" style={{ background: "#fafbfb" }}>
+                    <h4 className="rv-card-title">
+                      <span>📦</span> {d.title}
+                    </h4>
+                    <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      Product #{d.productId}
+                    </span>
+                  </div>
+                  <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+                    <table className="rv-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: "200px" }}>Field</th>
+                          <th>Saved in Restore Point (Target)</th>
+                          <th style={{ width: "20px" }}></th>
+                          <th>Current Live Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {d.diffs.map((df, dfIdx) => (
+                          <tr key={dfIdx}>
+                            <td style={{ fontWeight: 600 }}>{df.field}</td>
+                            <td>
+                              <span className="rv-diff-new">{String(df.saved)}</span>
+                            </td>
+                            <td style={{ color: "var(--rv-text-subdued)", textAlign: "center" }}>→</td>
+                            <td>
+                              <span className="rv-diff-old">{String(df.current)}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Restore History ── */}
       {activeTab === "history" && (
-        <s-section heading="Restore History">
-          {lastJob ? (
-            <s-card>
-              <s-box padding="base">
-                <s-stack direction="inline" gap="base" align="center">
-                  <s-badge
-                    tone={
-                      lastJob.status === "COMPLETED"
-                        ? "success"
-                        : lastJob.status === "FAILED"
-                          ? "critical"
-                          : "attention"
-                    }
-                  >
-                    {lastJob.status}
-                  </s-badge>
-                  <s-text>
-                    {lastJob.successCount}/{lastJob.totalProducts} products restored
-                  </s-text>
-                  <s-text tone="subdued">{formatTime(lastJob.createdAt)}</s-text>
-                </s-stack>
-              </s-box>
-            </s-card>
-          ) : (
-            <s-card>
-              <s-box padding="base">
-                <s-text tone="subdued">No restore operations have been run from this restore point yet.</s-text>
-              </s-box>
-            </s-card>
-          )}
-        </s-section>
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>🕒</span> Restore Operations Run
+            </h3>
+          </div>
+          <div className="rv-card-body">
+            {lastJob ? (
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <span className={`rv-badge ${lastJob.status === "COMPLETED" ? "rv-badge-success" : "rv-badge-critical"}`}>
+                  {lastJob.status}
+                </span>
+                <span style={{ fontSize: "13px", fontWeight: 600 }}>
+                  {lastJob.successCount}/{lastJob.totalProducts} products restored
+                </span>
+                <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  Executed: {formatTime(lastJob.createdAt)}
+                </span>
+              </div>
+            ) : (
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                No restore operations have been run from this restore point yet.
+              </p>
+            )}
+          </div>
+        </div>
       )}
     </s-page>
   );

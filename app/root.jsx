@@ -1,4 +1,10 @@
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData } from "react-router";
+import revertlyStyles from "./styles/revertly.css?url";
+import "./styles/revertly.css";
+
+export const links = () => [
+  { rel: "stylesheet", href: revertlyStyles },
+];
 
 export const loader = async () => {
   return {

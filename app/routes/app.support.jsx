@@ -1,4 +1,4 @@
-import React from "react";
+import { useState } from "react";
 import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -7,32 +7,32 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 const HELP_ARTICLES = [
   {
     title: "How do I take an initial product snapshot?",
-    body: "Go to the Initialize page from the navigation. Click 'Initialize Monitoring' to take a full snapshot of all your current products. This is required before monitoring begins.",
+    body: "Go to the Initialize page from the navigation. Click 'Initialize Monitoring' to take a full snapshot of all your current products. This establishes a clean baseline before monitoring begins.",
     category: "Getting Started",
   },
   {
     title: "Why wasn't a change detected?",
-    body: "Make sure monitoring is enabled in Settings. Also verify that the webhook 'products/update' is registered in your Shopify Partner dashboard. The app only detects changes after the initial snapshot is taken.",
+    body: "Make sure monitoring is enabled in Settings. The app detects product changes via real-time Shopify webhooks after the baseline snapshot is initialized.",
     category: "Monitoring",
   },
   {
-    title: "What does a rollback actually do?",
-    body: "A rollback restores only the specific fields that were changed — not the entire product. For example, rolling back a price change only restores the price. Title, images, and other fields are untouched.",
+    title: "What does an atomic rollback actually do?",
+    body: "A rollback restores only the specific fields that were modified — not the entire product. For example, rolling back a price drop restores the previous price while leaving newer photos, descriptions, and tags intact.",
     category: "Rollback",
   },
   {
-    title: "How do I set up detection rules?",
-    body: "Go to Rules in the navigation. Create a rule by setting the field to monitor (e.g. price), the condition (e.g. DECREASE_BY_PERCENT), a threshold (e.g. 30%), and optionally a minimum number of products and time window.",
+    title: "How do I set up custom detection rules?",
+    body: "Go to Rules in the top navigation. Click '+ Create New Rule' to select the field (e.g. price), condition (e.g. DECREASE_BY_PERCENT), and threshold (e.g. 30%).",
     category: "Detection Rules",
   },
   {
-    title: "What is a Restore Point?",
-    body: "A Restore Point is a manual snapshot of all your products taken at a specific moment. You can create one before a big sale or bulk price change and restore to it any time. Only changed fields are restored.",
+    title: "What is a Full Store Restore Point?",
+    body: "A Restore Point is a manual freeze of your store's Products, Active Theme (liquid & settings), Smart Collections, Pages, and Blog Articles. You can restore individual files or entire stores with 1 click.",
     category: "Restore Points",
   },
   {
-    title: "How does bulk change detection work?",
-    body: "If more than the configured threshold of products change within the time window, the app automatically creates a Critical incident. You can adjust these thresholds in Settings.",
+    title: "How does bulk change anomaly detection work?",
+    body: "If more than your configured threshold of products (default: 20) change within a 10-minute window, Revertly quarantines them into a Critical incident for your review.",
     category: "Detection Rules",
   },
 ];
@@ -45,13 +45,13 @@ export const loader = async ({ request }) => {
     where: { shop },
     orderBy: { createdAt: "desc" },
     take: 10,
-  }).catch(() => []); // gracefully handle if table doesn't exist yet
+  }).catch(() => []);
 
   return { shop, tickets };
 };
 
 export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
   const subject = formData.get("subject")?.trim();
@@ -67,9 +67,8 @@ export const action = async ({ request }) => {
     await prisma.supportTicket.create({
       data: { shop, subject, category: category || "General", message, email: email || null },
     });
-    return { success: true, message: "Your ticket has been submitted. We'll respond within 24 hours." };
+    return { success: true, message: "Your ticket has been submitted. Our team will respond within 24 hours." };
   } catch {
-    // Table may not exist — just acknowledge
     return { success: true, message: "Your message has been received. We'll be in touch soon!" };
   }
 };
@@ -86,198 +85,313 @@ const CATEGORIES = [
   "General",
 ];
 
-function statusBadge(status) {
-  const map = { OPEN: "attention", IN_PROGRESS: "info", RESOLVED: "success", CLOSED: "subdued" };
-  return map[status] || "subdued";
-}
-
 export default function Support() {
   const { tickets } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSubmitting = fetcher.state !== "idle";
-  const [expandedIndex, setExpandedIndex] = React.useState(null);
+  const [expandedIndex, setExpandedIndex] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
+
   const toggleArticle = (i) => setExpandedIndex(expandedIndex === i ? null : i);
 
+  const filteredArticles = HELP_ARTICLES.filter(
+    (a) =>
+      a.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      a.body.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      a.category.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
-    <s-page heading="Help &amp; Support" inlineSize="large">
-      {/* Hero Banner */}
-      <s-section>
-        <s-banner tone="info">
-          <s-paragraph>
-            <strong>Need help?</strong> Browse the articles below or submit a support ticket.
-            Our team typically responds within 24 hours on business days.
-          </s-paragraph>
-        </s-banner>
-      </s-section>
+    <s-page heading="Help & Support" inlineSize="large">
 
-      {/* Quick Links */}
-      <s-section heading="Quick Links">
-        <s-columns columns="3">
-          {[
-            {
-              title: "Documentation",
-              desc: "Full setup guide and API reference",
-              url: "https://docs.revertly.app",
-            },
-            {
-              title: "Video Tutorials",
-              desc: "Step-by-step walkthroughs",
-              url: "https://docs.revertly.app/videos",
-            },
-            {
-              title: "Community Forum",
-              desc: "Ask questions, share tips",
-              url: "https://community.revertly.app",
-            },
-          ].map((link) => (
-            <s-card key={link.title}>
-              <s-box padding="base">
-                <s-stack direction="block" gap="tight">
-                  <s-text><strong>{link.title}</strong></s-text>
-                  <s-text tone="subdued">{link.desc}</s-text>
-                  <s-link href={link.url} target="_blank">
-                    Open →
-                  </s-link>
-                </s-stack>
-              </s-box>
-            </s-card>
-          ))}
-        </s-columns>
-      </s-section>
-
-      {/* Help Articles */}
-      <s-section heading="Frequently Asked Questions">
-        <s-stack direction="block" gap="tight">
-          {HELP_ARTICLES.map((article, i) => {
-            const isExpanded = expandedIndex === i;
-            return (
-              <s-card key={i}>
-                <s-box padding="base">
-                  <s-stack direction="block" gap="tight">
-                    <s-stack direction="inline" align="space-between" align-items="center">
-                      <s-stack direction="inline" gap="tight" align-items="center">
-                        <s-badge tone="subdued">{article.category}</s-badge>
-                        <s-text fontWeight="bold">{article.title}</s-text>
-                      </s-stack>
-                      <s-button variant="tertiary" onClick={() => toggleArticle(i)}>
-                        {isExpanded ? "Hide ▲" : "Read ▼"}
-                      </s-button>
-                    </s-stack>
-                    {isExpanded && (
-                      <s-box paddingBlockStart="tight">
-                        <s-text tone="subdued">{article.body}</s-text>
-                      </s-box>
-                    )}
-                  </s-stack>
-                </s-box>
-              </s-card>
-            );
-          })}
-        </s-stack>
-      </s-section>
-
-      {/* Submit Ticket */}
-      <s-section heading="Submit a Support Ticket">
-        {result?.success && (
-          <s-banner tone="success">{result.message}</s-banner>
-        )}
-        {result?.error && (
-          <s-banner tone="critical">{result.error}</s-banner>
-        )}
-
-        <fetcher.Form method="POST">
-          <s-form-layout>
-            <s-form-layout-group condensed>
-              <s-text-field
-                name="subject"
-                label="Subject"
-                placeholder="Brief description of your issue"
-                required
-              />
-              <s-select
-                name="category"
-                label="Category"
-              >
-                {CATEGORIES.map((c) => (
-                  <s-option key={c} value={c}>{c}</s-option>
-                ))}
-              </s-select>
-            </s-form-layout-group>
-            <s-text-field
-              name="email"
-              label="Reply-to Email (optional)"
-              type="email"
-              placeholder="your@email.com"
-              helpText="We'll use your store email if left blank."
-            />
-            <s-text-field
-              name="message"
-              label="Describe your issue"
-              multiline={5}
-              placeholder="Please include as much detail as possible — steps to reproduce, product IDs affected, screenshots if relevant..."
-              required
-            />
-            <s-button
-              submit
-              variant="primary"
-              {...(isSubmitting ? { loading: true } : {})}
-            >
-              Submit Ticket
-            </s-button>
-          </s-form-layout>
-        </fetcher.Form>
-      </s-section>
-
-      {/* Past Tickets */}
-      {tickets.length > 0 && (
-        <s-section heading="Your Support Tickets">
-          <s-resource-list>
-            {tickets.map((t) => (
-              <s-resource-item key={t.id} id={String(t.id)}>
-                <s-stack direction="inline" align="space-between">
-                  <s-stack direction="block" gap="tight">
-                    <s-text fontWeight="bold">{t.subject}</s-text>
-                    <s-stack direction="inline" gap="tight">
-                      <s-badge tone="subdued">{t.category}</s-badge>
-                      <s-text tone="subdued">
-                        {new Date(t.createdAt).toLocaleDateString()}
-                      </s-text>
-                    </s-stack>
-                  </s-stack>
-                  <s-badge tone={statusBadge(t.status || "OPEN")}>
-                    {t.status || "OPEN"}
-                  </s-badge>
-                </s-stack>
-              </s-resource-item>
-            ))}
-          </s-resource-list>
-        </s-section>
+      {/* ── Action Result Banner ── */}
+      {result?.message && (
+        <div
+          style={{
+            background: "var(--rv-primary-surface)",
+            border: "1px solid var(--rv-primary-border)",
+            color: "var(--rv-primary)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>✅</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
-      {/* Status Page */}
-      <s-section slot="aside" heading="System Status">
-        <s-stack direction="block" gap="tight">
-          <s-badge tone="success">All Systems Operational</s-badge>
-          <s-link href="https://status.revertly.app" target="_blank">
-            View status page →
-          </s-link>
-        </s-stack>
-      </s-section>
+      {result?.error && (
+        <div
+          style={{
+            background: "var(--rv-critical-surface)",
+            border: "1px solid var(--rv-critical-border)",
+            color: "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>⚠️</span>
+          <span>{result.error}</span>
+        </div>
+      )}
 
-      {/* Contact Info */}
-      <s-section slot="aside" heading="Contact Us">
-        <s-stack direction="block" gap="tight">
-          <s-text>
-            Email:{" "}
-            <s-link href="mailto:support@revertly.app">
-              support@revertly.app
-            </s-link>
-          </s-text>
-          <s-text tone="subdued">Response time: within 24 hours</s-text>
-          <s-text tone="subdued">Mon–Fri, 9am–6pm UTC</s-text>
-        </s-stack>
-      </s-section>
+      {/* ── Top Hero Banner ── */}
+      <div className="rv-hero-banner">
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+              Merchant Help &amp; Technical Support
+            </strong>
+            <span className="rv-badge rv-badge-success">SLA: Under 24h</span>
+          </div>
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            Have a question about rollback safety, theme restoration, or high-volume API limits? We&apos;re here to help.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+          <span>✉️ Direct Email: <a href="mailto:support@revertly.app" style={{ color: "var(--rv-info)", fontWeight: 600 }}>support@revertly.app</a></span>
+        </div>
+      </div>
+
+      {/* ── Quick Knowledge Base Cards ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "24px" }}>
+        <a
+          href="https://shopify.dev/docs/apps"
+          target="_blank"
+          rel="noreferrer"
+          className="rv-card"
+          style={{ textDecoration: "none", margin: 0 }}
+        >
+          <div className="rv-card-body">
+            <span style={{ fontSize: "24px", display: "block", marginBottom: "8px" }}>📚</span>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block", marginBottom: "4px" }}>
+              Documentation &amp; Guides
+            </strong>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+              Complete walkthrough of restore points, webhook architecture, and CSV imports.
+            </p>
+          </div>
+        </a>
+
+        <div className="rv-card" style={{ margin: 0 }}>
+          <div className="rv-card-body">
+            <span style={{ fontSize: "24px", display: "block", marginBottom: "8px" }}>🛡️</span>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block", marginBottom: "4px" }}>
+              Dispute Evidence Vault
+            </strong>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+              Learn how to export timestamped JSON proofs to defeat payment chargebacks.
+            </p>
+          </div>
+        </div>
+
+        <div className="rv-card" style={{ margin: 0 }}>
+          <div className="rv-card-body">
+            <span style={{ fontSize: "24px", display: "block", marginBottom: "8px" }}>⚡</span>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block", marginBottom: "4px" }}>
+              Theme Safety Staging
+            </strong>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+              Deploy theme restorations to safe draft themes to preview storefronts before going live.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Two Column Support Area: FAQs on Left, Submit Ticket on Right ── */}
+      <div className="rv-two-col" style={{ marginBottom: "28px" }}>
+
+        {/* Left: Frequently Asked Questions */}
+        <div>
+          <div className="rv-card" style={{ margin: 0 }}>
+            <div className="rv-card-header">
+              <h3 className="rv-card-title">
+                <span>❓</span> Frequently Asked Questions
+              </h3>
+            </div>
+            <div className="rv-card-body">
+              <div style={{ marginBottom: "14px" }}>
+                <input
+                  type="text"
+                  placeholder="🔍 Search FAQ topics..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="rv-input"
+                  style={{ width: "100%" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {filteredArticles.map((article, i) => {
+                  const isExpanded = expandedIndex === i;
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        border: "1px solid var(--rv-border)",
+                        borderRadius: "var(--rv-radius-sm)",
+                        overflow: "hidden",
+                        background: isExpanded ? "#fafbfb" : "#ffffff",
+                      }}
+                    >
+                      <div
+                        onClick={() => toggleArticle(i)}
+                        style={{
+                          padding: "12px 14px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          cursor: "pointer",
+                          userSelect: "none",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span className="rv-badge rv-badge-neutral" style={{ fontSize: "10px" }}>
+                            {article.category}
+                          </span>
+                          <strong style={{ fontSize: "13px", color: "var(--rv-text)" }}>
+                            {article.title}
+                          </strong>
+                        </div>
+                        <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          {isExpanded ? "▲" : "▼"}
+                        </span>
+                      </div>
+
+                      {isExpanded && (
+                        <div style={{ padding: "0 14px 14px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6, borderTop: "1px solid #f1f2f3" }}>
+                          {article.body}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: Submit Support Ticket */}
+        <div>
+          <div className="rv-card" style={{ margin: 0 }}>
+            <div className="rv-card-header">
+              <h3 className="rv-card-title">
+                <span>✉️</span> Submit a Support Ticket
+              </h3>
+            </div>
+            <div className="rv-card-body">
+              <fetcher.Form method="POST">
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Subject *</label>
+                  <input
+                    type="text"
+                    name="subject"
+                    required
+                    placeholder="Brief description of your issue"
+                    className="rv-input"
+                  />
+                </div>
+
+                <div className="rv-form-grid" style={{ marginBottom: "14px" }}>
+                  <div className="rv-form-field">
+                    <label className="rv-form-label">Category</label>
+                    <select name="category" className="rv-select">
+                      {CATEGORIES.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="rv-form-field">
+                    <label className="rv-form-label">Reply-to Email</label>
+                    <input
+                      type="email"
+                      name="email"
+                      placeholder="merchant@example.com"
+                      className="rv-input"
+                    />
+                  </div>
+                </div>
+
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Describe your issue in detail *</label>
+                  <textarea
+                    name="message"
+                    required
+                    placeholder="Please include relevant product titles, what steps occurred, and what assistance you need..."
+                    className="rv-textarea"
+                    style={{ minHeight: "110px" }}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="rv-btn rv-btn-primary"
+                  style={{ width: "100%", padding: "10px", fontWeight: 600 }}
+                >
+                  {isSubmitting ? "Submitting Ticket..." : "Submit Support Request"}
+                </button>
+              </fetcher.Form>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      {/* ── Past Support Tickets ── */}
+      {tickets.length > 0 && (
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>📋</span> Your Recent Support Inquiries
+            </h3>
+          </div>
+          <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+            <table className="rv-table">
+              <thead>
+                <tr>
+                  <th>Subject</th>
+                  <th>Category</th>
+                  <th>Submitted At</th>
+                  <th style={{ textAlign: "right" }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tickets.map((t) => (
+                  <tr key={t.id}>
+                    <td style={{ fontWeight: 600 }}>{t.subject}</td>
+                    <td><span className="rv-badge rv-badge-neutral">{t.category}</span></td>
+                    <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px" }}>
+                      {new Date(t.createdAt).toLocaleDateString()}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <span className={`rv-badge ${t.status === "RESOLVED" ? "rv-badge-success" : "rv-badge-info"}`}>
+                        {t.status || "OPEN"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
     </s-page>
   );
 }

@@ -1,4 +1,5 @@
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { useState } from "react";
+import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -86,109 +87,284 @@ export default function RestorePoints() {
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isCreating = fetcher.state !== "idle";
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   return (
     <s-page heading="Restore Points" inlineSize="large">
+
+      {/* ── Action Feedback Toast / Banner ── */}
       {result?.message && (
-        <s-section>
-          <s-banner tone={result.success ? "success" : "critical"}>
-            {result.message}
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>{result.success ? "✅" : "⚠️"}</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
-      {/* Create Restore Point */}
-      <s-section heading="Create New Restore Point">
-        <s-paragraph>
-          A restore point captures the current state of your store — including <strong>Products, Active Theme (files &amp; settings), Collections (smart rules), and Pages</strong>. You can restore any component at any time.
-        </s-paragraph>
-        <fetcher.Form method="POST">
-          <input type="hidden" name="intent" value="create" />
-          <s-form-layout>
-            <s-text-field
-              name="name"
-              label="Name"
-              placeholder="e.g. Before Major Redesign &amp; Summer Sale"
-              required
-            />
-            <s-text-field
-              name="description"
-              label="Description (optional)"
-              multiline
-              placeholder="Notes about changes, apps installed, or campaign details..."
-            />
-            <s-button
-              submit
-              variant="primary"
-              {...(isCreating ? { loading: true } : {})}
-            >
-              Create Full Store Restore Point
-            </s-button>
-          </s-form-layout>
-        </fetcher.Form>
-      </s-section>
+      {/* ── Header Summary Bar ── */}
+      <div className="rv-hero-banner">
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+              Full Store Snapshots &amp; Time Machine
+            </strong>
+            <span className="rv-badge rv-badge-info">
+              {restorePoints.length} Saved Snapshot{restorePoints.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            Capture a complete freeze of your Products, Liquid Theme code, Collections, Pages, and Blog Articles. Restore individual components or entire catalogs whenever needed.
+          </p>
+        </div>
 
-      {/* Restore Points List */}
-      <s-section heading={`${restorePoints.length} restore points`}>
-        {restorePoints.length === 0 ? (
-          <s-empty-state heading="No restore points">
-            <s-paragraph>
-              Create restore points before major price changes, theme edits, or app installs so you
-              can recover quickly if something goes wrong.
-            </s-paragraph>
-          </s-empty-state>
-        ) : (
-          <s-resource-list>
-            {restorePoints.map((rp) => (
-              <s-resource-item key={rp.id} id={String(rp.id)}>
-                <s-stack direction="block" gap="tight">
-                  <s-stack direction="inline" align="space-between">
-                    <s-stack direction="block" gap="tight">
-                      <s-stack direction="inline" gap="tight" align="center">
-                        <s-text fontWeight="bold">{rp.name}</s-text>
-                        <s-badge
-                          tone={
-                            rp.status === "READY"
-                              ? "success"
-                              : rp.status === "CREATING"
-                                ? "attention"
-                                : "critical"
-                          }
-                        >
-                          {rp.status}
-                        </s-badge>
-                      </s-stack>
-                      {rp.description && (
-                        <s-text tone="subdued">{rp.description}</s-text>
-                      )}
-                      <s-stack direction="inline" gap="tight" align="center">
-                        <s-text tone="subdued">{formatTime(rp.createdAt)}</s-text>
-                        <s-badge tone="info">{rp.productCount} products</s-badge>
-                        {rp.themeCount > 0 && <s-badge tone="success">1 Theme</s-badge>}
-                        {rp.collectionCount > 0 && <s-badge tone="info">{rp.collectionCount} Collections</s-badge>}
-                        {rp.pageCount > 0 && <s-badge tone="subdued">{rp.pageCount} Pages</s-badge>}
-                        {rp.articleCount > 0 && <s-badge tone="success">{rp.articleCount} Articles</s-badge>}
-                      </s-stack>
-                    </s-stack>
-                  </s-stack>
-                  <s-stack direction="inline" gap="tight">
-                    <s-button url={`/app/restore-points/${rp.id}`} variant="primary">
-                      Restore / View Details
-                    </s-button>
-                    <fetcher.Form method="POST">
-                      <input type="hidden" name="intent" value="delete" />
-                      <input type="hidden" name="rpId" value={rp.id} />
-                      <s-button submit tone="critical" variant="tertiary">
-                        Delete
-                      </s-button>
-                    </fetcher.Form>
-                  </s-stack>
-                </s-stack>
-              </s-resource-item>
-            ))}
-          </s-resource-list>
-        )}
-      </s-section>
+        <button
+          type="button"
+          onClick={() => setShowCreateForm(!showCreateForm)}
+          className="rv-btn rv-btn-primary"
+        >
+          {showCreateForm ? "✕ Close Form" : "+ Create Restore Point"}
+        </button>
+      </div>
+
+      {/* ── Create Restore Point Form Card ── */}
+      {showCreateForm && (
+        <div className="rv-card" style={{ border: "2px solid #008060", marginBottom: "24px" }}>
+          <div className="rv-card-header" style={{ background: "var(--rv-primary-surface)" }}>
+            <h3 className="rv-card-title" style={{ color: "var(--rv-primary)" }}>
+              <span>💾</span> Take New Store Restore Point
+            </h3>
+            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+              Snapshots take 2-5 seconds
+            </span>
+          </div>
+
+          <div className="rv-card-body">
+            <fetcher.Form method="POST">
+              <input type="hidden" name="intent" value="create" />
+
+              <div className="rv-form-grid" style={{ marginBottom: "16px" }}>
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Restore Point Name *</label>
+                  <input
+                    type="text"
+                    name="name"
+                    required
+                    placeholder="e.g. Before Major Redesign & Summer Sale"
+                    className="rv-input"
+                  />
+                  <span className="rv-form-help">A recognizable label for your team or audits.</span>
+                </div>
+
+                <div className="rv-form-field">
+                  <label className="rv-form-label">Description / Notes (Optional)</label>
+                  <input
+                    type="text"
+                    name="description"
+                    placeholder="e.g. Backed up before installing wholesale bulk price app"
+                    className="rv-input"
+                  />
+                  <span className="rv-form-help">Any context on campaigns, apps, or staff changes.</span>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "20px" }}>
+                <label className="rv-form-label" style={{ marginBottom: "8px", display: "block" }}>
+                  Components Included in this Snapshot:
+                </label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px" }}>
+                  <label className="rv-toggle-row">
+                    <input type="checkbox" name="includeProducts" defaultChecked value="1" />
+                    <div>
+                      <strong style={{ fontSize: "13px" }}>📦 Products &amp; Prices</strong>
+                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Variants, Metafields &amp; SKUs</div>
+                    </div>
+                  </label>
+
+                  <label className="rv-toggle-row">
+                    <input type="checkbox" name="includeThemes" defaultChecked value="1" />
+                    <div>
+                      <strong style={{ fontSize: "13px" }}>🎨 Active Theme</strong>
+                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Liquid, JSON &amp; Assets</div>
+                    </div>
+                  </label>
+
+                  <label className="rv-toggle-row">
+                    <input type="checkbox" name="includeCollections" defaultChecked value="1" />
+                    <div>
+                      <strong style={{ fontSize: "13px" }}>🗂️ Collections</strong>
+                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Manual &amp; Smart Rules</div>
+                    </div>
+                  </label>
+
+                  <label className="rv-toggle-row">
+                    <input type="checkbox" name="includePages" defaultChecked value="1" />
+                    <div>
+                      <strong style={{ fontSize: "13px" }}>📄 Pages &amp; Menus</strong>
+                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Store Pages &amp; Navigation</div>
+                    </div>
+                  </label>
+
+                  <label className="rv-toggle-row">
+                    <input type="checkbox" name="includeArticles" defaultChecked value="1" />
+                    <div>
+                      <strong style={{ fontSize: "13px" }}>📝 Blog Articles</strong>
+                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Blog Posts &amp; Content</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <button
+                  type="submit"
+                  disabled={isCreating}
+                  className="rv-btn rv-btn-primary"
+                  style={{ padding: "10px 20px", fontWeight: 600 }}
+                >
+                  {isCreating ? "⏳ Capturing Full Store Snapshot..." : "⚡ Capture Restore Point Now"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateForm(false)}
+                  className="rv-btn rv-btn-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </fetcher.Form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Restore Points List / Empty State ── */}
+      {restorePoints.length === 0 ? (
+        <div className="rv-empty-state">
+          <div className="rv-empty-icon-circle">💾</div>
+          <div className="rv-empty-title">No Restore Points Created Yet</div>
+          <div className="rv-empty-desc">
+            Create snapshot restore points before running bulk discounts, editing theme code, or running third-party CSV syncs. You can revert your entire store with one click.
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowCreateForm(true)}
+            className="rv-btn rv-btn-primary"
+          >
+            + Create Your First Restore Point
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          {restorePoints.map((rp) => (
+            <div key={rp.id} className="rv-card" style={{ margin: 0 }}>
+              <div
+                className="rv-card-body"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: "16px",
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                    <Link
+                      to={`/app/restore-points/${rp.id}`}
+                      style={{ fontSize: "16px", fontWeight: 700, color: "var(--rv-text)", textDecoration: "none" }}
+                    >
+                      {rp.name}
+                    </Link>
+                    <span
+                      className={`rv-badge ${
+                        rp.status === "READY"
+                          ? "rv-badge-success"
+                          : rp.status === "CREATING"
+                          ? "rv-badge-warning"
+                          : "rv-badge-critical"
+                      }`}
+                    >
+                      {rp.status}
+                    </span>
+                  </div>
+
+                  {rp.description && (
+                    <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                      {rp.description}
+                    </p>
+                  )}
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                    <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      🕒 {formatTime(rp.createdAt)}
+                    </span>
+                    <span style={{ color: "var(--rv-text-subdued)" }}>·</span>
+                    <span className="rv-badge rv-badge-info">{rp.productCount} Products</span>
+                    {rp.themeCount > 0 && <span className="rv-badge rv-badge-success">1 Theme</span>}
+                    {rp.collectionCount > 0 && (
+                      <span className="rv-badge rv-badge-info">{rp.collectionCount} Collections</span>
+                    )}
+                    {rp.pageCount > 0 && (
+                      <span className="rv-badge rv-badge-neutral">{rp.pageCount} Pages</span>
+                    )}
+                    {rp.articleCount > 0 && (
+                      <span className="rv-badge rv-badge-success">{rp.articleCount} Articles</span>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <Link
+                    to={`/app/restore-points/${rp.id}`}
+                    className="rv-btn rv-btn-primary"
+                    style={{ fontSize: "13px" }}
+                  >
+                    ⚡ Inspect / Restore
+                  </Link>
+
+                  <a
+                    href={`/app/restore-points/${rp.id}/export`}
+                    className="rv-btn rv-btn-secondary"
+                    style={{ fontSize: "13px" }}
+                  >
+                    ⬇️ JSON
+                  </a>
+
+                  <fetcher.Form method="POST" style={{ display: "inline" }}>
+                    <input type="hidden" name="intent" value="delete" />
+                    <input type="hidden" name="rpId" value={rp.id} />
+                    <button
+                      type="submit"
+                      onClick={(e) => {
+                        if (!confirm(`Delete restore point "${rp.name}"? This cannot be undone.`)) {
+                          e.preventDefault();
+                        }
+                      }}
+                      className="rv-btn rv-btn-subtle"
+                      style={{ fontSize: "13px", color: "var(--rv-critical)" }}
+                    >
+                      Delete
+                    </button>
+                  </fetcher.Form>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
     </s-page>
   );
 }

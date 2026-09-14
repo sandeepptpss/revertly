@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -98,12 +98,12 @@ function formatTime(date) {
   return new Date(date).toLocaleString();
 }
 
-function statusTone(status) {
+function statusBadge(status) {
   const s = String(status || "").toUpperCase();
-  if (s === "PAID" || s === "FULFILLED") return "success";
-  if (s === "PENDING" || s === "PARTIALLY_PAID") return "attention";
-  if (s === "REFUNDED" || s === "VOIDED") return "critical";
-  return "info";
+  if (s === "PAID" || s === "FULFILLED") return <span className="rv-badge rv-badge-success">{s}</span>;
+  if (s === "PENDING" || s === "PARTIALLY_PAID") return <span className="rv-badge rv-badge-warning">{s}</span>;
+  if (s === "REFUNDED" || s === "VOIDED") return <span className="rv-badge rv-badge-critical">{s}</span>;
+  return <span className="rv-badge rv-badge-neutral">{s || "N/A"}</span>;
 }
 
 export default function DataVault() {
@@ -117,342 +117,385 @@ export default function DataVault() {
 
   return (
     <s-page heading="Orders & Customers Vault" inlineSize="large">
+
+      {/* ── Action Result Banner ── */}
       {result?.message && (
-        <s-section>
-          <s-banner tone={result.success ? "success" : "critical"}>
-            {result.message}
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>{result.success ? "✅" : "⚠️"}</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
-      {/* ── Top Overview Banner & Quick Actions ── */}
-      <s-section>
-        <s-card>
-          <s-box padding="base">
-            <s-stack direction="inline" align="space-between" align-items="center" wrap>
-              <s-stack direction="block" gap="extraTight">
-                <s-stack direction="inline" gap="tight" align="center">
-                  <s-text variant="headingMd" fontWeight="bold">Store Financial &amp; Dispute Vault</s-text>
-                  <s-badge tone="success">Active &amp; Compliant</s-badge>
-                </s-stack>
-                <s-text tone="subdued">
-                  Encrypted archive of historical transactions, line item SKUs, and buyer records for tax audits and chargeback defense.
-                </s-text>
-                <s-stack direction="inline" gap="base" align="center">
-                  <s-badge tone="info">{stats.totalOrders} Archived Orders</s-badge>
-                  <s-badge tone="info">{stats.totalCustomers} Customer Profiles</s-badge>
-                  <s-text tone="subdued" variant="bodySm">
-                    Last Vault Sync: {formatTime(stats.lastSync)}
-                  </s-text>
-                </s-stack>
-              </s-stack>
+      {/* ── Hero Vault Status & Quick Export Actions ── */}
+      <div className="rv-hero-banner">
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+              Store Financial &amp; Dispute Vault
+            </strong>
+            <span className="rv-badge rv-badge-success">Active &amp; Compliant</span>
+          </div>
+          <p style={{ margin: "0 0 8px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            Encrypted archive of historical transactions, line item SKUs, and customer records for tax audits and chargeback defense.
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+            <span className="rv-badge rv-badge-info">{stats.totalOrders} Archived Orders</span>
+            <span className="rv-badge rv-badge-info">{stats.totalCustomers} Customer Profiles</span>
+            <span>🕒 Last Vault Sync: {formatTime(stats.lastSync)}</span>
+          </div>
+        </div>
 
-              <s-stack direction="inline" gap="tight" align-items="center">
-                <fetcher.Form method="POST">
-                  <input type="hidden" name="intent" value="sync_all" />
-                  <s-button
-                    submit
-                    variant="primary"
-                    {...(isSyncing ? { loading: true } : {})}
-                  >
-                    🔄 Sync Orders &amp; Customers
-                  </s-button>
-                </fetcher.Form>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <fetcher.Form method="POST">
+            <input type="hidden" name="intent" value="sync_all" />
+            <button
+              type="submit"
+              disabled={isSyncing}
+              className="rv-btn rv-btn-primary"
+              style={{ fontWeight: 600 }}
+            >
+              {isSyncing ? "⏳ Syncing..." : "🔄 Sync Vault Now"}
+            </button>
+          </fetcher.Form>
 
+          <a href="/app/vault/export?type=orders_csv" className="rv-btn rv-btn-secondary" style={{ fontSize: "13px" }}>
+            ⬇️ Tax Audit CSV
+          </a>
+          <a href="/app/vault/export?type=dispute_json" className="rv-btn rv-btn-secondary" style={{ fontSize: "13px" }}>
+            ⬇️ Evidence JSON
+          </a>
+        </div>
+      </div>
 
-                <s-button href="/app/vault/export?type=orders_csv" variant="secondary">
-                  ⬇️ Export Tax CSV
-                </s-button>
-                <s-button href="/app/vault/export?type=dispute_json" variant="secondary">
-                  ⬇️ Full Evidence JSON
-                </s-button>
-              </s-stack>
-            </s-stack>
-          </s-box>
-        </s-card>
-      </s-section>
-
-      {/* ── Segmented Tabs ── */}
-      <s-section>
-        <s-stack direction="inline" gap="tight" wrap>
-          <s-button
-            variant={activeTab === "orders" ? "primary" : "secondary"}
-            onClick={() => setActiveTab("orders")}
-          >
-            📦 Orders Vault ({orders.length})
-          </s-button>
-          <s-button
-            variant={activeTab === "customers" ? "primary" : "secondary"}
-            onClick={() => setActiveTab("customers")}
-          >
-            👥 Customers Directory ({customers.length})
-          </s-button>
-          <s-button
-            variant={activeTab === "guide" ? "primary" : "secondary"}
-            onClick={() => setActiveTab("guide")}
-          >
-            🛡️ Tax &amp; Dispute Protection Guide
-          </s-button>
-        </s-stack>
-      </s-section>
+      {/* ── Segmented Navigation Pills ── */}
+      <div className="rv-pills-row">
+        <button
+          type="button"
+          className={`rv-pill ${activeTab === "orders" ? "rv-pill-active" : ""}`}
+          onClick={() => setActiveTab("orders")}
+        >
+          📦 Orders Vault ({orders.length})
+        </button>
+        <button
+          type="button"
+          className={`rv-pill ${activeTab === "customers" ? "rv-pill-active" : ""}`}
+          onClick={() => setActiveTab("customers")}
+        >
+          👥 Customers Directory ({customers.length})
+        </button>
+        <button
+          type="button"
+          className={`rv-pill ${activeTab === "guide" ? "rv-pill-active" : ""}`}
+          onClick={() => setActiveTab("guide")}
+        >
+          🛡️ Tax &amp; Dispute Protection Guide
+        </button>
+      </div>
 
       {/* ── TAB 1: Orders Vault ── */}
       {activeTab === "orders" && (
-        <s-section heading="Archived Orders">
+        <div>
           {/* Filter Bar */}
-          <s-card>
-            <s-box padding="base">
-              <form method="get">
-                <s-stack direction="inline" gap="base" align-items="end">
-                  <s-text-field
-                    name="searchOrder"
-                    label="Search Orders"
-                    defaultValue={searchOrder}
-                    placeholder="Search by Order # (#1001), Customer Email, or Name..."
-                  />
-                  <s-button submit variant="secondary">Search</s-button>
-                  {searchOrder && (
-                    <s-link href="/app/vault">Clear Search</s-link>
-                  )}
-                </s-stack>
-              </form>
-            </s-box>
-          </s-card>
+          <div className="rv-filter-bar">
+            <form method="get" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+              <input
+                type="text"
+                name="searchOrder"
+                defaultValue={searchOrder}
+                placeholder="🔍 Search by Order # (#1001), Customer Email, or Name..."
+                className="rv-input"
+                style={{ flexGrow: 1, minWidth: "260px" }}
+              />
+              <button type="submit" className="rv-btn rv-btn-primary">
+                Search Orders
+              </button>
+              {searchOrder && (
+                <Link to="/app/vault" className="rv-btn rv-btn-subtle">
+                  ✕ Clear Search
+                </Link>
+              )}
+            </form>
+          </div>
 
-          {/* Inspected Order Modal / Box */}
+          {/* Inspected Order Snapshot Drawer */}
           {inspectedOrder && (
-            <s-card>
-              <s-box padding="base">
-                <s-stack direction="block" gap="base">
-                  <s-stack direction="inline" align="space-between" align-items="center">
-                    <s-stack direction="block" gap="extraTight">
-                      <s-text variant="headingMd" fontWeight="bold">
-                        Order Snapshot: {inspectedOrder.orderNumber}
-                      </s-text>
-                      <s-text tone="subdued">
-                        Customer: {inspectedOrder.customerName} ({inspectedOrder.customerEmail || "No email"})
-                      </s-text>
-                    </s-stack>
-                    <s-button variant="secondary" onClick={() => setInspectedOrder(null)}>
-                      ✕ Close Snapshot
-                    </s-button>
-                  </s-stack>
+            <div className="rv-card" style={{ borderLeft: "4px solid #005bd3", background: "#f8fafc", marginBottom: "20px" }}>
+              <div className="rv-card-header" style={{ background: "#edf2f7" }}>
+                <div>
+                  <h4 className="rv-card-title">
+                    <span>📦</span> Order Snapshot: {inspectedOrder.orderNumber}
+                  </h4>
+                  <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                    Customer: {inspectedOrder.customerName} ({inspectedOrder.customerEmail || "No email"})
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInspectedOrder(null)}
+                  className="rv-btn rv-btn-secondary"
+                  style={{ fontSize: "12px" }}
+                >
+                  ✕ Close Snapshot
+                </button>
+              </div>
 
-                  <s-stack direction="inline" gap="base" align="center">
-                    <s-badge tone={statusTone(inspectedOrder.financialStatus)}>
-                      Payment: {inspectedOrder.financialStatus || "N/A"}
-                    </s-badge>
-                    <s-badge tone={statusTone(inspectedOrder.fulfillmentStatus)}>
-                      Fulfillment: {inspectedOrder.fulfillmentStatus || "N/A"}
-                    </s-badge>
-                    <s-text fontWeight="bold">
-                      Total: {inspectedOrder.totalPrice} {inspectedOrder.currency}
-                    </s-text>
-                    <s-text tone="subdued">
-                      Processed: {formatTime(inspectedOrder.processedAt)}
-                    </s-text>
-                  </s-stack>
+              <div className="rv-card-body">
+                <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "16px" }}>
+                  {statusBadge(inspectedOrder.financialStatus)}
+                  {statusBadge(inspectedOrder.fulfillmentStatus)}
+                  <strong style={{ fontSize: "14px" }}>
+                    Total: {inspectedOrder.totalPrice} {inspectedOrder.currency}
+                  </strong>
+                  <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                    Processed: {formatTime(inspectedOrder.processedAt)}
+                  </span>
+                </div>
 
-                  {/* Line items table */}
-                  <s-box padding="tight" borderWidth="base" borderRadius="base" borderColor="subdued">
-                    <s-stack direction="block" gap="tight">
-                      <s-text fontWeight="bold">Line Items &amp; SKUs:</s-text>
-                      {(inspectedOrder.orderData?.lineItems?.nodes || []).map((li, idx) => (
-                        <s-stack key={li.id || idx} direction="inline" align="space-between">
-                          <s-text>
-                            <strong>{li.quantity}x</strong> {li.title} {li.variant?.title ? `(${li.variant.title})` : ""}
-                          </s-text>
-                          <s-stack direction="inline" gap="base">
-                            <s-text tone="subdued">SKU: {li.sku || li.variant?.sku || "None"}</s-text>
-                            <s-text fontWeight="semibold">
-                              {li.originalUnitPriceSet?.shopMoney?.amount || "—"} {li.originalUnitPriceSet?.shopMoney?.currencyCode || ""}
-                            </s-text>
-                          </s-stack>
-                        </s-stack>
-                      ))}
-                    </s-stack>
-                  </s-box>
-
-                  {/* Shipping Address */}
-                  {inspectedOrder.orderData?.shippingAddress && (
-                    <s-text tone="subdued">
-                      Shipping Address: {[
-                        inspectedOrder.orderData.shippingAddress.address1,
-                        inspectedOrder.orderData.shippingAddress.city,
-                        inspectedOrder.orderData.shippingAddress.province,
-                        inspectedOrder.orderData.shippingAddress.country,
-                        inspectedOrder.orderData.shippingAddress.zip,
-                      ].filter(Boolean).join(", ")}
-                    </s-text>
-                  )}
-                </s-stack>
-              </s-box>
-            </s-card>
-          )}
-
-          {/* Orders Table */}
-          {orders.length === 0 ? (
-            <s-card>
-              <s-box padding="base">
-                <s-empty-state heading="No orders archived yet">
-                  <s-paragraph>
-                    Click <strong>&ldquo;Sync Orders &amp; Customers&rdquo;</strong> above to pull your store&apos;s transaction records into the secure vault.
-                  </s-paragraph>
-                </s-empty-state>
-              </s-box>
-            </s-card>
-          ) : (
-            <s-card>
-              <s-box padding="base">
-                <s-resource-list>
-                  {orders.map((ord) => (
-                    <s-resource-item key={ord.id} id={String(ord.id)}>
-                      <s-stack direction="inline" align="space-between" align-items="center">
-                        <s-stack direction="block" gap="tight">
-                          <s-stack direction="inline" gap="tight" align="center">
-                            <s-text fontWeight="bold">{ord.orderNumber}</s-text>
-                            <s-badge tone={statusTone(ord.financialStatus)}>
-                              {ord.financialStatus || "N/A"}
-                            </s-badge>
-                            {ord.fulfillmentStatus && (
-                              <s-badge tone={statusTone(ord.fulfillmentStatus)}>
-                                {ord.fulfillmentStatus}
-                              </s-badge>
-                            )}
-                          </s-stack>
-                          <s-text tone="subdued">
-                            Customer: {ord.customerName} {ord.customerEmail ? `(${ord.customerEmail})` : ""} &bull; Processed: {formatTime(ord.processedAt)}
-                          </s-text>
-                        </s-stack>
-
-                        <s-stack direction="inline" gap="base" align-items="center">
-                          <s-text fontWeight="bold" variant="headingSm">
-                            {ord.totalPrice} {ord.currency}
-                          </s-text>
-                          <s-button
-                            variant="secondary"
-                            onClick={() => setInspectedOrder(ord)}
-                          >
-                            Inspect Snapshot
-                          </s-button>
-                        </s-stack>
-                      </s-stack>
-                    </s-resource-item>
+                {/* Line Items List */}
+                <div style={{ border: "1px solid var(--rv-border)", borderRadius: "var(--rv-radius-sm)", background: "#ffffff", padding: "12px 16px", marginBottom: "12px" }}>
+                  <strong style={{ fontSize: "13px", display: "block", marginBottom: "8px" }}>Line Items &amp; SKUs:</strong>
+                  {(inspectedOrder.orderData?.lineItems?.nodes || []).map((li, idx) => (
+                    <div
+                      key={li.id || idx}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "6px 0",
+                        borderBottom: idx < (inspectedOrder.orderData.lineItems.nodes.length - 1) ? "1px solid #f1f2f3" : "none",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <div>
+                        <strong>{li.quantity}x</strong> {li.title} {li.variant?.title ? `(${li.variant.title})` : ""}
+                        <span style={{ color: "var(--rv-text-subdued)", marginLeft: "8px", fontSize: "12px" }}>
+                          SKU: {li.sku || li.variant?.sku || "None"}
+                        </span>
+                      </div>
+                      <div style={{ fontWeight: 600 }}>
+                        {li.originalUnitPriceSet?.shopMoney?.amount || "—"} {li.originalUnitPriceSet?.shopMoney?.currencyCode || ""}
+                      </div>
+                    </div>
                   ))}
-                </s-resource-list>
-              </s-box>
-            </s-card>
+                </div>
+
+                {inspectedOrder.orderData?.shippingAddress && (
+                  <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                    📍 <strong>Shipping Address:</strong> {[
+                      inspectedOrder.orderData.shippingAddress.address1,
+                      inspectedOrder.orderData.shippingAddress.city,
+                      inspectedOrder.orderData.shippingAddress.province,
+                      inspectedOrder.orderData.shippingAddress.country,
+                      inspectedOrder.orderData.shippingAddress.zip,
+                    ].filter(Boolean).join(", ")}
+                  </p>
+                )}
+              </div>
+            </div>
           )}
-        </s-section>
+
+          {/* Orders Table / Empty State */}
+          {orders.length === 0 ? (
+            <div className="rv-empty-state">
+              <div className="rv-empty-icon-circle">📦</div>
+              <div className="rv-empty-title">
+                {searchOrder ? "No orders matched your search" : "No orders archived yet"}
+              </div>
+              <div className="rv-empty-desc">
+                {searchOrder
+                  ? "Try searching by a different order number, customer email, or full name."
+                  : "Click 'Sync Vault Now' above to pull your store's transaction records into the secure encrypted vault."}
+              </div>
+            </div>
+          ) : (
+            <div className="rv-table-container">
+              <table className="rv-table">
+                <thead>
+                  <tr>
+                    <th>Order #</th>
+                    <th>Date Processed</th>
+                    <th>Customer</th>
+                    <th>Total</th>
+                    <th>Payment</th>
+                    <th>Fulfillment</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.map((ord) => (
+                    <tr key={ord.id}>
+                      <td style={{ fontWeight: 700 }}>{ord.orderNumber}</td>
+                      <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px" }}>
+                        {formatTime(ord.processedAt)}
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 500 }}>{ord.customerName || "Customer"}</div>
+                        {ord.customerEmail && (
+                          <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>
+                            {ord.customerEmail}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ fontWeight: 700 }}>
+                        {ord.totalPrice} {ord.currency}
+                      </td>
+                      <td>{statusBadge(ord.financialStatus)}</td>
+                      <td>{statusBadge(ord.fulfillmentStatus)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          type="button"
+                          onClick={() => setInspectedOrder(ord)}
+                          className="rv-btn rv-btn-secondary"
+                          style={{ fontSize: "12px", padding: "6px 12px" }}
+                        >
+                          Inspect Snapshot
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── TAB 2: Customers Directory ── */}
       {activeTab === "customers" && (
-        <s-section heading="Archived Customers">
-          <s-card>
-            <s-box padding="base">
-              <form method="get">
-                <s-stack direction="inline" gap="base" align-items="end">
-                  <s-text-field
-                    name="searchCustomer"
-                    label="Search Customers"
-                    defaultValue={searchCustomer}
-                    placeholder="Search by Name, Email, or Phone..."
-                  />
-                  <s-button submit variant="secondary">Search</s-button>
-                  {searchCustomer && (
-                    <s-link href="/app/vault">Clear Search</s-link>
-                  )}
-                </s-stack>
-              </form>
-            </s-box>
-          </s-card>
+        <div>
+          <div className="rv-filter-bar">
+            <form method="get" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+              <input
+                type="text"
+                name="searchCustomer"
+                defaultValue={searchCustomer}
+                placeholder="🔍 Search by Customer Name, Email, or Phone..."
+                className="rv-input"
+                style={{ flexGrow: 1, minWidth: "260px" }}
+              />
+              <button type="submit" className="rv-btn rv-btn-primary">
+                Search Customers
+              </button>
+              {searchCustomer && (
+                <Link to="/app/vault" className="rv-btn rv-btn-subtle">
+                  ✕ Clear Search
+                </Link>
+              )}
+            </form>
+          </div>
 
           {customers.length === 0 ? (
-            <s-card>
-              <s-box padding="base">
-                <s-empty-state heading="No customers archived yet">
-                  <s-paragraph>
-                    Click <strong>&ldquo;Sync Orders &amp; Customers&rdquo;</strong> to pull customer profiles and spending history.
-                  </s-paragraph>
-                </s-empty-state>
-              </s-box>
-            </s-card>
+            <div className="rv-empty-state">
+              <div className="rv-empty-icon-circle">👥</div>
+              <div className="rv-empty-title">
+                {searchCustomer ? "No customer profiles match your search" : "No customers archived yet"}
+              </div>
+              <div className="rv-empty-desc">
+                Sync your vault above to archive buyer profiles and lifetime spending totals.
+              </div>
+            </div>
           ) : (
-            <s-card>
-              <s-box padding="base">
-                <s-resource-list>
+            <div className="rv-table-container">
+              <table className="rv-table">
+                <thead>
+                  <tr>
+                    <th>Customer Name</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Location</th>
+                    <th>Orders Count</th>
+                    <th style={{ textAlign: "right" }}>Total Spent</th>
+                  </tr>
+                </thead>
+                <tbody>
                   {customers.map((cust) => {
                     const addr = cust.customerData?.defaultAddress;
                     const addressStr = addr
                       ? [addr.city, addr.province, addr.country].filter(Boolean).join(", ")
-                      : "";
+                      : "—";
 
                     return (
-                      <s-resource-item key={cust.id} id={String(cust.id)}>
-                        <s-stack direction="inline" align="space-between" align-items="center">
-                          <s-stack direction="block" gap="tight">
-                            <s-stack direction="inline" gap="tight" align="center">
-                              <s-text fontWeight="bold">
-                                {[cust.firstName, cust.lastName].filter(Boolean).join(" ") || cust.email || "Unnamed Customer"}
-                              </s-text>
-                              {cust.phone && <s-badge tone="subdued">{cust.phone}</s-badge>}
-                            </s-stack>
-                            <s-text tone="subdued">
-                              Email: {cust.email || "—"} {addressStr ? `&bull; Location: ${addressStr}` : ""}
-                            </s-text>
-                          </s-stack>
-
-                          <s-stack direction="inline" gap="base" align-items="center">
-                            <s-badge tone="info">{cust.ordersCount} Orders</s-badge>
-                            <s-text fontWeight="bold">
-                              Spent: ${cust.totalSpent || "0.00"}
-                            </s-text>
-                          </s-stack>
-                        </s-stack>
-                      </s-resource-item>
+                      <tr key={cust.id}>
+                        <td style={{ fontWeight: 600 }}>
+                          {[cust.firstName, cust.lastName].filter(Boolean).join(" ") || "Unnamed Buyer"}
+                        </td>
+                        <td style={{ color: "var(--rv-text-subdued)" }}>{cust.email || "—"}</td>
+                        <td>{cust.phone ? <span className="rv-badge rv-badge-neutral">{cust.phone}</span> : "—"}</td>
+                        <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px" }}>{addressStr}</td>
+                        <td>
+                          <span className="rv-badge rv-badge-info">{cust.ordersCount} Orders</span>
+                        </td>
+                        <td style={{ textAlign: "right", fontWeight: 700 }}>
+                          ${cust.totalSpent || "0.00"}
+                        </td>
+                      </tr>
                     );
                   })}
-                </s-resource-list>
-              </s-box>
-            </s-card>
+                </tbody>
+              </table>
+            </div>
           )}
-        </s-section>
+        </div>
       )}
 
-      {/* ── TAB 3: Guide ── */}
+      {/* ── TAB 3: Protection Guide ── */}
       {activeTab === "guide" && (
-        <s-section heading="Dispute Defense &amp; Accounting Vault Guide">
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-text fontWeight="bold" variant="headingMd">How to use your Revertly Data Vault:</s-text>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "16px" }}>
+          <div className="rv-card" style={{ margin: 0 }}>
+            <div className="rv-card-header">
+              <h4 className="rv-card-title">
+                <span>🛡️</span> Defeating Payment Chargebacks
+              </h4>
+            </div>
+            <div className="rv-card-body">
+              <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6, margin: 0 }}>
+                When a buyer files a dispute alleging non-receipt or unauthorized transaction with Stripe or PayPal, click <strong>&ldquo;Inspect Snapshot&rdquo;</strong> on the order. You can export the <strong>Evidence JSON</strong> as authoritative proof of delivery destination, variant SKU, and buyer contact details.
+              </p>
+            </div>
+          </div>
 
-                <s-stack direction="block" gap="tight">
-                  <s-text fontWeight="bold">1. Defeating Payment Chargebacks (PayPal / Stripe / Klarna):</s-text>
-                  <s-paragraph>
-                    When a buyer files a dispute alleging non-receipt or unauthorized transaction, click <strong>&ldquo;Inspect Snapshot&rdquo;</strong> on the order. You will see the timestamped delivery destination, variant SKU, and buyer contact details. Export the <strong>Dispute JSON</strong> or screenshot this view as authoritative proof.
-                  </s-paragraph>
-                </s-stack>
+          <div className="rv-card" style={{ margin: 0 }}>
+            <div className="rv-card-header">
+              <h4 className="rv-card-title">
+                <span>📊</span> Tax Audit Readiness (IRS / GST / VAT)
+              </h4>
+            </div>
+            <div className="rv-card-body">
+              <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6, margin: 0 }}>
+                Export the <strong>Tax Audit CSV</strong> at the end of each financial period. This file provides clean, unedited financial statuses, net prices, and buyer locations formatted for instant upload to QuickBooks, Xero, or CPA review.
+              </p>
+            </div>
+          </div>
 
-                <s-stack direction="block" gap="tight">
-                  <s-text fontWeight="bold">2. Surviving Tax Audits (IRS / GST / VAT):</s-text>
-                  <s-paragraph>
-                    Export the <strong>Tax Audit CSV</strong> at the end of each financial quarter. This file includes clean, unedited financial statuses, net prices, and customer locations compatible with QuickBooks, Xero, and Microsoft Excel.
-                  </s-paragraph>
-                </s-stack>
-
-                <s-stack direction="block" gap="tight">
-                  <s-text fontWeight="bold">3. GDPR &amp; Privacy Compliance:</s-text>
-                  <s-paragraph>
-                    Revertly actively listens for Shopify&apos;s GDPR webhooks. When a customer exercises their &ldquo;Right to be Forgotten&rdquo;, personal identities are anonymized while preserving tax totals so your accounting books always balance.
-                  </s-paragraph>
-                </s-stack>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
+          <div className="rv-card" style={{ margin: 0 }}>
+            <div className="rv-card-header">
+              <h4 className="rv-card-title">
+                <span>🔒</span> GDPR &amp; Privacy Compliance
+              </h4>
+            </div>
+            <div className="rv-card-body">
+              <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6, margin: 0 }}>
+                Revertly automatically responds to Shopify&apos;s GDPR webhooks. When a customer requests data redaction, personal identities are anonymized while preserving tax totals so your accounting books always balance.
+              </p>
+            </div>
+          </div>
+        </div>
       )}
+
     </s-page>
   );
 }

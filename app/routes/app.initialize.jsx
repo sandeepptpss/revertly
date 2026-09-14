@@ -3,7 +3,7 @@ import prisma from "../db.server.js";
 import { buildSnapshot } from "../monitor.server.js";
 import { createMultiResourceRestorePoint } from "../backup.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { useFetcher, useLoaderData, useRouteError } from "react-router";
+import { useFetcher, useLoaderData, useRouteError, Link } from "react-router";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -121,71 +121,174 @@ export default function InitialSnapshot() {
   const result = fetcher.data;
   const isLoading = fetcher.state !== "idle";
 
+  const totalMonitored = result?.count ?? count;
+  const isProtected = totalMonitored > 0;
+
   return (
     <s-page
       heading="Initialize Product Snapshots"
       backAction={{ url: "/app", label: "Dashboard" }}
       inlineSize="large"
     >
-      <s-section>
-        <s-card>
-          <s-box padding="base">
-            <s-stack direction="block" gap="base">
-              <s-text variant="headingMd" fontWeight="bold">Store Baseline Setup</s-text>
-              <s-paragraph>
-                Before monitoring begins, Revertly takes an initial snapshot of your
-                products and store assets. This establishes a baseline to detect unauthorized price drops, mass tag edits, and accidental deletions.
-              </s-paragraph>
-              
-              <s-box padding="tight" borderWidth="base" borderRadius="base" borderColor="subdued">
-                <s-stack direction="inline" gap="tight" align-items="center">
-                  <s-badge tone={count > 0 ? "success" : "attention"}>
-                    {count > 0 ? "Monitoring Active" : "Setup Required"}
-                  </s-badge>
-                  <s-text>
-                    Currently tracking <strong>{result?.count ?? count}</strong> product snapshots in your baseline.
-                  </s-text>
-                </s-stack>
-              </s-box>
+      {/* ── Hero Status ── */}
+      <div className="rv-hero-banner">
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+              Store Catalog Baseline Snapshot
+            </strong>
+            <span className={`rv-badge ${isProtected ? "rv-badge-success" : "rv-badge-warning"}`}>
+              {isProtected ? "Monitoring Active" : "Setup Required"}
+            </span>
+          </div>
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            Before Revertly can detect price crashes, CSV bulk errors, or mass tag changes, an initial catalog baseline is required.
+          </p>
+        </div>
 
-              {result?.success && (
-                <s-banner tone="success">
-                  <s-stack direction="block" gap="tight">
-                    <s-text fontWeight="bold">🎉 Snapshot Baseline Complete!</s-text>
-                    <s-paragraph>
-                      {result.count} products are now actively monitored
-                      {result.initialRpCreated
-                        ? ", and your first Full Store Baseline (Theme, Collections & Products) has been secured in Restore Points!"
-                        : "."}
-                    </s-paragraph>
-                    <s-stack direction="inline" gap="tight">
-                      <s-button url="/app" variant="primary">
-                        Go to Dashboard →
-                      </s-button>
-                      <s-button url="/app/rules" variant="secondary">
-                        Configure Detection Rules
-                      </s-button>
-                      <s-button url="/app/restore-points" variant="secondary">
-                        View Restore Points
-                      </s-button>
-                    </s-stack>
-                  </s-stack>
-                </s-banner>
-              )}
+        <Link to="/app" className="rv-btn rv-btn-secondary" style={{ fontSize: "13px" }}>
+          ← Back to Dashboard
+        </Link>
+      </div>
 
-              <fetcher.Form method="POST">
-                <s-button
-                  submit
-                  variant={result?.success ? "secondary" : "primary"}
-                  {...(isLoading ? { loading: true } : {})}
-                >
-                  {count > 0 ? "Refresh Product Snapshots" : "Initialize Monitoring"}
-                </s-button>
-              </fetcher.Form>
-            </s-stack>
-          </s-box>
-        </s-card>
-      </s-section>
+      {/* ── Baseline Setup Wizard Card ── */}
+      <div className="rv-card" style={{ maxWidth: "760px", margin: "0 auto 24px" }}>
+        <div className="rv-card-header" style={{ background: "#fafbfb" }}>
+          <h3 className="rv-card-title">
+            <span>🛡️</span> Catalog Protection Wizard
+          </h3>
+          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+            High-speed GraphQL batching
+          </span>
+        </div>
+
+        <div className="rv-card-body">
+          {/* Status highlight callout */}
+          <div
+            style={{
+              padding: "16px 20px",
+              borderRadius: "var(--rv-radius-sm)",
+              background: isProtected ? "var(--rv-primary-surface)" : "var(--rv-warning-surface)",
+              border: `1px solid ${isProtected ? "var(--rv-primary-border)" : "var(--rv-warning-border)"}`,
+              marginBottom: "20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "12px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <span style={{ fontSize: "24px" }}>{isProtected ? "✅" : "⏳"}</span>
+              <div>
+                <strong style={{ fontSize: "14px", color: "var(--rv-text)" }}>
+                  {isProtected
+                    ? `${totalMonitored.toLocaleString()} Products Monitored in Catalog Baseline`
+                    : "No baseline snapshots captured yet"}
+                </strong>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  {isProtected
+                    ? "Real-time webhooks compare future updates against these frozen records."
+                    : "Click below to scan your Shopify catalog and secure your initial snapshot."}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Success Banner */}
+          {result?.success && (
+            <div
+              style={{
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: "var(--rv-radius-md)",
+                padding: "18px 20px",
+                marginBottom: "24px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+                <span style={{ fontSize: "20px" }}>🎉</span>
+                <strong style={{ color: "#166534", fontSize: "15px" }}>
+                  Snapshot Baseline Complete!
+                </strong>
+              </div>
+              <p style={{ margin: "0 0 14px", fontSize: "13px", color: "#15803d", lineHeight: 1.5 }}>
+                {result.count} products are now actively protected against accidental price drops
+                {result.initialRpCreated
+                  ? ", and your first Full Store Baseline (Theme, Collections & Products) has been created in Restore Points!"
+                  : "."}
+              </p>
+              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                <Link to="/app" className="rv-btn rv-btn-primary" style={{ fontSize: "13px" }}>
+                  Go to Dashboard →
+                </Link>
+                <Link to="/app/rules" className="rv-btn rv-btn-secondary" style={{ fontSize: "13px" }}>
+                  Configure Detection Rules
+                </Link>
+                <Link to="/app/restore-points" className="rv-btn rv-btn-secondary" style={{ fontSize: "13px" }}>
+                  View Restore Points
+                </Link>
+              </div>
+            </div>
+          )}
+
+          {/* 3 Step Timeline */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px", marginBottom: "24px" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+              <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#e0f2fe", color: "#0369a1", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "12px", flexShrink: 0 }}>
+                1
+              </div>
+              <div>
+                <strong style={{ fontSize: "13px", color: "var(--rv-text)" }}>Scan Catalog Details:</strong>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  Reads all product variants, prices, inventory quantities, SKUs, and custom metafields via Shopify Admin GraphQL.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+              <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#e0f2fe", color: "#0369a1", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "12px", flexShrink: 0 }}>
+                2
+              </div>
+              <div>
+                <strong style={{ fontSize: "13px", color: "var(--rv-text)" }}>Freeze Pre-Incident Baseline:</strong>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  Saves snapshot data to your store&apos;s encrypted database so you have a guaranteed reference point for 1-click rollbacks.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+              <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: "#e0f2fe", color: "#0369a1", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "12px", flexShrink: 0 }}>
+                3
+              </div>
+              <div>
+                <strong style={{ fontSize: "13px", color: "var(--rv-text)" }}>Real-Time Webhook Guard:</strong>
+                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  As apps or bulk tools make modifications, Revertly calculates instant diffs to flag suspicious drops and create recoverable incidents.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Trigger Button */}
+          <fetcher.Form method="POST">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="rv-btn rv-btn-primary"
+              style={{ width: "100%", padding: "12px", fontSize: "14px", fontWeight: 700 }}
+            >
+              {isLoading
+                ? "⏳ Scanning Store & Building Snapshot..."
+                : isProtected
+                ? "🔄 Refresh Store Baseline Snapshots"
+                : "⚡ Initialize Catalog Monitoring Now"}
+            </button>
+          </fetcher.Form>
+        </div>
+      </div>
+
     </s-page>
   );
 }

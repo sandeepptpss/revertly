@@ -79,185 +79,290 @@ export default function Settings() {
 
   return (
     <s-page heading="Settings" inlineSize="large">
+
+      {/* ── Action Result Banner ── */}
       {result?.message && (
-        <s-section>
-          <s-banner tone={result.success ? "success" : "critical"}>
-            {result.message}
-          </s-banner>
-        </s-section>
+        <div
+          style={{
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "14px",
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span>{result.success ? "✅" : "⚠️"}</span>
+          <span>{result.message}</span>
+        </div>
       )}
 
       <fetcher.Form method="POST">
         <input type="hidden" name="intent" value="save" />
 
-        {/* Top Action Header */}
-        <s-section>
-          <s-stack direction="inline" align="space-between" align-items="center">
-            <s-text tone="subdued">
-              Manage automatic catalog monitoring, crash prevention circuit breakers, and alert destinations.
-            </s-text>
-            <s-button submit variant="primary" {...(isSaving ? { loading: true } : {})}>
-              Save Settings
-            </s-button>
-          </s-stack>
-        </s-section>
+        {/* ── Top Header & Save CTA ── */}
+        <div className="rv-hero-banner">
+          <div>
+            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+              Protection Configuration &amp; Alert Routing
+            </strong>
+            <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+              Configure automatic catalog watchdog filters, price crash circuit breakers, and emergency alert channels.
+            </p>
+          </div>
+          <button
+            type="submit"
+            disabled={isSaving}
+            className="rv-btn rv-btn-primary"
+            style={{ fontWeight: 600, padding: "10px 22px" }}
+          >
+            {isSaving ? "Saving..." : "Save All Settings"}
+          </button>
+        </div>
 
-        {/* Monitoring */}
-        <s-section heading="Catalog Monitoring">
-          <s-card>
-            <s-box padding="base">
-              <s-form-layout>
-                <s-checkbox
-                  name="monitoringEnabled"
-                  value="true"
-                  label="Enable product change monitoring"
-                  defaultChecked={settings.monitoringEnabled}
+        {/* ── 1. Catalog Monitoring ── */}
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>📡</span> Real-Time Catalog Monitoring
+            </h3>
+          </div>
+          <div className="rv-card-body">
+            <label className="rv-toggle-row" style={{ background: "#ffffff", padding: "14px 16px" }}>
+              <input
+                type="checkbox"
+                name="monitoringEnabled"
+                value="true"
+                defaultChecked={settings.monitoringEnabled}
+                style={{ width: "18px", height: "18px", marginTop: "2px" }}
+              />
+              <div>
+                <strong style={{ fontSize: "14px", color: "var(--rv-text)" }}>
+                  Enable Real-Time Catalog Monitoring
+                </strong>
+                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                  When enabled, Revertly listens to instant Shopify product updates and deletion events to capture baseline drifts, unauthorized price changes, and inventory discrepancies in real time.
+                </p>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        {/* ── 2. Emergency Circuit Breaker ── */}
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>⚡</span> Emergency Circuit Breaker (Price Crash Guard)
+            </h3>
+            <span className="rv-badge rv-badge-warning">Revenue Protection</span>
+          </div>
+          <div className="rv-card-body">
+            <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 16px", lineHeight: 1.5 }}>
+              Protect your store from catastrophic revenue loss. If a bulk CSV upload, third-party pricing app, or staff mistake drops prices below safe margins, the circuit breaker triggers immediate defensive action.
+            </p>
+
+            <label className="rv-toggle-row" style={{ background: "#ffffff", padding: "14px 16px", marginBottom: "16px" }}>
+              <input
+                type="checkbox"
+                name="circuitBreakerEnabled"
+                value="true"
+                defaultChecked={settings.circuitBreakerEnabled}
+                style={{ width: "18px", height: "18px", marginTop: "2px" }}
+              />
+              <div>
+                <strong style={{ fontSize: "14px", color: "var(--rv-text)" }}>
+                  Activate Price Crash Circuit Breaker
+                </strong>
+                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                  Immediately intervene when a sudden price drop exceeds your defined safety percentage.
+                </p>
+              </div>
+            </label>
+
+            <div className="rv-form-grid">
+              <div className="rv-form-field">
+                <label className="rv-form-label">Price Crash Trigger Threshold (%)</label>
+                <input
+                  type="number"
+                  name="circuitBreakerThreshold"
+                  defaultValue={String(settings.circuitBreakerThreshold || 50)}
+                  className="rv-input"
                 />
-                <s-text tone="subdued" variant="bodySm">
-                  When enabled, Revertly listens to real-time product update and delete events to detect price and catalog discrepancies.
-                </s-text>
-              </s-form-layout>
-            </s-box>
-          </s-card>
-        </s-section>
+                <span className="rv-form-help">Trigger when variant price drops by this percentage or more.</span>
+              </div>
 
-        {/* Emergency Circuit Breaker */}
-        <s-section heading="Emergency Circuit Breaker (Price Crash Guard)">
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-paragraph>
-                  Protect your store from catastrophic revenue loss. Automatically pause selling or revert prices if an app, staff error, or CSV upload causes a sudden crash.
-                </s-paragraph>
-                <s-form-layout>
-                  <s-checkbox
-                    name="circuitBreakerEnabled"
+              <div className="rv-form-field">
+                <label className="rv-form-label">Emergency Defensive Action</label>
+                <select
+                  name="circuitBreakerAction"
+                  defaultValue={settings.circuitBreakerAction || "DRAFT"}
+                  className="rv-select"
+                >
+                  <option value="DRAFT">Set Product to DRAFT (Hide from storefront instantly)</option>
+                  <option value="AUTO_REVERT">Auto-Revert Price (Restore previous baseline price)</option>
+                </select>
+                <span className="rv-form-help">Action taken automatically when a crash is detected.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── 3. Bulk Change Detection ── */}
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>📦</span> Bulk Change Anomaly Detection
+            </h3>
+          </div>
+          <div className="rv-card-body">
+            <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 16px" }}>
+              Automatically create a high-priority incident when more than the threshold of products are modified within a short burst window.
+            </p>
+
+            <div className="rv-form-grid">
+              <div className="rv-form-field">
+                <label className="rv-form-label">Bulk Product Threshold</label>
+                <input
+                  type="number"
+                  name="bulkThreshold"
+                  defaultValue={String(settings.bulkThreshold)}
+                  className="rv-input"
+                />
+                <span className="rv-form-help">Trigger incident if this many products change...</span>
+              </div>
+
+              <div className="rv-form-field">
+                <label className="rv-form-label">Time Window (Minutes)</label>
+                <input
+                  type="number"
+                  name="bulkWindowMinutes"
+                  defaultValue={String(settings.bulkWindowMinutes)}
+                  className="rv-input"
+                />
+                <span className="rv-form-help">...within this number of minutes.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── 4. Alert Routing (Email & Slack) ── */}
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>🔔</span> Alert Channels &amp; Notifications
+            </h3>
+          </div>
+          <div className="rv-card-body">
+            <div className="rv-form-field" style={{ marginBottom: "20px" }}>
+              <label className="rv-form-label">Alert Email Address</label>
+              <input
+                type="email"
+                name="alertEmail"
+                defaultValue={settings.alertEmail || ""}
+                placeholder="merchant@example.com"
+                className="rv-input"
+                style={{ maxWidth: "420px" }}
+              />
+              <span className="rv-form-help">Incidents and circuit breaker activations will be sent here.</span>
+            </div>
+
+            {/* Slack Webhook */}
+            <div className="rv-form-field" style={{ marginBottom: "20px" }}>
+              <label className="rv-form-label">Slack Incoming Webhook URL</label>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", maxWidth: "600px" }}>
+                <input
+                  type="url"
+                  name="slackWebhookUrl"
+                  value={slackUrl}
+                  onChange={(e) => setSlackUrl(e.target.value)}
+                  placeholder="https://hooks.slack.com/services/T.../B.../..."
+                  className="rv-input"
+                  style={{ flexGrow: 1 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    fetcher.submit(
+                      { intent: "testSlack", slackWebhookUrl: slackUrl },
+                      { method: "POST" }
+                    );
+                  }}
+                  className="rv-btn rv-btn-secondary"
+                >
+                  🔔 Send Test Alert
+                </button>
+              </div>
+              <span className="rv-form-help">Receive real-time notifications directly into your team's Slack channel.</span>
+            </div>
+
+            {/* Severity Checkboxes */}
+            <div>
+              <label className="rv-form-label" style={{ marginBottom: "8px", display: "block" }}>
+                Notify on Incidents of Severity:
+              </label>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    name="alertOnCritical"
                     value="true"
-                    label="Enable Emergency Circuit Breaker"
-                    defaultChecked={settings.circuitBreakerEnabled}
+                    defaultChecked={settings.alertOnCritical}
                   />
-                  <s-form-layout-group condensed>
-                    <s-text-field
-                      name="circuitBreakerThreshold"
-                      label="Crash Trigger Threshold (%)"
-                      type="number"
-                      defaultValue={String(settings.circuitBreakerThreshold || 50)}
-                      helpText="Trigger when variant price drops by this percentage or more"
-                    />
-                    <s-select
-                      name="circuitBreakerAction"
-                      label="Emergency Protective Action"
-                      value={settings.circuitBreakerAction || "DRAFT"}
-                    >
-                      <s-option value="DRAFT">Set Product to DRAFT (Hide instantly)</s-option>
-                      <s-option value="AUTO_REVERT">Auto-Revert Price (Restore previous price)</s-option>
-                    </s-select>
-                  </s-form-layout-group>
-                </s-form-layout>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
+                  <span>
+                    <span className="rv-badge rv-badge-critical" style={{ marginRight: "6px" }}>CRITICAL</span>
+                    Price crashes, mass deletions, and catastrophic errors
+                  </span>
+                </label>
 
-        {/* Bulk Detection */}
-        <s-section heading="Bulk Change Detection">
-          <s-card>
-            <s-box padding="base">
-              <s-stack direction="block" gap="base">
-                <s-paragraph>
-                  Automatically create an incident when too many products change in a short period.
-                </s-paragraph>
-                <s-form-layout>
-                  <s-form-layout-group condensed>
-                    <s-text-field
-                      name="bulkThreshold"
-                      label="Products Threshold"
-                      type="number"
-                      defaultValue={String(settings.bulkThreshold)}
-                      helpText="Trigger incident if this many products change"
-                    />
-                    <s-text-field
-                      name="bulkWindowMinutes"
-                      label="Time Window (minutes)"
-                      type="number"
-                      defaultValue={String(settings.bulkWindowMinutes)}
-                      helpText="Within this time window"
-                    />
-                  </s-form-layout-group>
-                </s-form-layout>
-              </s-stack>
-            </s-box>
-          </s-card>
-        </s-section>
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    name="alertOnHigh"
+                    value="true"
+                    defaultChecked={settings.alertOnHigh}
+                  />
+                  <span>
+                    <span className="rv-badge rv-badge-warning" style={{ marginRight: "6px" }}>HIGH</span>
+                    Bulk discount anomalies and sudden variant updates
+                  </span>
+                </label>
 
-        {/* Alerts */}
-        <s-section heading="Alert Settings (Email & Slack)">
-          <s-card>
-            <s-box padding="base">
-              <s-form-layout>
-                <s-text-field
-                  name="alertEmail"
-                  label="Alert Email"
-                  type="email"
-                  defaultValue={settings.alertEmail || ""}
-                  placeholder="merchant@example.com"
-                  helpText="Receive email alerts when incidents are created"
-                />
-                <s-stack direction="inline" gap="tight" blockAlign="end">
-                  <div style={{ flex: 1 }}>
-                    <s-text-field
-                      name="slackWebhookUrl"
-                      label="Slack Incoming Webhook URL"
-                      type="url"
-                      value={slackUrl}
-                      onChange={(e) => setSlackUrl(e.target.value)}
-                      placeholder="https://hooks.slack.com/services/..."
-                      helpText="Receive real-time instant alerts directly in your Slack channel"
-                    />
-                  </div>
-                  <s-button
-                    type="button"
-                    onClick={() => {
-                      fetcher.submit(
-                        { intent: "testSlack", slackWebhookUrl: slackUrl },
-                        { method: "POST" }
-                      );
-                    }}
-                  >
-                    Test Slack
-                  </s-button>
-                </s-stack>
-                <s-checkbox
-                  name="alertOnCritical"
-                  value="true"
-                  label="Alert on Critical incidents"
-                  defaultChecked={settings.alertOnCritical}
-                />
-                <s-checkbox
-                  name="alertOnHigh"
-                  value="true"
-                  label="Alert on High severity incidents"
-                  defaultChecked={settings.alertOnHigh}
-                />
-                <s-checkbox
-                  name="alertOnMedium"
-                  value="true"
-                  label="Alert on Medium severity incidents"
-                  defaultChecked={settings.alertOnMedium}
-                />
-              </s-form-layout>
-            </s-box>
-          </s-card>
-        </s-section>
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    name="alertOnMedium"
+                    value="true"
+                    defaultChecked={settings.alertOnMedium}
+                  />
+                  <span>
+                    <span className="rv-badge rv-badge-info" style={{ marginRight: "6px" }}>MEDIUM</span>
+                    Moderate catalog changes exceeding defined rules
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
 
-        <s-section>
-          <s-stack direction="inline" gap="300">
-            <s-button submit variant="primary" {...(isSaving ? { loading: true } : {})}>
-              Save Settings
-            </s-button>
-          </s-stack>
-        </s-section>
+        {/* ── Bottom Save Button ── */}
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "32px" }}>
+          <button
+            type="submit"
+            disabled={isSaving}
+            className="rv-btn rv-btn-primary"
+            style={{ fontWeight: 600, padding: "12px 28px", fontSize: "14px" }}
+          >
+            {isSaving ? "Saving Settings..." : "Save Settings"}
+          </button>
+        </div>
+
       </fetcher.Form>
+
     </s-page>
   );
 }
