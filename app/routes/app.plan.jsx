@@ -1,14 +1,20 @@
+import { useState } from "react";
 import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import {
   authenticate,
   PLAN_STARTER,
   PLAN_GROWTH,
   PLAN_BUSINESS,
-  PLAN_PRO,
   PLAN_ENTERPRISE,
 } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import {
+  PLAN_TIERS,
+  PLAN_LIMITS,
+  getStorePlan,
+  normalizePlanId,
+} from "../billing.server.js";
 
 // ── Plan definitions ────────────────────────────────────────────────────────
 const PLANS = [
@@ -18,7 +24,7 @@ const PLANS = [
     name: "Free",
     price: "$0",
     period: "",
-    subtext: "",
+    subtext: "Free forever",
     footerText: "Basic protection for new stores",
     features: [
       "Up to 100 products monitored",
@@ -110,62 +116,26 @@ const PLANS = [
   },
 ];
 
-// Usage limits per plan
-const PLAN_LIMITS = {
-  free: { products: 100, restorePoints: 2, rules: 1 },
-  starter: { products: 1000, restorePoints: 10, rules: 3 },
-  growth: { products: 5000, restorePoints: 50, rules: 10 },
-  pro: { products: 5000, restorePoints: 50, rules: 10 }, // backwards compat
-  business: { products: 20000, restorePoints: 100, rules: Infinity },
-  enterprise: { products: Infinity, restorePoints: Infinity, rules: Infinity },
-};
-
 // ── Server ───────────────────────────────────────────────────────────────────
 export const loader = async ({ request }) => {
   const { session, billing } = await authenticate.admin(request);
   const shop = session.shop;
   const isTest = process.env.NODE_ENV !== "production";
 
-  let activeShopifyPlan = null;
-  try {
-    const billingCheck = await billing.check({
-      plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
-      isTest,
-    });
-    if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
-      const subName = billingCheck.appSubscriptions[0]?.name;
-      if (subName === PLAN_STARTER) activeShopifyPlan = "starter";
-      else if (subName === PLAN_GROWTH || subName === PLAN_PRO) activeShopifyPlan = "growth";
-      else if (subName === PLAN_BUSINESS) activeShopifyPlan = "business";
-      else if (subName === PLAN_ENTERPRISE) activeShopifyPlan = "enterprise";
-    }
-  } catch (err) {
-    console.warn("Shopify billing check warning:", err?.message || err);
-  }
+  const { currentPlan, limits } = await getStorePlan(shop, billing, isTest);
 
-  const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  let currentPlan = activeShopifyPlan || settings?.planId || "free";
-
-  // Normalize legacy plan IDs
-  if (currentPlan === "pro") currentPlan = "growth";
-
-  if (activeShopifyPlan && settings && settings.planId !== activeShopifyPlan) {
-    await prisma.appSettings.update({
-      where: { shop },
-      data: { planId: activeShopifyPlan },
-    });
-  }
-
-  const [productCount, changeCount, restorePointCount, ruleCount] = await Promise.all([
+  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
     prisma.changeEvent.count({ where: { shop } }),
     prisma.restorePoint.count({ where: { shop } }),
     prisma.detectionRule.count({ where: { shop } }),
+    prisma.orderArchive.count({ where: { shop } }),
   ]);
 
   return {
     currentPlan,
-    usage: { productCount, changeCount, restorePointCount, ruleCount },
+    limits,
+    usage: { productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount },
     shop,
   };
 };
@@ -174,70 +144,42 @@ export const action = async ({ request }) => {
   const { session, billing } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
-  const planId = formData.get("planId");
+  const rawPlanId = formData.get("planId");
+  const targetPlanId = normalizePlanId(rawPlanId);
   const isTest = process.env.NODE_ENV !== "production";
 
-  if (
-    planId === "starter" ||
-    planId === "growth" ||
-    planId === "business" ||
-    planId === "enterprise" ||
-    planId === "pro"
-  ) {
-    let targetPlan = PLAN_STARTER;
-    let normalizedPlanId = planId;
+  // Check current store plan
+  const settings = await prisma.appSettings.findUnique({ where: { shop } });
+  const currentPlan = normalizePlanId(settings?.planId);
 
-    if (planId === "growth" || planId === "pro") {
-      targetPlan = PLAN_GROWTH;
-      normalizedPlanId = "growth";
-    } else if (planId === "business") {
-      targetPlan = PLAN_BUSINESS;
-      normalizedPlanId = "business";
-    } else if (planId === "enterprise") {
-      targetPlan = PLAN_ENTERPRISE;
-      normalizedPlanId = "enterprise";
-    }
+  if (targetPlanId === currentPlan) {
+    return {
+      success: false,
+      message: `Your store is already subscribed to the ${PLAN_TIERS[currentPlan]?.name || currentPlan} plan.`,
+    };
+  }
 
-    const url = new URL(request.url);
-    const returnUrl = `${url.origin}/app/plan`;
-
-    try {
-      return await billing.request({
-        plan: targetPlan,
-        isTest,
-        returnUrl,
-      });
-    } catch (err) {
-      console.warn("Shopify billing request fallback:", err?.message || err);
-      await prisma.appSettings.upsert({
-        where: { shop },
-        create: { shop, planId: normalizedPlanId },
-        update: { planId: normalizedPlanId },
-      });
-
-      return {
-        success: true,
-        planId: normalizedPlanId,
-        message: `Switched to the ${normalizedPlanId.charAt(0).toUpperCase() + normalizedPlanId.slice(1)} plan.`,
-      };
-    }
-  } else if (planId === "free") {
+  if (targetPlanId === "free") {
+    // Downgrade to Free: cancel any active Shopify subscription
     try {
       const billingCheck = await billing.check({
         plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
         isTest,
       });
+
       if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
         for (const sub of billingCheck.appSubscriptions) {
-          await billing.cancel({
-            subscriptionId: sub.id,
-            isTest,
-            prorate: true,
-          });
+          if (sub.id) {
+            await billing.cancel({
+              subscriptionId: sub.id,
+              isTest,
+              prorate: true,
+            });
+          }
         }
       }
     } catch (err) {
-      console.warn("Shopify billing cancel warning:", err?.message || err);
+      console.warn("[Revertly Billing] Shopify billing cancel warning:", err?.message || err);
     }
 
     await prisma.appSettings.upsert({
@@ -249,32 +191,62 @@ export const action = async ({ request }) => {
     return {
       success: true,
       planId: "free",
-      message: "Successfully switched to the Free plan.",
+      message: "Successfully downgraded to the Free plan. Paid features will be deactivated.",
     };
   }
 
-  return { success: false, message: "Invalid plan selected." };
+  // Target is a paid plan
+  let targetShopifyPlan = PLAN_STARTER;
+  if (targetPlanId === "growth") targetShopifyPlan = PLAN_GROWTH;
+  else if (targetPlanId === "business") targetShopifyPlan = PLAN_BUSINESS;
+  else if (targetPlanId === "enterprise") targetShopifyPlan = PLAN_ENTERPRISE;
+
+  const url = new URL(request.url);
+  const returnUrl = `${url.origin}/app/plan`;
+
+  try {
+    // billing.request initiates Shopify subscription and throws an out-of-app redirect
+    return await billing.request({
+      plan: targetShopifyPlan,
+      isTest,
+      returnUrl,
+    });
+  } catch (err) {
+    // CRITICAL: If Shopify threw a Response (App Bridge 401 redirect or 302 exitIframe), rethrow it!
+    if (err instanceof Response) {
+      throw err;
+    }
+
+    console.error("[Revertly Billing Error] billing.request failed:", err);
+    return {
+      success: false,
+      message: `Unable to initiate Shopify billing for ${targetShopifyPlan}: ${err?.message || "Please try again or contact support."}`,
+    };
+  }
 };
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function Plan() {
-  const { currentPlan, usage } = useLoaderData();
+  const { currentPlan, usage, limits } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activePlan = result?.planId || currentPlan;
-  const limits = PLAN_LIMITS[activePlan] || PLAN_LIMITS.free;
   const isSubmitting = fetcher.state !== "idle";
+
+  const [confirmModal, setConfirmModal] = useState(null); // { planId, planName, isDowngrade }
+
+  const activeOrder = PLAN_TIERS[activePlan]?.order ?? 0;
 
   return (
     <s-page heading="Plans & Billing" inlineSize="large">
 
-      {/* ── Success Feedback Banner ── */}
-      {result?.success && (
+      {/* ── Success/Error Feedback Banner ── */}
+      {result?.message && (
         <div
           style={{
-            background: "var(--rv-primary-surface)",
-            border: "1px solid var(--rv-primary-border)",
-            color: "var(--rv-primary)",
+            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
+            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
+            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
             padding: "14px 18px",
             borderRadius: "var(--rv-radius-md)",
             marginBottom: "20px",
@@ -285,13 +257,13 @@ export default function Plan() {
             gap: "10px",
           }}
         >
-          <span>✅</span>
+          <span>{result.success ? "✅" : "⚠️"}</span>
           <span>{result.message}</span>
         </div>
       )}
 
       {/* ── Current Plan Usage Summary Hero ── */}
-      <div className="rv-hero-banner">
+      <div className="rv-hero-banner" style={{ marginBottom: "28px" }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
             <span style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
@@ -300,14 +272,14 @@ export default function Plan() {
             <span className="rv-badge rv-badge-success">Active</span>
           </div>
           <h2 style={{ margin: "0 0 6px", fontSize: "22px", fontWeight: 800, color: "var(--rv-text)" }}>
-            {activePlan.charAt(0).toUpperCase() + activePlan.slice(1)} Plan
+            {PLAN_TIERS[activePlan]?.name || activePlan} Plan
           </h2>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Automated monitoring, catalog baseline protection, and multi-resource restore points.
+            Automated monitoring, catalog drift defense, and multi-resource store backup.
           </p>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "24px", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "28px", flexWrap: "wrap" }}>
           <div>
             <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Products Monitored</div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
@@ -324,6 +296,18 @@ export default function Plan() {
             <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Detection Rules</div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
               {usage.ruleCount} / {limits.rules === Infinity ? "Unlimited" : limits.rules}
+            </strong>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Orders in Vault</div>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+              {usage.vaultOrderCount.toLocaleString()} / {limits.vaultOrders === Infinity ? "Unlimited" : limits.vaultOrders === 0 ? "Not in Plan" : limits.vaultOrders.toLocaleString()}
+            </strong>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Change Retention</div>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+              {limits.retentionDays} Days ({usage.changeCount.toLocaleString()} recorded)
             </strong>
           </div>
         </div>
@@ -343,25 +327,49 @@ export default function Plan() {
       <div className="rv-plan-grid">
         {PLANS.map((plan) => {
           const isCurrent = activePlan === plan.id;
+          const planOrder = PLAN_TIERS[plan.id]?.order ?? 0;
+          const isUpgrade = planOrder > activeOrder;
+          const isDowngrade = planOrder < activeOrder;
+
           const isGrowth = plan.id === "growth";
           const isBusiness = plan.id === "business";
           const isEnterprise = plan.id === "enterprise";
 
           let cardBorder = "1px solid var(--rv-border)";
           let cardBg = "#ffffff";
-          let badge = null;
+          let boxShadow = "var(--rv-shadow-sm)";
+          let tierBadge = null;
+
+          if (isGrowth) {
+            tierBadge = <span className="rv-badge rv-badge-info">Most Popular</span>;
+          } else if (isBusiness) {
+            tierBadge = <span className="rv-badge rv-badge-warning">Store Shield</span>;
+          } else if (isEnterprise) {
+            tierBadge = <span className="rv-badge rv-badge-neutral">Shopify Plus</span>;
+          }
 
           if (isCurrent) {
-            badge = <span className="rv-badge rv-badge-success">Current Plan</span>;
+            cardBorder = "2px solid #008060";
+            cardBg = "rgba(0, 128, 96, 0.02)";
+            boxShadow = "0 0 0 1px #008060, 0 4px 16px rgba(0, 128, 96, 0.12)";
           } else if (isGrowth) {
             cardBorder = "2px solid #005bd3";
-            badge = <span className="rv-badge rv-badge-info">Most Popular</span>;
+            boxShadow = "0 4px 12px rgba(0, 91, 211, 0.12)";
           } else if (isBusiness) {
             cardBorder = "2px solid #6366f1";
-            badge = <span className="rv-badge rv-badge-warning">Store Shield</span>;
           } else if (isEnterprise) {
             cardBorder = "2px solid #8b5cf6";
-            badge = <span className="rv-badge rv-badge-neutral">Shopify Plus</span>;
+          }
+
+          let buttonLabel = `Choose ${plan.name}`;
+          if (isCurrent) {
+            buttonLabel = "✓ Active Plan";
+          } else if (plan.id === "free") {
+            buttonLabel = "Downgrade to Free";
+          } else if (isUpgrade) {
+            buttonLabel = `Upgrade to ${plan.name}`;
+          } else if (isDowngrade) {
+            buttonLabel = `Downgrade to ${plan.name}`;
           }
 
           return (
@@ -375,7 +383,8 @@ export default function Plan() {
                 display: "flex",
                 flexDirection: "column",
                 justifyContent: "space-between",
-                boxShadow: isGrowth ? "0 4px 12px rgba(0, 91, 211, 0.12)" : "var(--rv-shadow-sm)",
+                boxShadow,
+                position: "relative",
               }}
             >
               <div className="rv-card-body" style={{ display: "flex", flexDirection: "column", height: "100%", justifyContent: "space-between", padding: "20px" }}>
@@ -384,7 +393,10 @@ export default function Plan() {
                     <span style={{ fontSize: "16px", fontWeight: 700, color: "var(--rv-text)" }}>
                       {plan.name}
                     </span>
-                    {badge}
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                      {isCurrent && <span className="rv-badge rv-badge-success">Current Plan</span>}
+                      {tierBadge}
+                    </div>
                   </div>
 
                   <div style={{ display: "flex", alignItems: "baseline", gap: "4px", marginBottom: "4px" }}>
@@ -398,11 +410,11 @@ export default function Plan() {
                     )}
                   </div>
 
-                  <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "16px" }}>
-                    {plan.category}
+                  <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "6px" }}>
+                    {plan.footerText}
                   </div>
 
-                  <div style={{ borderTop: "1px solid var(--rv-border)", marginBottom: "14px" }} />
+                  <div style={{ borderTop: "1px solid var(--rv-border)", margin: "10px 0 14px" }} />
 
                   {/* Features List */}
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "20px" }}>
@@ -425,9 +437,19 @@ export default function Plan() {
                       type="button"
                       disabled
                       className="rv-btn"
-                      style={{ width: "100%", background: "#f1f2f3", color: "#6d7175", cursor: "default", fontWeight: 600 }}
+                      style={{ width: "100%", background: "#e4f8f0", color: "#008060", border: "1px solid #aee9d1", cursor: "default", fontWeight: 700 }}
                     >
                       ✓ Active Plan
+                    </button>
+                  ) : isDowngrade ? (
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      onClick={() => setConfirmModal({ planId: plan.id, planName: plan.name, isDowngrade: true })}
+                      className="rv-btn rv-btn-secondary"
+                      style={{ width: "100%", fontWeight: 600 }}
+                    >
+                      {buttonLabel}
                     </button>
                   ) : (
                     <fetcher.Form method="POST" style={{ width: "100%" }}>
@@ -435,16 +457,22 @@ export default function Plan() {
                       <button
                         type="submit"
                         disabled={isSubmitting}
-                        className={`rv-btn ${isGrowth ? "rv-btn-primary" : "rv-btn-secondary"}`}
-                        style={{ width: "100%", fontWeight: 600 }}
+                        className={`rv-btn ${isGrowth ? "rv-btn-primary" : "rv-btn-primary"}`}
+                        style={{
+                          width: "100%",
+                          fontWeight: 700,
+                          background: isEnterprise ? "#8b5cf6" : isBusiness ? "#6366f1" : isGrowth ? "var(--rv-primary)" : "#005bd3",
+                          borderColor: isEnterprise ? "#8b5cf6" : isBusiness ? "#6366f1" : isGrowth ? "var(--rv-primary)" : "#005bd3",
+                          color: "#ffffff",
+                        }}
                       >
-                        {plan.id === "free" ? "Downgrade to Free" : `Choose ${plan.name}`}
+                        {buttonLabel}
                       </button>
                     </fetcher.Form>
                   )}
 
-                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: plan.subtext ? "var(--rv-primary)" : "var(--rv-text-subdued)", fontWeight: plan.subtext ? 600 : 400 }}>
-                    {plan.subtext || plan.footerText}
+                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: isCurrent ? "var(--rv-primary)" : "var(--rv-text-subdued)", fontWeight: 500 }}>
+                    {isCurrent ? "Active Plan • Included" : plan.subtext}
                   </div>
                 </div>
               </div>
@@ -452,6 +480,77 @@ export default function Plan() {
           );
         })}
       </div>
+
+      {/* ── Downgrade Confirmation Modal ── */}
+      {confirmModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: "20px",
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--rv-radius-md)",
+              maxWidth: "480px",
+              width: "100%",
+              padding: "24px",
+              boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 10px", fontSize: "18px", fontWeight: 700, color: "var(--rv-text)" }}>
+              Confirm Plan Downgrade
+            </h3>
+            <p style={{ fontSize: "14px", color: "var(--rv-text)", lineHeight: 1.5, margin: "0 0 16px" }}>
+              Are you sure you want to switch to the <strong>{confirmModal.planName}</strong> plan?
+            </p>
+            <div
+              style={{
+                background: "#fff4f2",
+                border: "1px solid #fed2cd",
+                borderRadius: "var(--rv-radius-sm)",
+                padding: "12px 14px",
+                fontSize: "12px",
+                color: "#d72c0d",
+                marginBottom: "20px",
+                lineHeight: 1.4,
+              }}
+            >
+              ⚠️ <strong>Note:</strong> Downgrading will lower your monitored product and restore point limits. Premium capabilities (such as Liquid Themes Backup, Data Vault sync, and Circuit Breaker) will be restricted to the new plan&apos;s allowance.
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="rv-btn rv-btn-secondary"
+                disabled={isSubmitting}
+              >
+                Cancel &amp; Keep Current Plan
+              </button>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="planId" value={confirmModal.planId} />
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  onClick={() => setConfirmModal(null)}
+                  className="rv-btn rv-btn-critical"
+                  style={{ fontWeight: 600 }}
+                >
+                  {isSubmitting ? "Processing..." : `Confirm Downgrade to ${confirmModal.planName}`}
+                </button>
+              </fetcher.Form>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Footer Info ── */}
       <div style={{ textAlign: "center", padding: "16px 20px", color: "var(--rv-text-subdued)", fontSize: "12px" }}>

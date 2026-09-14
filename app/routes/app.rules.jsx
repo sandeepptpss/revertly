@@ -1,19 +1,23 @@
 import { useState } from "react";
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { checkRuleLimit } from "../billing.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const rules = await prisma.detectionRule.findMany({
-    where: { shop },
-    orderBy: { createdAt: "desc" },
-  });
+  const [rules, limitInfo] = await Promise.all([
+    prisma.detectionRule.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+    }),
+    checkRuleLimit(shop),
+  ]);
 
-  return { rules };
+  return { rules, limitInfo };
 };
 
 export const action = async ({ request }) => {
@@ -23,6 +27,15 @@ export const action = async ({ request }) => {
   const intent = formData.get("intent");
 
   if (intent === "create") {
+    // 1. Enforce Plan Limits
+    const limitCheck = await checkRuleLimit(shop);
+    if (!limitCheck.allowed) {
+      return {
+        success: false,
+        message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate unused rules or upgrade your plan in Plans & Billing to create more active rules.`,
+      };
+    }
+
     await prisma.detectionRule.create({
       data: {
         shop,
@@ -43,11 +56,24 @@ export const action = async ({ request }) => {
     const ruleId = parseInt(formData.get("ruleId"));
     const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
     if (rule && rule.shop === shop) {
+      const willBeActive = !rule.isActive;
+
+      // Check limit before activating an inactive rule
+      if (willBeActive) {
+        const limitCheck = await checkRuleLimit(shop);
+        if (!limitCheck.allowed) {
+          return {
+            success: false,
+            message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate another rule or upgrade your plan to activate this rule.`,
+          };
+        }
+      }
+
       await prisma.detectionRule.update({
         where: { id: ruleId },
-        data: { isActive: !rule.isActive },
+        data: { isActive: willBeActive },
       });
-      return { success: true, message: `Rule "${rule.name}" is now ${!rule.isActive ? "Active" : "Inactive"}.` };
+      return { success: true, message: `Rule "${rule.name}" is now ${willBeActive ? "Active" : "Inactive"}.` };
     }
     return { success: true, message: "Rule status updated." };
   }
@@ -69,7 +95,7 @@ const CONDITIONS = ["CHANGED", "DECREASE_BY_PERCENT", "INCREASE_BY_PERCENT"];
 const SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 
 export default function Rules() {
-  const { rules } = useLoaderData();
+  const { rules, limitInfo } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSaving = fetcher.state !== "idle";
@@ -100,6 +126,31 @@ export default function Rules() {
         </div>
       )}
 
+      {/* ── Limit Warning Banner ── */}
+      {!limitInfo?.allowed && (
+        <div
+          style={{
+            background: "#fff4f2",
+            border: "1px solid #fed2cd",
+            color: "#d72c0d",
+            padding: "12px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "13px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div>
+            <strong>Active Rule Limit Reached ({limitInfo.activeCount} / {limitInfo.limit}):</strong> You have reached the maximum active detection rules allowed for the {limitInfo.plan.toUpperCase()} plan. Deactivate unused rules or upgrade to a higher tier.
+          </div>
+          <Link to="/app/plan" className="rv-btn rv-btn-primary" style={{ fontSize: "12px", padding: "6px 12px" }}>
+            Upgrade Plan
+          </Link>
+        </div>
+      )}
+
       {/* ── Top Header Hero ── */}
       <div className="rv-hero-banner">
         <div>
@@ -108,7 +159,7 @@ export default function Rules() {
               Automated Anomaly &amp; Crash Detection
             </strong>
             <span className="rv-badge rv-badge-info">
-              {rules.length} Configured Rule{rules.length !== 1 ? "s" : ""}
+              {limitInfo?.activeCount} / {limitInfo?.limit === Infinity ? "Unlimited" : limitInfo?.limit} Active Rules Used
             </span>
           </div>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
@@ -118,10 +169,12 @@ export default function Rules() {
 
         <button
           type="button"
+          disabled={!limitInfo?.allowed}
           onClick={() => setShowCreateForm(!showCreateForm)}
-          className="rv-btn rv-btn-primary"
+          className={`rv-btn ${limitInfo?.allowed ? "rv-btn-primary" : "rv-btn-secondary"}`}
+          title={!limitInfo?.allowed ? "Plan limit reached" : ""}
         >
-          {showCreateForm ? "✕ Close Form" : "+ Create New Rule"}
+          {showCreateForm ? "✕ Close Form" : !limitInfo?.allowed ? "Limit Reached" : "+ Create New Rule"}
         </button>
       </div>
 

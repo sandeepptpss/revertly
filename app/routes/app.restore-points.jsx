@@ -4,17 +4,26 @@ import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { createMultiResourceRestorePoint } from "../backup.server.js";
+import { checkRestorePointLimit, checkFeatureAccess } from "../billing.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const restorePoints = await prisma.restorePoint.findMany({
-    where: { shop },
-    orderBy: { createdAt: "desc" },
-  });
+  const [restorePoints, limitInfo, themeAccess] = await Promise.all([
+    prisma.restorePoint.findMany({
+      where: { shop },
+      orderBy: { createdAt: "desc" },
+    }),
+    checkRestorePointLimit(shop),
+    checkFeatureAccess(shop, "themes"),
+  ]);
 
-  return { restorePoints };
+  return {
+    restorePoints,
+    limitInfo,
+    hasThemeAccess: themeAccess.allowed,
+  };
 };
 
 export const action = async ({ request }) => {
@@ -24,11 +33,21 @@ export const action = async ({ request }) => {
   const intent = formData.get("intent");
 
   if (intent === "create") {
+    // 1. Enforce Plan Limits
+    const limitCheck = await checkRestorePointLimit(shop);
+    if (!limitCheck.allowed) {
+      return {
+        success: false,
+        message: `Restore Point Limit Reached (${limitCheck.currentCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Please upgrade your plan in Plans & Billing to create more restore points.`,
+      };
+    }
+
     const name = formData.get("name");
     const description = formData.get("description") || "";
 
+    const themeCheck = await checkFeatureAccess(shop, "themes");
     const includeProducts = formData.get("includeProducts") !== "0";
-    const includeThemes = formData.get("includeThemes") !== "0";
+    const includeThemes = themeCheck.allowed && formData.get("includeThemes") === "1";
     const includeCollections = formData.get("includeCollections") !== "0";
     const includePages = formData.get("includePages") !== "0";
     const includeArticles = formData.get("includeArticles") !== "0";
@@ -83,7 +102,7 @@ function formatTime(date) {
 }
 
 export default function RestorePoints() {
-  const { restorePoints } = useLoaderData();
+  const { restorePoints, limitInfo, hasThemeAccess } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isCreating = fetcher.state !== "idle";
@@ -114,6 +133,31 @@ export default function RestorePoints() {
         </div>
       )}
 
+      {/* ── Limit Warning Banner ── */}
+      {!limitInfo?.allowed && (
+        <div
+          style={{
+            background: "#fff4f2",
+            border: "1px solid #fed2cd",
+            color: "#d72c0d",
+            padding: "12px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "13px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div>
+            <strong>Restore Point Limit Reached ({limitInfo.currentCount} / {limitInfo.limit}):</strong> You have reached the maximum allowed restore points for the {limitInfo.plan.toUpperCase()} plan. Delete older snapshots or upgrade your plan to capture new restore points.
+          </div>
+          <Link to="/app/plan" className="rv-btn rv-btn-primary" style={{ fontSize: "12px", padding: "6px 12px" }}>
+            Upgrade Plan
+          </Link>
+        </div>
+      )}
+
       {/* ── Header Summary Bar ── */}
       <div className="rv-hero-banner">
         <div>
@@ -122,7 +166,7 @@ export default function RestorePoints() {
               Full Store Snapshots &amp; Time Machine
             </strong>
             <span className="rv-badge rv-badge-info">
-              {restorePoints.length} Saved Snapshot{restorePoints.length !== 1 ? "s" : ""}
+              {restorePoints.length} / {limitInfo?.limit === Infinity ? "Unlimited" : limitInfo?.limit} Used
             </span>
           </div>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
@@ -132,10 +176,12 @@ export default function RestorePoints() {
 
         <button
           type="button"
+          disabled={!limitInfo?.allowed}
           onClick={() => setShowCreateForm(!showCreateForm)}
-          className="rv-btn rv-btn-primary"
+          className={`rv-btn ${limitInfo?.allowed ? "rv-btn-primary" : "rv-btn-secondary"}`}
+          title={!limitInfo?.allowed ? "Plan limit reached" : ""}
         >
-          {showCreateForm ? "✕ Close Form" : "+ Create Restore Point"}
+          {showCreateForm ? "✕ Close Form" : !limitInfo?.allowed ? "Limit Reached" : "+ Create Restore Point"}
         </button>
       </div>
 
@@ -193,11 +239,26 @@ export default function RestorePoints() {
                     </div>
                   </label>
 
-                  <label className="rv-toggle-row">
-                    <input type="checkbox" name="includeThemes" defaultChecked value="1" />
+                  <label className="rv-toggle-row" style={{ opacity: hasThemeAccess ? 1 : 0.6, cursor: hasThemeAccess ? "pointer" : "not-allowed" }}>
+                    <input
+                      type="checkbox"
+                      name="includeThemes"
+                      defaultChecked={hasThemeAccess}
+                      disabled={!hasThemeAccess}
+                      value="1"
+                    />
                     <div>
-                      <strong style={{ fontSize: "13px" }}>🎨 Active Theme</strong>
-                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Liquid, JSON &amp; Assets</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <strong style={{ fontSize: "13px" }}>🎨 Active Theme</strong>
+                        {!hasThemeAccess && (
+                          <span className="rv-badge rv-badge-warning" style={{ fontSize: "10px", padding: "1px 5px" }}>
+                            Business+
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>
+                        {hasThemeAccess ? "Liquid, JSON & Assets" : "Requires Business or Enterprise"}
+                      </div>
                     </div>
                   </label>
 

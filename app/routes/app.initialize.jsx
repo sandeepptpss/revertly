@@ -4,6 +4,7 @@ import { buildSnapshot } from "../monitor.server.js";
 import { createMultiResourceRestorePoint } from "../backup.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useFetcher, useLoaderData, useRouteError, Link } from "react-router";
+import { getPlanLimits } from "../billing.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -15,6 +16,9 @@ export const loader = async ({ request }) => {
 export const action = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
+
+  const settings = await prisma.appSettings.findUnique({ where: { shop } });
+  const limits = getPlanLimits(settings?.planId);
 
   let cursor = null;
   let totalSaved = 0;
@@ -60,6 +64,11 @@ export const action = async ({ request }) => {
     cursor = products.pageInfo?.endCursor || null;
 
     for (const { node: product } of edges) {
+      if (limits.products !== Infinity && totalSaved >= limits.products) {
+        hasNextPage = false;
+        break;
+      }
+
       const snapshot = buildSnapshot(product);
       const numericId = product.id.replace("gid://shopify/Product/", "");
 

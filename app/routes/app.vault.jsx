@@ -4,10 +4,26 @@ import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { syncOrdersVault, syncCustomersVault } from "../backup.server.js";
+import { checkVaultAccess } from "../billing.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
+
+  const vaultAccess = await checkVaultAccess(shop);
+  if (!vaultAccess.allowed) {
+    return {
+      isLocked: true,
+      plan: vaultAccess.plan,
+      stats: { totalOrders: 0, totalCustomers: 0, lastSync: null },
+      orders: [],
+      customers: [],
+      searchOrder: "",
+      searchCustomer: "",
+      shop,
+    };
+  }
+
   const url = new URL(request.url);
   const searchOrder = url.searchParams.get("searchOrder") || "";
   const searchCustomer = url.searchParams.get("searchCustomer") || "";
@@ -56,6 +72,9 @@ export const loader = async ({ request }) => {
   ]);
 
   return {
+    isLocked: false,
+    plan: vaultAccess.plan,
+    maxOrders: vaultAccess.maxOrders,
     shop,
     stats: {
       totalOrders,
@@ -72,13 +91,24 @@ export const loader = async ({ request }) => {
 export const action = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
+
+  const vaultAccess = await checkVaultAccess(shop);
+  if (!vaultAccess.allowed) {
+    return {
+      success: false,
+      message: `Orders & Customers Vault is not included in the ${vaultAccess.plan.toUpperCase()} plan. Please upgrade to Growth ($24), Business ($49), or Enterprise ($79) to use Data Vault.`,
+    };
+  }
+
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   if (intent === "sync_all" || intent === "sync_orders") {
+    const targetMax = vaultAccess.maxOrders === Infinity ? 50000 : vaultAccess.maxOrders;
+
     const [ordRes, custRes] = await Promise.allSettled([
-      syncOrdersVault(admin, shop, { maxOrders: 100 }),
-      syncCustomersVault(admin, shop, { maxCustomers: 100 }),
+      syncOrdersVault(admin, shop, { maxOrders: targetMax }),
+      syncCustomersVault(admin, shop, { maxCustomers: targetMax }),
     ]);
 
     const orderCount = ordRes.status === "fulfilled" && ordRes.value?.success ? ordRes.value.count : 0;
@@ -86,7 +116,7 @@ export const action = async ({ request }) => {
 
     return {
       success: true,
-      message: `Vault successfully synchronized! Archived ${orderCount} orders and ${custCount} customer profiles.`,
+      message: `Vault successfully synchronized! Archived ${orderCount} orders and ${custCount} customer profiles. (Plan allowance: ${vaultAccess.maxOrders === Infinity ? "Unlimited" : vaultAccess.maxOrders.toLocaleString()} orders)`,
     };
   }
 
@@ -107,13 +137,61 @@ function statusBadge(status) {
 }
 
 export default function DataVault() {
-  const { stats, orders, customers, searchOrder, searchCustomer } = useLoaderData();
+  const { isLocked, plan, stats, orders, customers, searchOrder, searchCustomer } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSyncing = fetcher.state !== "idle";
 
   const [activeTab, setActiveTab] = useState("orders");
   const [inspectedOrder, setInspectedOrder] = useState(null);
+
+  if (isLocked) {
+    return (
+      <s-page heading="Orders & Customers Vault" inlineSize="large">
+        <div
+          className="rv-card"
+          style={{
+            textAlign: "center",
+            padding: "48px 24px",
+            border: "2px solid #005bd3",
+            background: "linear-gradient(180deg, rgba(0, 91, 211, 0.03) 0%, #ffffff 100%)",
+            borderRadius: "var(--rv-radius-md)",
+            maxWidth: "640px",
+            margin: "40px auto",
+          }}
+        >
+          <div style={{ fontSize: "48px", marginBottom: "16px" }}>🔒</div>
+          <h2 style={{ fontSize: "22px", fontWeight: 800, margin: "0 0 10px", color: "var(--rv-text)" }}>
+            Orders &amp; Customers Vault is Locked
+          </h2>
+          <p style={{ fontSize: "14px", color: "var(--rv-text-subdued)", lineHeight: 1.5, marginBottom: "24px", maxWidth: "500px", marginInline: "auto" }}>
+            Data Vault archives customer purchase histories and receipts to safeguard your store against chargeback disputes, fraudulent refunds, and compliance inquiries.
+          </p>
+
+          <div style={{ background: "var(--rv-surface-subdued)", borderRadius: "var(--rv-radius-sm)", padding: "16px", marginBottom: "24px", textAlign: "left", display: "inline-block", width: "100%", maxWidth: "420px" }}>
+            <div style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", marginBottom: "8px" }}>
+              Included in Paid Plans:
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13px" }}>
+              <div>✓ <strong>Growth ($24/mo):</strong> Up to 2,500 orders &amp; tax export</div>
+              <div>✓ <strong>Business ($49/mo):</strong> Up to 15,000 orders &amp; dispute pack</div>
+              <div>✓ <strong>Enterprise ($79/mo):</strong> Unlimited historical vault</div>
+            </div>
+          </div>
+
+          <div>
+            <Link
+              to="/app/plan"
+              className="rv-btn rv-btn-primary"
+              style={{ padding: "12px 28px", fontSize: "15px", fontWeight: 700, textDecoration: "none" }}
+            >
+              ⚡ Upgrade Plan to Unlock Vault →
+            </Link>
+          </div>
+        </div>
+      </s-page>
+    );
+  }
 
   return (
     <s-page heading="Orders & Customers Vault" inlineSize="large">

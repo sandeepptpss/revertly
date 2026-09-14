@@ -3,6 +3,7 @@ import {
   ApiVersion,
   AppDistribution,
   BillingInterval,
+  BillingReplacementBehavior,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
@@ -40,6 +41,8 @@ const shopify = shopifyApp({
   },
   billing: {
     [PLAN_STARTER]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
           amount: 9,
@@ -49,6 +52,8 @@ const shopify = shopifyApp({
       ],
     },
     [PLAN_GROWTH]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
           amount: 24,
@@ -58,6 +63,8 @@ const shopify = shopifyApp({
       ],
     },
     [PLAN_BUSINESS]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
           amount: 49,
@@ -67,6 +74,8 @@ const shopify = shopifyApp({
       ],
     },
     [PLAN_ENTERPRISE]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
           amount: 79,

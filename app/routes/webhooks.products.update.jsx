@@ -5,6 +5,7 @@ import {
   sendIncidentAlert,
   triggerCircuitBreaker,
 } from "../monitor.server.js";
+import { getPlanLimits } from "../billing.server.js";
 
 function buildSnapshotFromPayload(product) {
   return {
@@ -73,6 +74,15 @@ export const action = async ({ request }) => {
     };
 
     if (!prevRecord) {
+      const limits = getPlanLimits(settings?.planId);
+      if (limits.products !== Infinity) {
+        const currentCount = await prisma.productSnapshot.count({ where: { shop } });
+        if (currentCount >= limits.products) {
+          console.log(`[Revertly Webhook] Monitored product limit reached (${currentCount}/${limits.products}) for ${shop}`);
+          return new Response("Product limit reached for current plan", { status: 200 });
+        }
+      }
+
       await prisma.productSnapshot.create({ data: upsertData });
       return new Response("First snapshot saved", { status: 200 });
     }
