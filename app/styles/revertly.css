@@ -57,11 +57,13 @@ body {
 
 /* Fallback & Enhancements for Shopify Polaris Web Components */
 s-page {
-  display: block;
+  display: block !important;
   width: 100% !important;
-  max-width: 1200px !important;
-  margin: 0 auto !important;
-  padding: 16px 20px 48px !important;
+  max-width: 100% !important;
+  min-width: 100% !important;
+  margin: 0 !important;
+  padding: 16px 24px 48px !important;
+  box-sizing: border-box !important;
 }
 
 s-section {
@@ -666,4 +668,32 @@ s-section {
 
 .rv-toggle-row:hover {
   background: #f1f5f9;
+}
+
+/* Pricing / Plan Cards Grid - Full Width 5 Columns */
+.rv-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+  margin-bottom: 32px;
+  width: 100%;
+}
+
+@media (max-width: 1280px) {
+  .rv-plan-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .rv-plan-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .rv-plan-grid {
+    grid-template-columns: 1fr;
+  }
 }

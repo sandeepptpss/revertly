@@ -152,7 +152,7 @@ export default function InitialSnapshot() {
       </div>
 
       {/* ── Baseline Setup Wizard Card ── */}
-      <div className="rv-card" style={{ maxWidth: "760px", margin: "0 auto 24px" }}>
+      <div className="rv-card" style={{ marginBottom: "24px" }}>
         <div className="rv-card-header" style={{ background: "#fafbfb" }}>
           <h3 className="rv-card-title">
             <span>🛡️</span> Catalog Protection Wizard

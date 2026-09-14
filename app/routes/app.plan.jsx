@@ -340,15 +340,7 @@ export default function Plan() {
       </div>
 
       {/* ── 5 Cards Responsive Grid ── */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(215px, 1fr))",
-          gap: "16px",
-          alignItems: "stretch",
-          marginBottom: "32px",
-        }}
-      >
+      <div className="rv-plan-grid">
         {PLANS.map((plan) => {
           const isCurrent = activePlan === plan.id;
           const isGrowth = plan.id === "growth";
