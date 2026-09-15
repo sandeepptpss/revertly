@@ -1,0 +1,80 @@
+{% comment %}
+  Revertly - Store Protection & Change Tracker
+  Allows store activity tracking, revision point detection, and an optional verified store badge.
+{% endcomment %}
+
+<div id="revertly-root" 
+     data-shop="{{ shop.permanent_domain }}" 
+     data-theme-id="{{ theme.id }}"
+     data-protection-active="true"
+     style="display:none;"></div>
+
+{% if block.settings.show_badge %}
+  <div id="revertly-trust-badge" 
+       class="revertly-trust-badge revertly-badge--{{ block.settings.badge_position | default: 'bottom-left' }} revertly-theme--{{ block.settings.badge_theme | default: 'dark' }}"
+       role="status"
+       aria-label="Store protected by Revertly">
+    <div class="revertly-badge-pill">
+      <svg class="revertly-shield-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        <polyline points="9 12 11 14 15 10"/>
+      </svg>
+      <span class="revertly-badge-label">{{ block.settings.badge_text | default: 'Revertly Protected' }}</span>
+    </div>
+  </div>
+{% endif %}
+
+{% schema %}
+{
+  "name": "Revertly Protection",
+  "target": "body",
+  "stylesheet": "revertly-embed.css",
+  "javascript": "revertly-tracker.js",
+  "settings": [
+    {
+      "type": "checkbox",
+      "id": "enable_protection",
+      "label": "Enable Storefront Protection",
+      "default": true,
+      "info": "Enables Revertly backup tracking and automated restore verification."
+    },
+    {
+      "type": "header",
+      "content": "Storefront Trust Badge"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_badge",
+      "label": "Show 'Revertly Protected' Badge",
+      "default": false,
+      "info": "Display a trust badge on the storefront to reassure customers of uptime and security."
+    },
+    {
+      "type": "text",
+      "id": "badge_text",
+      "label": "Badge Text",
+      "default": "Revertly Protected"
+    },
+    {
+      "type": "select",
+      "id": "badge_position",
+      "label": "Badge Position",
+      "options": [
+        { "value": "bottom-left", "label": "Bottom Left" },
+        { "value": "bottom-right", "label": "Bottom Right" }
+      ],
+      "default": "bottom-left"
+    },
+    {
+      "type": "select",
+      "id": "badge_theme",
+      "label": "Badge Theme",
+      "options": [
+        { "value": "dark", "label": "Dark" },
+        { "value": "light", "label": "Light" }
+      ],
+      "default": "dark"
+    }
+  ]
+}
+{% endschema %}

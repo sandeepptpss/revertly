@@ -73,18 +73,34 @@ export const action = async ({ request }) => {
       deletedAt: null,
     };
 
+    const limits = getPlanLimits(settings?.planId);
+
     if (!prevRecord) {
-      const limits = getPlanLimits(settings?.planId);
       if (limits.products !== Infinity) {
         const currentCount = await prisma.productSnapshot.count({ where: { shop } });
         if (currentCount >= limits.products) {
           console.log(`[Revertly Webhook] Monitored product limit reached (${currentCount}/${limits.products}) for ${shop}`);
+          await prisma.appSettings.upsert({
+            where: { shop },
+            create: { shop, productLimitReachedAt: new Date() },
+            update: { productLimitReachedAt: new Date() },
+          });
           return new Response("Product limit reached for current plan", { status: 200 });
         }
       }
 
       await prisma.productSnapshot.create({ data: upsertData });
       return new Response("First snapshot saved", { status: 200 });
+    }
+
+    // Enforce change-history retention for this plan: prune change events
+    // older than the plan's retention window so old history doesn't linger
+    // (and isn't queryable) past what the shop is entitled to.
+    if (Number.isFinite(limits.retentionDays)) {
+      const cutoff = new Date(Date.now() - limits.retentionDays * 24 * 60 * 60 * 1000);
+      await prisma.changeEvent.deleteMany({
+        where: { shop, changedAt: { lt: cutoff } },
+      });
     }
 
     const oldSnap = prevRecord.snapshotData;

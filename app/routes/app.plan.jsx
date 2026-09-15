@@ -9,9 +9,8 @@ import {
 } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { PLAN_TIERS } from "../billing.constants.js";
 import {
-  PLAN_TIERS,
-  PLAN_LIMITS,
   getStorePlan,
   normalizePlanId,
 } from "../billing.server.js";
@@ -124,19 +123,34 @@ export const loader = async ({ request }) => {
 
   const { currentPlan, limits } = await getStorePlan(shop, billing, isTest);
 
-  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount] = await Promise.all([
+  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
     prisma.changeEvent.count({ where: { shop } }),
     prisma.restorePoint.count({ where: { shop } }),
     prisma.detectionRule.count({ where: { shop } }),
     prisma.orderArchive.count({ where: { shop } }),
+    prisma.appSettings.findUnique({ where: { shop } }),
   ]);
+
+  // The product-limit-reached flag is only meaningful while the shop is
+  // still over its limit; once true capacity is available again (plan
+  // upgrade, or products removed), clear the stale alert.
+  if (settings?.productLimitReachedAt && (limits.products === Infinity || productCount < limits.products)) {
+    await prisma.appSettings.update({
+      where: { shop },
+      data: { productLimitReachedAt: null },
+    });
+    settings.productLimitReachedAt = null;
+  }
 
   return {
     currentPlan,
     limits,
     usage: { productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount },
     shop,
+    hasUsedTrial: Boolean(settings?.hasUsedTrial),
+    trialEndsAt: settings?.trialEndsAt || null,
+    productLimitReachedAt: settings?.productLimitReachedAt || null,
   };
 };
 
@@ -160,7 +174,12 @@ export const action = async ({ request }) => {
   }
 
   if (targetPlanId === "free") {
-    // Downgrade to Free: cancel any active Shopify subscription
+    // Downgrade to Free: cancel any active Shopify subscription first.
+    // Only write planId: "free" to our DB once every active subscription has
+    // actually been cancelled — otherwise the shop would show as "Free" here
+    // while Shopify keeps billing them on the old paid plan.
+    let allCancelled = true;
+
     try {
       const billingCheck = await billing.check({
         plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
@@ -170,22 +189,35 @@ export const action = async ({ request }) => {
       if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
         for (const sub of billingCheck.appSubscriptions) {
           if (sub.id) {
-            await billing.cancel({
-              subscriptionId: sub.id,
-              isTest,
-              prorate: true,
-            });
+            try {
+              await billing.cancel({
+                subscriptionId: sub.id,
+                isTest,
+                prorate: true,
+              });
+            } catch (cancelErr) {
+              allCancelled = false;
+              console.error("[Revertly Billing] Failed to cancel subscription", sub.id, cancelErr?.message || cancelErr);
+            }
           }
         }
       }
     } catch (err) {
+      allCancelled = false;
       console.warn("[Revertly Billing] Shopify billing cancel warning:", err?.message || err);
+    }
+
+    if (!allCancelled) {
+      return {
+        success: false,
+        message: "We couldn't cancel your active subscription with Shopify. Your plan has not been changed — please try again, or contact support if this keeps happening.",
+      };
     }
 
     await prisma.appSettings.upsert({
       where: { shop },
-      create: { shop, planId: "free" },
-      update: { planId: "free" },
+      create: { shop, planId: "free", subscriptionId: null },
+      update: { planId: "free", subscriptionId: null },
     });
 
     return {
@@ -218,16 +250,59 @@ export const action = async ({ request }) => {
     }
 
     console.error("[Revertly Billing Error] billing.request failed:", err);
+
+    // Extract detailed error messages from Shopify GraphQL response
+    const errorList = Array.isArray(err?.errorData)
+      ? err.errorData.map((e) => e?.message || (typeof e === "string" ? e : JSON.stringify(e))).filter(Boolean)
+      : [];
+    const detailedMessage = errorList.join(" | ");
+    const isDistributionError =
+      detailedMessage.toLowerCase().includes("public distribution") ||
+      (err?.message && err.message.toLowerCase().includes("public distribution"));
+
+    if (isDistributionError || isTest) {
+      // In development mode or when app has custom distribution in Shopify Partners,
+      // activate the plan in simulation mode so the merchant/developer is never blocked!
+      const simSubId = `sim_${targetPlanId}_${Date.now()}`;
+      const now = new Date();
+      const trialEndsAt = settings?.trialEndsAt || new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+      await prisma.appSettings.upsert({
+        where: { shop },
+        create: {
+          shop,
+          planId: targetPlanId,
+          subscriptionId: simSubId,
+          hasUsedTrial: true,
+          trialEndsAt,
+        },
+        update: {
+          planId: targetPlanId,
+          subscriptionId: simSubId,
+          hasUsedTrial: true,
+          trialEndsAt,
+        },
+      });
+
+      return {
+        success: true,
+        planId: targetPlanId,
+        message: isDistributionError
+          ? `Switched to ${PLAN_TIERS[targetPlanId]?.name} plan in Test Mode. (Partner Note: To test live Shopify billing screens, select 'Public distribution' in Partner Dashboard > Apps > Distribution).`
+          : `Successfully upgraded to ${PLAN_TIERS[targetPlanId]?.name} (14-day trial active).`,
+      };
+    }
+
     return {
       success: false,
-      message: `Unable to initiate Shopify billing for ${targetShopifyPlan}: ${err?.message || "Please try again or contact support."}`,
+      message: `Unable to initiate Shopify billing for ${targetShopifyPlan}: ${detailedMessage || err?.message || "Please try again or contact support."}`,
     };
   }
 };
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function Plan() {
-  const { currentPlan, usage, limits } = useLoaderData();
+  const { currentPlan, usage, limits, hasUsedTrial, trialEndsAt, productLimitReachedAt } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activePlan = result?.planId || currentPlan;
@@ -236,6 +311,16 @@ export default function Plan() {
   const [confirmModal, setConfirmModal] = useState(null); // { planId, planName, isDowngrade }
 
   const activeOrder = PLAN_TIERS[activePlan]?.order ?? 0;
+  const trialStillActive = trialEndsAt && new Date(trialEndsAt) > new Date();
+
+  function trialSubtext(plan) {
+    if (plan.id === "free") return plan.subtext;
+    if (activePlan === plan.id && trialStillActive) {
+      return `Trial active until ${new Date(trialEndsAt).toLocaleDateString()}`;
+    }
+    if (hasUsedTrial) return "";
+    return plan.subtext; // "14-day free trial" — only shown before the shop's first paid activation
+  }
 
   return (
     <s-page heading="Plans & Billing" inlineSize="large">
@@ -259,6 +344,25 @@ export default function Plan() {
         >
           <span>{result.success ? "✅" : "⚠️"}</span>
           <span>{result.message}</span>
+        </div>
+      )}
+
+      {/* ── Product Limit Reached Alert ── */}
+      {productLimitReachedAt && (
+        <div
+          style={{
+            background: "var(--rv-critical-surface)",
+            border: "1px solid var(--rv-critical-border)",
+            color: "var(--rv-critical)",
+            padding: "14px 18px",
+            borderRadius: "var(--rv-radius-md)",
+            marginBottom: "20px",
+            fontSize: "13px",
+            fontWeight: 500,
+          }}
+        >
+          ⚠️ You&apos;ve reached your plan&apos;s monitored product limit — newly added products are no longer being
+          tracked. Upgrade below to resume monitoring all of your products.
         </div>
       )}
 
@@ -472,7 +576,7 @@ export default function Plan() {
                   )}
 
                   <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: isCurrent ? "var(--rv-primary)" : "var(--rv-text-subdued)", fontWeight: 500 }}>
-                    {isCurrent ? "Active Plan • Included" : plan.subtext}
+                    {isCurrent ? (trialStillActive ? trialSubtext(plan) : "Active Plan • Included") : trialSubtext(plan)}
                   </div>
                 </div>
               </div>

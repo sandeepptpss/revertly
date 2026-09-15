@@ -1,0 +1,7 @@
+{
+  "name": "Revertly Protection",
+  "settings": {
+    "enable_protection": "Enable Storefront Protection",
+    "show_badge": "Show Revertly Protected Badge"
+  }
+}

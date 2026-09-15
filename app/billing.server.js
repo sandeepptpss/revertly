@@ -1,17 +1,21 @@
 import prisma from "./db.server.js";
 
-export const PLAN_STARTER = "Starter";
-export const PLAN_GROWTH = "Growth";
-export const PLAN_BUSINESS = "Business";
-export const PLAN_ENTERPRISE = "Enterprise";
-export const PLAN_PRO = PLAN_GROWTH;
+import {
+  PLAN_STARTER,
+  PLAN_GROWTH,
+  PLAN_BUSINESS,
+  PLAN_ENTERPRISE,
+  PLAN_PRO,
+  PLAN_TIERS,
+} from "./billing.constants.js";
 
-export const PLAN_TIERS = {
-  free: { id: "free", name: "Free", price: 0, order: 0 },
-  starter: { id: "starter", name: "Starter", price: 9, order: 1 },
-  growth: { id: "growth", name: "Growth", price: 24, order: 2 },
-  business: { id: "business", name: "Business", price: 49, order: 3 },
-  enterprise: { id: "enterprise", name: "Enterprise", price: 79, order: 4 },
+export {
+  PLAN_STARTER,
+  PLAN_GROWTH,
+  PLAN_BUSINESS,
+  PLAN_ENTERPRISE,
+  PLAN_PRO,
+  PLAN_TIERS,
 };
 
 export const PLAN_LIMITS = {
@@ -38,17 +42,6 @@ export const PLAN_LIMITS = {
     bulkRollback: false,
   },
   growth: {
-    products: 5000,
-    restorePoints: 50,
-    rules: 10,
-    retentionDays: 90,
-    vaultOrders: 2500,
-    themes: false,
-    circuitBreaker: false,
-    slack: false,
-    bulkRollback: true,
-  },
-  pro: {
     products: 5000,
     restorePoints: 50,
     rules: 10,
@@ -127,10 +120,14 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
   }
 
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
+  const isSimulated = Boolean(
+    settings?.subscriptionId?.startsWith("sim_") ||
+    settings?.subscriptionId?.startsWith("test_")
+  );
   let currentPlan = normalizePlanId(activeShopifyPlan || settings?.planId || "free");
 
-  // If Shopify returned a definitive check, synchronize database
-  if (billing) {
+  // If Shopify returned a definitive check, synchronize database (unless plan was activated in test/simulation mode)
+  if (billing && !isSimulated) {
     if (activeShopifyPlan && settings && settings.planId !== activeShopifyPlan) {
       await prisma.appSettings.update({
         where: { shop },
@@ -141,7 +138,7 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
       // Shopify has no active payment, but DB still says paid plan -> downgrade to free
       await prisma.appSettings.update({
         where: { shop },
-        data: { planId: "free" },
+        data: { planId: "free", subscriptionId: null },
       });
       currentPlan = "free";
     }

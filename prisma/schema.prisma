@@ -236,6 +236,10 @@ model AppSettings {
   bulkThreshold       Int     @default(20)   // products changed to trigger bulk detection
   bulkWindowMinutes   Int     @default(10)
   planId              String   @default("free") @db.VarChar(50)
+  subscriptionId      String?  @db.VarChar(255)
+  hasUsedTrial        Boolean  @default(false)
+  trialEndsAt         DateTime?
+  productLimitReachedAt DateTime?
   slackWebhookUrl       String?  @db.VarChar(500)
   circuitBreakerEnabled Boolean  @default(false)
   circuitBreakerThreshold Int    @default(50)   // percentage drop (e.g. 50%)

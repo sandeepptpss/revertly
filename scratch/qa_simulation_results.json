@@ -1,0 +1,682 @@
+[
+  {
+    "scenario": "Active plan resolution for tier: free",
+    "group": "Current Plan",
+    "expected": "Resolved plan is free",
+    "actual": "Resolved plan is free",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Limits verification for tier: free",
+    "group": "Current Plan",
+    "expected": "Limits exactly match PLAN_LIMITS.free",
+    "actual": "All limits matched ({\"products\":100,\"restorePoints\":2,\"rules\":1,\"retentionDays\":7,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false})",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Active plan resolution for tier: starter",
+    "group": "Current Plan",
+    "expected": "Resolved plan is starter",
+    "actual": "Resolved plan is starter",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Limits verification for tier: starter",
+    "group": "Current Plan",
+    "expected": "Limits exactly match PLAN_LIMITS.starter",
+    "actual": "All limits matched ({\"products\":1000,\"restorePoints\":10,\"rules\":3,\"retentionDays\":30,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false})",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Active plan resolution for tier: growth",
+    "group": "Current Plan",
+    "expected": "Resolved plan is growth",
+    "actual": "Resolved plan is growth",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Limits verification for tier: growth",
+    "group": "Current Plan",
+    "expected": "Limits exactly match PLAN_LIMITS.growth",
+    "actual": "All limits matched ({\"products\":5000,\"restorePoints\":50,\"rules\":10,\"retentionDays\":90,\"vaultOrders\":2500,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":true})",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Active plan resolution for tier: business",
+    "group": "Current Plan",
+    "expected": "Resolved plan is business",
+    "actual": "Resolved plan is business",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Limits verification for tier: business",
+    "group": "Current Plan",
+    "expected": "Limits exactly match PLAN_LIMITS.business",
+    "actual": "All limits matched ({\"products\":20000,\"restorePoints\":100,\"rules\":null,\"retentionDays\":180,\"vaultOrders\":15000,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true})",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Active plan resolution for tier: enterprise",
+    "group": "Current Plan",
+    "expected": "Resolved plan is enterprise",
+    "actual": "Resolved plan is enterprise",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Limits verification for tier: enterprise",
+    "group": "Current Plan",
+    "expected": "Limits exactly match PLAN_LIMITS.enterprise",
+    "actual": "All limits matched ({\"products\":null,\"restorePoints\":null,\"rules\":null,\"retentionDays\":365,\"vaultOrders\":null,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true})",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade UI button label: free -> starter",
+    "group": "Upgrade",
+    "expected": "Button displays \"Upgrade to Starter\"",
+    "actual": "Button displays \"Upgrade to Starter\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Price verification for Starter",
+    "group": "Upgrade",
+    "expected": "Configured amount is $9",
+    "actual": "Configured amount is $9",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade activation: free -> starter",
+    "group": "Upgrade",
+    "expected": "Plan updated to starter with updated limits",
+    "actual": "Plan is starter, products limit: 1000",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade UI button label: starter -> growth",
+    "group": "Upgrade",
+    "expected": "Button displays \"Upgrade to Growth\"",
+    "actual": "Button displays \"Upgrade to Growth\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Price verification for Growth",
+    "group": "Upgrade",
+    "expected": "Configured amount is $24",
+    "actual": "Configured amount is $24",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade activation: starter -> growth",
+    "group": "Upgrade",
+    "expected": "Plan updated to growth with updated limits",
+    "actual": "Plan is growth, products limit: 5000",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade UI button label: growth -> business",
+    "group": "Upgrade",
+    "expected": "Button displays \"Upgrade to Business\"",
+    "actual": "Button displays \"Upgrade to Business\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Price verification for Business",
+    "group": "Upgrade",
+    "expected": "Configured amount is $49",
+    "actual": "Configured amount is $49",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade activation: growth -> business",
+    "group": "Upgrade",
+    "expected": "Plan updated to business with updated limits",
+    "actual": "Plan is business, products limit: 20000",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade UI button label: business -> enterprise",
+    "group": "Upgrade",
+    "expected": "Button displays \"Upgrade to Enterprise\"",
+    "actual": "Button displays \"Upgrade to Enterprise\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Price verification for Enterprise",
+    "group": "Upgrade",
+    "expected": "Configured amount is $79",
+    "actual": "Configured amount is $79",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrade activation: business -> enterprise",
+    "group": "Upgrade",
+    "expected": "Plan updated to enterprise with updated limits",
+    "actual": "Plan is enterprise, products limit: Infinity",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade UI button label: enterprise -> business",
+    "group": "Downgrade",
+    "expected": "Button displays \"Downgrade to Business\"",
+    "actual": "Button displays \"Downgrade to Business\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade plan status transition: enterprise -> business",
+    "group": "Downgrade",
+    "expected": "Plan status is now business",
+    "actual": "Plan status is business",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade UI button label: business -> growth",
+    "group": "Downgrade",
+    "expected": "Button displays \"Downgrade to Growth\"",
+    "actual": "Button displays \"Downgrade to Growth\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade plan status transition: business -> growth",
+    "group": "Downgrade",
+    "expected": "Plan status is now growth",
+    "actual": "Plan status is growth",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade UI button label: growth -> starter",
+    "group": "Downgrade",
+    "expected": "Button displays \"Downgrade to Starter\"",
+    "actual": "Button displays \"Downgrade to Starter\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade plan status transition: growth -> starter",
+    "group": "Downgrade",
+    "expected": "Plan status is now starter",
+    "actual": "Plan status is starter",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade UI button label: starter -> free",
+    "group": "Downgrade",
+    "expected": "Button displays \"Downgrade to Free\"",
+    "actual": "Button displays \"Downgrade to Free\"",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Downgrade plan status transition: starter -> free",
+    "group": "Downgrade",
+    "expected": "Plan status is now free",
+    "actual": "Plan status is free",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Data persistence after downgrading to Free",
+    "group": "Downgrade",
+    "expected": "Existing product snapshots and restore points remain intact",
+    "actual": "Snapshots: 1 (was 1), Restore Points: 1 (was 1)",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "14-day free trial configured for Starter",
+    "group": "Trial",
+    "expected": "trialDays: 14 present in shopify.server.js for Starter",
+    "actual": "trialDays: 14 verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "14-day free trial configured for Growth",
+    "group": "Trial",
+    "expected": "trialDays: 14 present in shopify.server.js for Growth",
+    "actual": "trialDays: 14 verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "14-day free trial configured for Business",
+    "group": "Trial",
+    "expected": "trialDays: 14 present in shopify.server.js for Business",
+    "actual": "trialDays: 14 verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "14-day free trial configured for Enterprise",
+    "group": "Trial",
+    "expected": "trialDays: 14 present in shopify.server.js for Enterprise",
+    "actual": "trialDays: 14 verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Starting 14-day trial initializes trialEndsAt and hasUsedTrial",
+    "group": "Trial",
+    "expected": "trialEndsAt is set 14 days in future, hasUsedTrial is true",
+    "actual": "trialEndsAt: 2026-09-28T14:09:38.551Z, hasUsedTrial: true",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Trial subtext visibility on active plan card",
+    "group": "Trial",
+    "expected": "Displays trial active date on active plan card",
+    "actual": "Trial active date correctly displayed",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Trial expiration simulation (trialEndsAt in the past)",
+    "group": "Trial",
+    "expected": "trialStillActive evaluates to false when trialEndsAt is in the past",
+    "actual": "trialStillActive: false",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Subsequent plan upgrades do NOT reset or grant a duplicate trial",
+    "group": "Trial",
+    "expected": "hasUsedTrial flag prevents resetting trialEndsAt on subsequent plan changes",
+    "actual": "hasUsedTrial is true, new trial blocked",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Product monitoring limit: 999 / 1,000 products",
+    "group": "Feature Limits",
+    "expected": "Ingestion allowed (999 < 1,000)",
+    "actual": "Allowed",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Product monitoring limit: 1,000th product already in catalog -> 1,001st attempt",
+    "group": "Feature Limits",
+    "expected": "Ingestion of 1,001st product is blocked with 'Product limit reached for current plan'",
+    "actual": "Blocked: Product limit reached for current plan",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "productLimitReachedAt banner triggers when limit exceeded",
+    "group": "Feature Limits",
+    "expected": "productLimitReachedAt is stored and triggers alert banner in UI",
+    "actual": "productLimitReachedAt set to 2026-09-14T14:09:38.584Z",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Upgrading plan to Growth clears productLimitReachedAt alert",
+    "group": "Feature Limits",
+    "expected": "productLimitReachedAt reset to null on upgrade",
+    "actual": "Alert successfully cleared",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Restore Point Limit on Free: 0 / 2 allowed",
+    "group": "Feature Limits",
+    "expected": "checkRestorePointLimit returns allowed: true",
+    "actual": "allowed: true, limit: 2",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Restore Point Limit on Free: 2 / 2 reached (3rd blocked)",
+    "group": "Feature Limits",
+    "expected": "checkRestorePointLimit returns allowed: false",
+    "actual": "allowed: false, count: 2 / 2",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Detection Rule Limit on Free: 0 / 1 active rule allowed",
+    "group": "Feature Limits",
+    "expected": "checkRuleLimit returns allowed: true",
+    "actual": "allowed: true",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Detection Rule Limit on Free: 1 / 1 reached (2nd blocked)",
+    "group": "Feature Limits",
+    "expected": "checkRuleLimit returns allowed: false",
+    "actual": "allowed: false, activeCount: 1 / 1",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Detection Rule Limit on Starter: 1 / 3 allows adding more rules",
+    "group": "Feature Limits",
+    "expected": "checkRuleLimit returns allowed: true with limit 3",
+    "actual": "allowed: true, limit: 3",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Change-history retention for free is 7 days",
+    "group": "Feature Limits",
+    "expected": "retentionDays === 7",
+    "actual": "retentionDays === 7",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Change-history retention for starter is 30 days",
+    "group": "Feature Limits",
+    "expected": "retentionDays === 30",
+    "actual": "retentionDays === 30",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Change-history retention for growth is 90 days",
+    "group": "Feature Limits",
+    "expected": "retentionDays === 90",
+    "actual": "retentionDays === 90",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Change-history retention for business is 180 days",
+    "group": "Feature Limits",
+    "expected": "retentionDays === 180",
+    "actual": "retentionDays === 180",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Change-history retention for enterprise is 365 days",
+    "group": "Feature Limits",
+    "expected": "retentionDays === 365",
+    "actual": "retentionDays === 365",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Premium feature gating for free",
+    "group": "Feature Limits",
+    "expected": "Themes:false, Vault:0, CB:false, Slack:false, BulkRollback:false",
+    "actual": "Exact match verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Premium feature gating for starter",
+    "group": "Feature Limits",
+    "expected": "Themes:false, Vault:0, CB:false, Slack:false, BulkRollback:false",
+    "actual": "Exact match verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Premium feature gating for growth",
+    "group": "Feature Limits",
+    "expected": "Themes:false, Vault:2500, CB:false, Slack:false, BulkRollback:true",
+    "actual": "Exact match verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Premium feature gating for business",
+    "group": "Feature Limits",
+    "expected": "Themes:true, Vault:15000, CB:true, Slack:true, BulkRollback:true",
+    "actual": "Exact match verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Premium feature gating for enterprise",
+    "group": "Feature Limits",
+    "expected": "Themes:true, Vault:Infinity, CB:true, Slack:true, BulkRollback:true",
+    "actual": "Exact match verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Successful payment simulation (webhook: ACTIVE)",
+    "group": "Billing",
+    "expected": "Plan updated to 'growth' with active subscriptionId",
+    "actual": "planId: growth, subscriptionId: gid://shopify/AppSubscription/sub_active_growth",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Failed / Declined payment simulation (webhook: DECLINED)",
+    "group": "Billing",
+    "expected": "Shop downgraded to 'free', subscriptionId cleared",
+    "actual": "planId: free, subscriptionId: null",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Cancelled payment simulation (webhook: CANCELLED)",
+    "group": "Billing",
+    "expected": "Shop downgraded to 'free', subscriptionId cleared",
+    "actual": "planId: free",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Transient payment state simulation (FROZEN / PENDING)",
+    "group": "Billing",
+    "expected": "Transient status does NOT strip paid access prematurely",
+    "actual": "Plan remains business",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Duplicate subscription attempt to current plan",
+    "group": "Billing",
+    "expected": "Request blocked with message 'Your store is already subscribed to the Business plan.'",
+    "actual": "Duplicate attempt blocked on both frontend and backend",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Negative: Re-selecting active plan returns error message",
+    "group": "Negative Cases",
+    "expected": "Returns `{ success: false, message: 'Your store is already subscribed...' }`",
+    "actual": "Blocked cleanly without calling billing API",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Negative: Double-clicking / multiple rapid clicks prevented by `disabled={isSubmitting}`",
+    "group": "Negative Cases",
+    "expected": "Action buttons disabled during inflight form submissions",
+    "actual": "Buttons disabled via React fetcher.state !== 'idle'",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Negative: Malicious / invalid planId parameter injection",
+    "group": "Negative Cases",
+    "expected": "normalizePlanId safely falls back to 'free' for any invalid string",
+    "actual": "All invalid inputs normalized to 'free'",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Negative: Free plan user attempting Slack webhook test",
+    "group": "Negative Cases",
+    "expected": "Gated by checkFeatureAccess, returns upgrade requirement message",
+    "actual": "Access denied: allowed = false",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Negative: Free plan user attempting Circuit Breaker configuration",
+    "group": "Negative Cases",
+    "expected": "Gated by checkFeatureAccess, returns upgrade requirement message",
+    "actual": "Access denied: allowed = false",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Negative: Free plan user attempting Data Vault sync",
+    "group": "Negative Cases",
+    "expected": "Gated by checkVaultAccess, returns upgrade requirement message",
+    "actual": "Access denied: allowed = false",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Negative: Theme restore execution on existing restore point after downgrade",
+    "group": "Negative Cases",
+    "expected": "Theme restore action should check current plan feature access before deploying liquid files",
+    "actual": "Theme restore action in app.restore-points.$id.jsx does NOT check checkFeatureAccess(shop, 'themes')",
+    "status": "FAIL",
+    "notes": "Security / Entitlement bypass: A downgraded shop can still restore theme files from an existing snapshot created during a previous paid tier."
+  },
+  {
+    "scenario": "Negative: Bulk incident rollback execution on Free/Starter plans",
+    "group": "Negative Cases",
+    "expected": "Bulk rollback of multi-product incidents should enforce limits.bulkRollback",
+    "actual": "app.incidents.$id.jsx executes rollback job across all incident products without checking limits.bulkRollback",
+    "status": "FAIL",
+    "notes": "Feature limit bypass: Free/Starter plans are described as 'Manual single-product rollback' but incident bulk rollback has no plan check."
+  },
+  {
+    "scenario": "Admin authentication required: ./app/routes/app.plan.jsx",
+    "group": "Authorization",
+    "expected": "Loader & action protected with authenticate.admin(request)",
+    "actual": "authenticate.admin present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Admin authentication required: ./app/routes/app.restore-points.jsx",
+    "group": "Authorization",
+    "expected": "Loader & action protected with authenticate.admin(request)",
+    "actual": "authenticate.admin present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Admin authentication required: ./app/routes/app.rules.jsx",
+    "group": "Authorization",
+    "expected": "Loader & action protected with authenticate.admin(request)",
+    "actual": "authenticate.admin present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Admin authentication required: ./app/routes/app.vault.jsx",
+    "group": "Authorization",
+    "expected": "Loader & action protected with authenticate.admin(request)",
+    "actual": "authenticate.admin present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Admin authentication required: ./app/routes/app.settings.jsx",
+    "group": "Authorization",
+    "expected": "Loader & action protected with authenticate.admin(request)",
+    "actual": "authenticate.admin present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Admin authentication required: ./app/routes/app.incidents.jsx",
+    "group": "Authorization",
+    "expected": "Loader & action protected with authenticate.admin(request)",
+    "actual": "authenticate.admin present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Webhook HMAC authentication: ./app/routes/webhooks.app_subscriptions.update.jsx",
+    "group": "Authorization",
+    "expected": "Webhook request verified with authenticate.webhook(request)",
+    "actual": "authenticate.webhook present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Webhook HMAC authentication: ./app/routes/webhooks.products.update.jsx",
+    "group": "Authorization",
+    "expected": "Webhook request verified with authenticate.webhook(request)",
+    "actual": "authenticate.webhook present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "Parameter Tampering: Cannot activate paid plans by spoofing formData",
+    "group": "Authorization",
+    "expected": "POST /app/plan delegates to billing.request(); never sets paid plan directly in DB",
+    "actual": "Direct DB writes for paid plans are strictly blocked. Requires Shopify confirmation.",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "UI: Exactly 5 plan cards defined",
+    "group": "UI Validation",
+    "expected": "Cards for free, starter, growth, business, enterprise exist",
+    "actual": "All 5 defined",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "UI: Correct plan prices displayed",
+    "group": "UI Validation",
+    "expected": "Prices $0, $9, $24, $49, $79 present",
+    "actual": "All prices present",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "UI: Badges present for featured tiers",
+    "group": "UI Validation",
+    "expected": "Current Plan, Most Popular, Store Shield, Shopify Plus badges",
+    "actual": "Badges verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "UI: Downgrade confirmation modal with warning and buttons",
+    "group": "UI Validation",
+    "expected": "Confirmation modal rendered on downgrade clicks",
+    "actual": "Modal verified",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "UI: Responsive CSS grid layout (5 cols -> 3 -> 2 -> 1)",
+    "group": "UI Validation",
+    "expected": "Grid scales cleanly across desktop, tablet, and mobile",
+    "actual": "Responsive breakpoints verified",
+    "status": "PASS",
+    "notes": ""
+  }
+]

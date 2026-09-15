@@ -13,6 +13,7 @@ import {
   computeDiffLines,
   fetchThemeBackup,
 } from "../backup.server.js";
+import { checkFeatureAccess } from "../billing.server.js";
 
 export const loader = async ({ request, params }) => {
   const { session, admin } = await authenticate.admin(request);
@@ -168,6 +169,11 @@ export const action = async ({ request, params }) => {
   const intent = formData.get("intent");
 
   if (intent === "restore_theme") {
+    const themeAccess = await checkFeatureAccess(shop, "themes");
+    if (!themeAccess.allowed) {
+      return { success: false, message: "Theme restoration requires a Business or Enterprise plan." };
+    }
+
     const restorePoint = await prisma.restorePoint.findFirst({
       where: { id: rpId, shop },
     });

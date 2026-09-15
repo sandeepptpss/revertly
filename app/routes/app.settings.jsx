@@ -16,11 +16,49 @@ export const loader = async ({ request }) => {
     checkFeatureAccess(shop, "slack"),
   ]);
 
+  let themeEmbedActive = false;
+  let activeThemeName = "Dawn";
+  try {
+    const themeRes = await fetch(`https://${shop}/admin/api/2026-01/themes.json`, {
+      headers: { "X-Shopify-Access-Token": session.accessToken },
+    });
+    if (themeRes.ok) {
+      const themesData = await themeRes.json();
+      const mainTheme = themesData.themes?.find((t) => t.role === "main");
+      if (mainTheme) {
+        activeThemeName = mainTheme.name;
+        const assetRes = await fetch(
+          `https://${shop}/admin/api/2026-01/themes/${mainTheme.id}/assets.json?asset[key]=config/settings_data.json`,
+          { headers: { "X-Shopify-Access-Token": session.accessToken } }
+        );
+        if (assetRes.ok) {
+          const assetData = await assetRes.json();
+          const settingsJson = JSON.parse(assetData.asset?.value || "{}");
+          const blocks = settingsJson.current?.blocks || {};
+          for (const block of Object.values(blocks)) {
+            if (block.type?.includes("revertly_embed") && !block.disabled) {
+              themeEmbedActive = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Could not check theme embed status:", err.message);
+  }
+
+  const cleanShopName = shop.replace(".myshopify.com", "");
+  const themeEditorUrl = `https://admin.shopify.com/store/${cleanShopName}/themes/current/editor?context=apps`;
+
   return {
     settings,
     hasCircuitBreakerAccess: cbAccess.allowed,
     hasSlackAccess: slackAccess.allowed,
     plan: cbAccess.plan,
+    themeEmbedActive,
+    activeThemeName,
+    themeEditorUrl,
   };
 };
 
@@ -112,11 +150,18 @@ export const action = async ({ request }) => {
 };
 
 export default function Settings() {
-  const { settings } = useLoaderData();
+  const {
+    settings,
+    hasCircuitBreakerAccess = false,
+    hasSlackAccess = false,
+    themeEmbedActive = false,
+    activeThemeName = "Dawn",
+    themeEditorUrl = "",
+  } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSaving = fetcher.state !== "idle";
-  const [slackUrl, setSlackUrl] = useState(settings.slackWebhookUrl || "");
+  const [slackUrl, setSlackUrl] = useState(settings?.slackWebhookUrl || "");
 
   return (
     <s-page heading="Settings" inlineSize="large">
@@ -164,6 +209,79 @@ export default function Settings() {
           >
             {isSaving ? "Saving..." : "Save All Settings"}
           </button>
+        </div>
+
+        {/* ── Theme App Embed Protection ── */}
+        <div className="rv-card">
+          <div className="rv-card-header">
+            <h3 className="rv-card-title">
+              <span>🎨</span> Theme App Embed (Storefront Protection)
+            </h3>
+            {themeEmbedActive ? (
+              <span className="rv-badge rv-badge-success">● Active in {activeThemeName}</span>
+            ) : (
+              <span className="rv-badge rv-badge-warning">○ Action Required</span>
+            )}
+          </div>
+          <div className="rv-card-body">
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "12px",
+                background: themeEmbedActive ? "rgba(16, 185, 129, 0.06)" : "rgba(245, 158, 11, 0.08)",
+                border: `1px solid ${themeEmbedActive ? "rgba(16, 185, 129, 0.25)" : "rgba(245, 158, 11, 0.3)"}`,
+                borderRadius: "var(--rv-radius-sm)",
+                padding: "16px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
+                <div>
+                  <h4 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: 600, color: "var(--rv-text)" }}>
+                    {themeEmbedActive ? "✅ Revertly Protection App Embed is Enabled" : "⚠️ Revertly Protection App Embed is not yet enabled"}
+                  </h4>
+                  <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                    {themeEmbedActive
+                      ? `Your active theme (${activeThemeName}) has Revertly Protection enabled. Storefront activity monitoring, rollback checkpoints, and trust badges are active.`
+                      : `To enable storefront change monitoring and optional trust badges, please enable Revertly in your Shopify Theme Customizer under App Embeds.`}
+                  </p>
+                </div>
+                <a
+                  href={themeEditorUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rv-btn rv-btn-primary"
+                  style={{
+                    fontSize: "13px",
+                    padding: "8px 16px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    textDecoration: "none",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <span>🎨</span>
+                  <span>{themeEmbedActive ? "Configure in Theme Editor" : "Enable in Theme Editor"}</span>
+                  <span style={{ fontSize: "11px" }}>↗</span>
+                </a>
+              </div>
+
+              {!themeEmbedActive && (
+                <div style={{ borderTop: "1px dashed rgba(245, 158, 11, 0.3)", paddingTop: "12px", marginTop: "4px" }}>
+                  <strong style={{ fontSize: "12px", color: "var(--rv-text)", display: "block", marginBottom: "6px" }}>
+                    Quick Setup Instructions:
+                  </strong>
+                  <ol style={{ margin: 0, paddingLeft: "18px", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.6 }}>
+                    <li>Click <strong>Enable in Theme Editor</strong> above to open the theme customizer.</li>
+                    <li>In the left sidebar, locate <strong>Revertly Protection</strong> under <em>App embeds</em>.</li>
+                    <li>Toggle the switch <strong>ON</strong>.</li>
+                    <li>Click <strong>Save</strong> in the top right corner.</li>
+                  </ol>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* ── 1. Catalog Monitoring ── */}
