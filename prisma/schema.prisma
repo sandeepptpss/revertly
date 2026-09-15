@@ -175,6 +175,9 @@ model RestorePoint {
   articleData     Json?     // array of blogs & articles
   orderData       Json?     // array/snapshot of orders
   customerData    Json?     // array/snapshot of customers
+  cloudSyncedAt   DateTime?
+  cloudSyncStatus String    @default("NOT_SYNCED") @db.VarChar(50) // NOT_SYNCED, SYNCED, PENDING, FAILED
+  cloudProvider   String?   @db.VarChar(50)                        // GOOGLE_DRIVE, DROPBOX
   rollbackJobs    RollbackJob[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -244,6 +247,15 @@ model AppSettings {
   circuitBreakerEnabled Boolean  @default(false)
   circuitBreakerThreshold Int    @default(50)   // percentage drop (e.g. 50%)
   circuitBreakerAction  String   @default("DRAFT") @db.VarChar(50) // DRAFT or AUTO_REVERT
+  autoBackupSchedule    String   @default("DAILY") @db.VarChar(50) // DAILY, TWICE_DAILY, WEEKLY, OFF
+  autoBackupTime        String   @default("02:00") @db.VarChar(10) // Preferred UTC time
+  lastAutoBackupAt      DateTime?
+  nextAutoBackupAt      DateTime?
+  cloudSyncProvider     String   @default("NONE") @db.VarChar(50)  // NONE, GOOGLE_DRIVE, DROPBOX
+  cloudSyncEmail        String?  @db.VarChar(255)
+  cloudSyncConnected    Boolean  @default(false)
+  cloudSyncFolder       String   @default("Revertly_Backups") @db.VarChar(255)
+  cloudSyncAutoUpload   Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

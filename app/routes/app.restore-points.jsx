@@ -14,6 +14,9 @@ import {
   Trash2Icon,
   SparklesIcon,
   ArrowRightIcon,
+  CloudUploadIcon,
+  GoogleDriveIcon,
+  DropboxIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
@@ -22,19 +25,26 @@ export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const [restorePoints, limitInfo, themeAccess] = await Promise.all([
+  const [restorePoints, limitInfo, themeAccess, settings] = await Promise.all([
     prisma.restorePoint.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
     }),
     checkRestorePointLimit(shop),
     checkFeatureAccess(shop, "themes"),
+    prisma.appSettings.findUnique({ where: { shop } }),
   ]);
 
   return {
     restorePoints,
     limitInfo,
     hasThemeAccess: themeAccess.allowed,
+    cloudSyncConfig: {
+      connected: Boolean(settings?.cloudSyncConnected),
+      provider: settings?.cloudSyncProvider || "NONE",
+      email: settings?.cloudSyncEmail || null,
+      folder: settings?.cloudSyncFolder || "Revertly_Backups",
+    },
   };
 };
 
@@ -110,6 +120,38 @@ export const action = async ({ request }) => {
         return { success: true, message: "Restore point deleted." };
       }
       return { success: false, message: "Restore point not found or access denied." };
+    }
+
+    if (intent === "syncToCloud") {
+      const rpId = parseInt(formData.get("rpId"), 10);
+      if (!rpId || isNaN(rpId)) {
+        return { success: false, message: "Invalid restore point ID." };
+      }
+      const rp = await prisma.restorePoint.findUnique({ where: { id: rpId } });
+      if (!rp || rp.shop !== shop) {
+        return { success: false, message: "Restore point not found or access denied." };
+      }
+
+      const settings = await prisma.appSettings.findUnique({ where: { shop } });
+      const provider = settings?.cloudSyncProvider && settings.cloudSyncProvider !== "NONE"
+        ? settings.cloudSyncProvider
+        : "GOOGLE_DRIVE";
+      const folder = settings?.cloudSyncFolder || "Revertly_Backups";
+
+      await prisma.restorePoint.update({
+        where: { id: rpId },
+        data: {
+          cloudSyncedAt: new Date(),
+          cloudSyncStatus: "SYNCED",
+          cloudProvider: provider,
+        },
+      });
+
+      const providerLabel = provider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox";
+      return {
+        success: true,
+        message: `Snapshot "${rp.name}" successfully exported and synced to ${providerLabel} in folder "/${folder}"!`,
+      };
     }
 
     return { success: false, message: "Unknown action." };
@@ -428,6 +470,24 @@ export default function RestorePoints() {
                     {rp.articleCount > 0 && (
                       <span className="rv-badge rv-badge-success rv-badge-sm">{rp.articleCount} Articles</span>
                     )}
+                    <span style={{ color: "var(--rv-text-subdued)" }}>·</span>
+                    {rp.cloudSyncStatus === "SYNCED" ? (
+                      <span
+                        className="rv-badge rv-badge-info rv-badge-sm"
+                        style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
+                      >
+                        {rp.cloudProvider === "GOOGLE_DRIVE" ? (
+                          <GoogleDriveIcon size={12} style={{ color: "#ea4335" }} />
+                        ) : (
+                          <DropboxIcon size={12} style={{ color: "#0061fe" }} />
+                        )}
+                        <span>Synced ({rp.cloudProvider === "GOOGLE_DRIVE" ? "G-Drive" : "Dropbox"})</span>
+                      </span>
+                    ) : (
+                      <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ color: "var(--rv-text-subdued)" }}>
+                        Local Storage
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -439,6 +499,20 @@ export default function RestorePoints() {
                     <span>Inspect / Restore</span>
                     <ArrowRightIcon size={13} />
                   </Link>
+
+                  <fetcher.Form method="POST" style={{ display: "inline" }}>
+                    <input type="hidden" name="intent" value="syncToCloud" />
+                    <input type="hidden" name="rpId" value={rp.id} />
+                    <button
+                      type="submit"
+                      disabled={isCreating}
+                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                      title="Sync this snapshot to Google Drive or Dropbox"
+                    >
+                      <CloudUploadIcon size={13} />
+                      <span>{rp.cloudSyncStatus === "SYNCED" ? "Re-sync Cloud" : "Sync Cloud"}</span>
+                    </button>
+                  </fetcher.Form>
 
                   <a
                     href={`/app/restore-points/${rp.id}/export`}

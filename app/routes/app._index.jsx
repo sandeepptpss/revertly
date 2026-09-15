@@ -13,6 +13,9 @@ import {
   DatabaseIcon,
   SettingsIcon,
   FilterIcon,
+  CloudUploadIcon,
+  GoogleDriveIcon,
+  DropboxIcon,
 } from "../components/Icons.jsx";
 import { StatCard } from "../components/StatCard.jsx";
 import { Banner } from "../components/Banner.jsx";
@@ -30,6 +33,8 @@ export const loader = async ({ request }) => {
     recentChanges,
     recentIncidents,
     totalRollbacks,
+    latestRestorePoint,
+    settings,
   ] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
     prisma.changeEvent.count({
@@ -52,7 +57,36 @@ export const loader = async ({ request }) => {
       include: { _count: { select: { changes: true } } },
     }),
     prisma.rollbackJob.count({ where: { shop, status: "COMPLETED" } }),
+    prisma.restorePoint.findFirst({
+      where: { shop, status: "READY" },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.appSettings.findUnique({ where: { shop } }),
   ]);
+
+  const schedule = settings?.autoBackupSchedule || "DAILY";
+  const preferredTime = settings?.autoBackupTime || "02:00";
+  const lastBackupAt = settings?.lastAutoBackupAt || latestRestorePoint?.createdAt || null;
+
+  let nextBackupAt = settings?.nextAutoBackupAt;
+  if (!nextBackupAt && schedule !== "OFF") {
+    const [hours, minutes] = preferredTime.split(":").map((x) => parseInt(x, 10) || 0);
+    const now = new Date();
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0));
+    if (next <= now) {
+      if (schedule === "TWICE_DAILY") next.setUTCHours(next.getUTCHours() + 12);
+      else if (schedule === "WEEKLY") next.setUTCDate(next.getUTCDate() + 7);
+      else next.setUTCDate(next.getUTCDate() + 1);
+    }
+    nextBackupAt = next;
+  }
+
+  const cloudSync = {
+    connected: Boolean(settings?.cloudSyncConnected),
+    provider: settings?.cloudSyncProvider || "NONE",
+    email: settings?.cloudSyncEmail || null,
+    folder: settings?.cloudSyncFolder || "Revertly_Backups",
+  };
 
   return {
     stats: { totalProducts, todayChanges, openIncidents, readyRestorePoints, totalRollbacks },
@@ -60,6 +94,13 @@ export const loader = async ({ request }) => {
     recentIncidents,
     shop,
     isInitialized: totalProducts > 0,
+    backupCadence: {
+      schedule,
+      preferredTime,
+      lastBackupAt: lastBackupAt ? (lastBackupAt instanceof Date ? lastBackupAt.toISOString() : new Date(lastBackupAt).toISOString()) : null,
+      nextBackupAt: nextBackupAt ? (nextBackupAt instanceof Date ? nextBackupAt.toISOString() : new Date(nextBackupAt).toISOString()) : null,
+      cloudSync,
+    },
   };
 };
 
@@ -82,7 +123,7 @@ function fieldLabel(fn) {
 }
 
 export default function Dashboard() {
-  const { stats, recentChanges, recentIncidents, isInitialized } = useLoaderData();
+  const { stats, recentChanges, recentIncidents, isInitialized, backupCadence } = useLoaderData();
 
   return (
     <s-page heading="Dashboard" inlineSize="large">
@@ -131,6 +172,107 @@ export default function Dashboard() {
               </Link>
             </>
           )}
+        </div>
+      </div>
+
+      {/* ── Automated Scheduled Daily Backup & Cloud Sync Status Banner ── */}
+      <div
+        className="rv-card"
+        style={{
+          margin: "0 0 20px 0",
+          padding: "16px 20px",
+          background: "linear-gradient(135deg, rgba(0, 128, 96, 0.05) 0%, rgba(37, 99, 235, 0.05) 100%)",
+          border: "1px solid rgba(0, 128, 96, 0.18)",
+          boxShadow: "0 2px 8px rgba(0, 0, 0, 0.03)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+            <div
+              style={{
+                width: "42px",
+                height: "42px",
+                borderRadius: "50%",
+                background: backupCadence?.schedule !== "OFF" ? "var(--rv-primary)" : "var(--rv-warning)",
+                color: "#ffffff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                boxShadow: "0 2px 6px rgba(0, 128, 96, 0.25)",
+              }}
+            >
+              <ClockIcon size={22} />
+            </div>
+
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "3px" }}>
+                <strong style={{ fontSize: "15px", color: "var(--rv-text)", fontWeight: 700 }}>
+                  {backupCadence?.schedule === "DAILY"
+                    ? `Automated Daily Backup: Active (Scheduled ${backupCadence.preferredTime} UTC)`
+                    : backupCadence?.schedule === "TWICE_DAILY"
+                      ? "Automated High-Velocity Backup: Active (Every 12 Hours)"
+                      : backupCadence?.schedule === "WEEKLY"
+                        ? "Automated Weekly Backup: Active (Every 7 Days)"
+                        : "Automated Backup Cadence: Disabled (Manual Only)"}
+                </strong>
+                <span className={`rv-badge ${backupCadence?.schedule !== "OFF" ? "rv-badge-success" : "rv-badge-warning"}`}>
+                  {backupCadence?.schedule !== "OFF" ? "Auto-Guarded" : "Paused"}
+                </span>
+
+                {/* Cloud Sync Status Indicator Badge */}
+                {backupCadence?.cloudSync?.connected ? (
+                  <span
+                    className="rv-badge rv-badge-info"
+                    style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
+                  >
+                    {backupCadence.cloudSync.provider === "GOOGLE_DRIVE" ? (
+                      <GoogleDriveIcon size={13} style={{ color: "#ea4335" }} />
+                    ) : (
+                      <DropboxIcon size={13} style={{ color: "#0061fe" }} />
+                    )}
+                    <span>{backupCadence.cloudSync.provider === "GOOGLE_DRIVE" ? "G-Drive Sync: Active" : "Dropbox Sync: Active"}</span>
+                  </span>
+                ) : (
+                  <Link
+                    to="/app/settings"
+                    className="rv-badge rv-badge-neutral"
+                    style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                  >
+                    <CloudUploadIcon size={13} />
+                    <span>Cloud Sync: Connect Drive</span>
+                  </Link>
+                )}
+              </div>
+
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.4 }}>
+                Last safe snapshot:{" "}
+                <strong style={{ color: "var(--rv-text)" }}>
+                  {backupCadence?.lastBackupAt ? timeAgo(backupCadence.lastBackupAt) : "No snapshots recorded yet"}
+                </strong>
+                {backupCadence?.nextBackupAt && backupCadence.schedule !== "OFF" && (
+                  <>
+                    {" "}
+                    &bull; Next automated run:{" "}
+                    <span style={{ color: "var(--rv-primary)", fontWeight: 600 }}>
+                      {new Date(backupCadence.nextBackupAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC ({timeAgo(backupCadence.nextBackupAt).replace("ago", "").trim() ? "in " + timeAgo(backupCadence.nextBackupAt).replace("ago", "").trim() : "scheduled"})
+                    </span>
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <Link to="/app/restore-points" className="rv-btn rv-btn-secondary rv-btn-sm">
+              <SaveIcon size={14} />
+              <span>Restore Points</span>
+            </Link>
+            <Link to="/app/settings" className="rv-btn rv-btn-primary rv-btn-sm">
+              <SettingsIcon size={14} />
+              <span>Backup Schedule</span>
+            </Link>
+          </div>
         </div>
       </div>
 

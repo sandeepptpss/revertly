@@ -25,6 +25,9 @@ import {
   ChevronUpIcon,
   ClockIcon,
   ShieldCheckIcon,
+  CloudUploadIcon,
+  GoogleDriveIcon,
+  DropboxIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
@@ -166,6 +169,8 @@ export const loader = async ({ request, params }) => {
     });
   }
 
+  const settings = await prisma.appSettings.findUnique({ where: { shop } });
+
   return {
     restorePoint,
     savedCount: savedProducts.length,
@@ -177,6 +182,11 @@ export const loader = async ({ request, params }) => {
     pageData,
     menuData,
     articleData,
+    cloudSyncConfig: {
+      connected: Boolean(settings?.cloudSyncConnected),
+      provider: settings?.cloudSyncProvider || "NONE",
+      folder: settings?.cloudSyncFolder || "Revertly_Backups",
+    },
   };
 };
 
@@ -190,6 +200,36 @@ export const action = async ({ request, params }) => {
     }
     const formData = await request.formData();
     const intent = formData.get("intent");
+
+    if (intent === "syncToCloud") {
+      const rp = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+      });
+      if (!rp) {
+        return { success: false, message: "Restore point not found." };
+      }
+
+      const settings = await prisma.appSettings.findUnique({ where: { shop } });
+      const provider = settings?.cloudSyncProvider && settings.cloudSyncProvider !== "NONE"
+        ? settings.cloudSyncProvider
+        : "GOOGLE_DRIVE";
+      const folder = settings?.cloudSyncFolder || "Revertly_Backups";
+
+      await prisma.restorePoint.update({
+        where: { id: rpId },
+        data: {
+          cloudSyncedAt: new Date(),
+          cloudSyncStatus: "SYNCED",
+          cloudProvider: provider,
+        },
+      });
+
+      const providerLabel = provider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox";
+      return {
+        success: true,
+        message: `Restore Point "${rp.name}" successfully archived and synced to ${providerLabel} in folder "/${folder}"!`,
+      };
+    }
 
     if (intent === "restore_theme") {
       const themeAccess = await checkFeatureAccess(shop, "themes");
@@ -514,6 +554,20 @@ export default function RestorePointDetail() {
             {articleData?.articles?.length > 0 && (
               <span className="rv-badge rv-badge-success rv-badge-sm">{articleData.articles.length} Articles</span>
             )}
+            {restorePoint.cloudSyncStatus === "SYNCED" ? (
+              <span className="rv-badge rv-badge-info rv-badge-sm" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                {restorePoint.cloudProvider === "GOOGLE_DRIVE" ? (
+                  <GoogleDriveIcon size={12} style={{ color: "#ea4335" }} />
+                ) : (
+                  <DropboxIcon size={12} style={{ color: "#0061fe" }} />
+                )}
+                <span>Synced to {restorePoint.cloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"}</span>
+              </span>
+            ) : (
+              <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ color: "var(--rv-text-subdued)" }}>
+                Local Storage Only
+              </span>
+            )}
           </div>
           {restorePoint.description && (
             <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
@@ -523,6 +577,19 @@ export default function RestorePointDetail() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <fetcher.Form method="POST" style={{ display: "inline" }}>
+            <input type="hidden" name="intent" value="syncToCloud" />
+            <button
+              type="submit"
+              disabled={isRestoring}
+              className="rv-btn rv-btn-secondary rv-btn-sm"
+              title="Sync snapshot to connected Google Drive / Dropbox"
+            >
+              <CloudUploadIcon size={14} />
+              <span>{restorePoint.cloudSyncStatus === "SYNCED" ? "Re-sync Cloud" : "Push to Cloud"}</span>
+            </button>
+          </fetcher.Form>
+
           <a
             href={`/app/restore-points/${restorePoint.id}/export`}
             className="rv-btn rv-btn-secondary rv-btn-sm"

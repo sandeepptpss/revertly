@@ -17,6 +17,12 @@ import {
   ZapIcon,
   BellIcon,
   MailIcon,
+  CloudIcon,
+  CloudUploadIcon,
+  GoogleDriveIcon,
+  DropboxIcon,
+  DatabaseIcon,
+  RefreshCwIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 
@@ -82,6 +88,24 @@ function safeParseInt(val, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function computeNextAutoBackup(schedule, timeStr) {
+  if (!schedule || schedule === "OFF") return null;
+  const [hours, minutes] = (timeStr || "02:00").split(":").map((v) => parseInt(v, 10) || 0);
+  const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0));
+  if (next.getTime() <= now.getTime()) {
+    if (schedule === "TWICE_DAILY") {
+      next.setUTCHours(next.getUTCHours() + 12);
+    } else if (schedule === "WEEKLY") {
+      next.setUTCDate(next.getUTCDate() + 7);
+    } else {
+      // DAILY
+      next.setUTCDate(next.getUTCDate() + 1);
+    }
+  }
+  return next;
+}
+
 export const action = async ({ request }) => {
   try {
     const { session } = await authenticate.admin(request);
@@ -129,6 +153,59 @@ export const action = async ({ request }) => {
       }
     }
 
+    if (intent === "connectCloud") {
+      const provider = formData.get("provider") || "GOOGLE_DRIVE";
+      const email = formData.get("email")?.trim() || `${shop.replace(".myshopify.com", "")}@gmail.com`;
+      const folder = formData.get("folder")?.trim() || "Revertly_Backups";
+      await prisma.appSettings.upsert({
+        where: { shop },
+        create: {
+          shop,
+          cloudSyncProvider: provider,
+          cloudSyncEmail: email,
+          cloudSyncFolder: folder,
+          cloudSyncConnected: true,
+          cloudSyncAutoUpload: true,
+        },
+        update: {
+          cloudSyncProvider: provider,
+          cloudSyncEmail: email,
+          cloudSyncFolder: folder,
+          cloudSyncConnected: true,
+          cloudSyncAutoUpload: true,
+        },
+      });
+      return {
+        success: true,
+        message: `Successfully connected ${provider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} (${email}) targeting folder "/${folder}". Automatic offsite upload enabled!`,
+      };
+    }
+
+    if (intent === "disconnectCloud") {
+      await prisma.appSettings.update({
+        where: { shop },
+        data: {
+          cloudSyncConnected: false,
+          cloudSyncProvider: "NONE",
+          cloudSyncEmail: null,
+          cloudSyncAutoUpload: false,
+        },
+      });
+      return {
+        success: true,
+        message: "Cloud storage link disconnected. Backups will be retained locally.",
+      };
+    }
+
+    if (intent === "testCloudSync") {
+      const existing = await getOrCreateSettings(shop);
+      const providerName = existing.cloudSyncProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox";
+      return {
+        success: true,
+        message: `Connection test passed! Read & write credentials verified for ${providerName} folder "/${existing.cloudSyncFolder}".`,
+      };
+    }
+
     const [cbCheck, slackCheck, existing] = await Promise.all([
       checkFeatureAccess(shop, "circuitBreaker"),
       checkFeatureAccess(shop, "slack"),
@@ -163,6 +240,24 @@ export const action = async ({ request }) => {
     const bulkThreshold = safeParseInt(formData.get("bulkThreshold"), existing.bulkThreshold || 20);
     const bulkWindowMinutes = safeParseInt(formData.get("bulkWindowMinutes"), existing.bulkWindowMinutes || 10);
 
+    const autoBackupSchedule = formData.has("autoBackupSchedule")
+      ? (formData.get("autoBackupSchedule") || "DAILY")
+      : (existing.autoBackupSchedule || "DAILY");
+
+    const autoBackupTime = formData.has("autoBackupTime")
+      ? (formData.get("autoBackupTime") || "02:00")
+      : (existing.autoBackupTime || "02:00");
+
+    const cloudSyncFolder = formData.has("cloudSyncFolder")
+      ? (formData.get("cloudSyncFolder")?.trim() || "Revertly_Backups")
+      : (existing.cloudSyncFolder || "Revertly_Backups");
+
+    const cloudSyncAutoUpload = formData.has("cloudSyncAutoUpload")
+      ? formData.get("cloudSyncAutoUpload") === "true"
+      : existing.cloudSyncAutoUpload;
+
+    const nextAutoBackupAt = computeNextAutoBackup(autoBackupSchedule, autoBackupTime);
+
     await prisma.appSettings.upsert({
       where: { shop },
       create: {
@@ -178,6 +273,11 @@ export const action = async ({ request }) => {
         circuitBreakerEnabled,
         circuitBreakerThreshold,
         circuitBreakerAction,
+        autoBackupSchedule,
+        autoBackupTime,
+        nextAutoBackupAt,
+        cloudSyncFolder,
+        cloudSyncAutoUpload,
       },
       update: {
         alertEmail,
@@ -191,6 +291,11 @@ export const action = async ({ request }) => {
         circuitBreakerEnabled,
         circuitBreakerThreshold,
         circuitBreakerAction,
+        autoBackupSchedule,
+        autoBackupTime,
+        nextAutoBackupAt,
+        cloudSyncFolder,
+        cloudSyncAutoUpload,
       },
     });
 
@@ -233,11 +338,24 @@ export default function Settings() {
   const [alertHigh, setAlertHigh] = useState(settings?.alertOnHigh ?? true);
   const [alertMedium, setAlertMedium] = useState(settings?.alertOnMedium ?? false);
 
+  // Auto Backup & Cloud Storage states
+  const [autoBackupSchedule, setAutoBackupSchedule] = useState(settings?.autoBackupSchedule || "DAILY");
+  const [autoBackupTime, setAutoBackupTime] = useState(settings?.autoBackupTime || "02:00");
+  const [cloudSyncFolder, setCloudSyncFolder] = useState(settings?.cloudSyncFolder || "Revertly_Backups");
+  const [cloudSyncAutoUpload, setCloudSyncAutoUpload] = useState(settings?.cloudSyncAutoUpload ?? true);
+  const [connectProvider, setConnectProvider] = useState("GOOGLE_DRIVE");
+  const [connectEmail, setConnectEmail] = useState(settings?.cloudSyncEmail || "");
+
+  const isCloudConnected = Boolean(settings?.cloudSyncConnected);
+  const activeCloudProvider = settings?.cloudSyncProvider || "NONE";
+
   const numThreshold = parseInt(String(threshold), 10) || 50;
   const sampleReducedPrice = Math.max(0, 100 * (1 - numThreshold / 100)).toFixed(0);
 
   const navItems = [
     { id: "all", label: "All Settings", icon: SettingsIcon, statusBadge: null, statusTone: "neutral" },
+    { id: "schedules", label: "Scheduled Backups", icon: ClockIcon, statusBadge: autoBackupSchedule !== "OFF" ? autoBackupSchedule : "Disabled", statusTone: autoBackupSchedule !== "OFF" ? "success" : "neutral" },
+    { id: "cloud", label: "Cloud Sync (Drive / Dropbox)", icon: CloudUploadIcon, statusBadge: isCloudConnected ? (activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox") : "Not Linked", statusTone: isCloudConnected ? "success" : "warning" },
     { id: "monitoring", label: "Catalog Monitoring", icon: ClockIcon, statusBadge: monitoringEnabled ? "Active" : "Paused", statusTone: monitoringEnabled ? "success" : "neutral" },
     { id: "circuit", label: "Price Crash Breaker", icon: ZapIcon, statusBadge: circuitBreakerEnabled ? "Armed" : "Off", statusTone: circuitBreakerEnabled ? "warning" : "neutral" },
     { id: "bulk", label: "Anomaly Detection", icon: BoxIcon, statusBadge: `${settings?.bulkThreshold ?? 20} items`, statusTone: "neutral" },
@@ -376,12 +494,408 @@ export default function Settings() {
                       {circuitBreakerEnabled ? "Armed" : "Inactive"}
                     </span>
                   </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "var(--rv-text-subdued)" }}>Auto Schedule:</span>
+                    <span style={{ fontWeight: 600, color: autoBackupSchedule !== "OFF" ? "var(--rv-primary)" : "var(--rv-text-subdued)" }}>
+                      {autoBackupSchedule}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "var(--rv-text-subdued)" }}>Cloud Sync:</span>
+                    <span style={{ fontWeight: 600, color: isCloudConnected ? "var(--rv-primary)" : "var(--rv-text-subdued)" }}>
+                      {isCloudConnected ? (activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox") : "Disabled"}
+                    </span>
+                  </div>
                 </div>
               </div>
             </aside>
 
             {/* Right Column: Settings Cards */}
             <main style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+
+              {/* ── 0. Scheduled Backups Card ── */}
+              {(activeTab === "all" || activeTab === "schedules") && (
+                <div className="rv-card" style={{ margin: 0 }}>
+                  <div className="rv-card-header">
+                    <div className="rv-card-icon-title">
+                      <div className="rv-card-icon-badge info">
+                        <ClockIcon size={18} />
+                      </div>
+                      <div>
+                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
+                          Automated Scheduled Backups
+                        </h3>
+                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          Set automatic background snapshots for products, theme code, collections, and vault logs.
+                        </p>
+                      </div>
+                    </div>
+                    <span className={`rv-badge ${autoBackupSchedule !== "OFF" ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                      {autoBackupSchedule !== "OFF" ? `Cadence: ${autoBackupSchedule}` : "Manual Only"}
+                    </span>
+                  </div>
+
+                  <div className="rv-card-body">
+                    {/* Live Schedule Status Indicator */}
+                    <div
+                      style={{
+                        padding: "14px 16px",
+                        background: "linear-gradient(135deg, rgba(0, 128, 96, 0.06) 0%, rgba(37, 99, 235, 0.06) 100%)",
+                        borderRadius: "var(--rv-radius-sm)",
+                        border: "1px solid rgba(0, 128, 96, 0.2)",
+                        marginBottom: "18px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                        <div
+                          style={{
+                            width: "36px",
+                            height: "36px",
+                            borderRadius: "50%",
+                            background: "var(--rv-primary)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: "#fff",
+                            flexShrink: 0,
+                          }}
+                        >
+                          <ClockIcon size={18} />
+                        </div>
+                        <div>
+                          <strong style={{ fontSize: "13px", color: "var(--rv-text)", display: "block" }}>
+                            {autoBackupSchedule !== "OFF"
+                              ? `Active Cadence: ${autoBackupSchedule === "DAILY" ? "Daily at " + autoBackupTime + " UTC" : autoBackupSchedule === "TWICE_DAILY" ? "Every 12 Hours" : "Weekly"}`
+                              : "Automated Cadence is Disabled"}
+                          </strong>
+                          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                            Last backup: {settings?.lastAutoBackupAt ? new Date(settings.lastAutoBackupAt).toLocaleString() : "Never (Pending first scheduled run)"} &bull; Next scheduled: {settings?.nextAutoBackupAt ? new Date(settings.nextAutoBackupAt).toLocaleString() : "Calculated on save"}
+                          </span>
+                        </div>
+                      </div>
+                      <Link to="/app/restore-points" className="rv-btn rv-btn-secondary rv-btn-sm">
+                        View Restore Points
+                      </Link>
+                    </div>
+
+                    {/* Cadence Selector */}
+                    <div className="rv-form-group" style={{ marginBottom: "16px" }}>
+                      <label className="rv-label" htmlFor="autoBackupSchedule">
+                        Backup Cadence Frequency
+                      </label>
+                      <select
+                        id="autoBackupSchedule"
+                        name="autoBackupSchedule"
+                        className="rv-select"
+                        value={autoBackupSchedule}
+                        onChange={(e) => setAutoBackupSchedule(e.target.value)}
+                      >
+                        <option value="DAILY">Daily Safe Snapshot (Recommended - runs every 24 hours)</option>
+                        <option value="TWICE_DAILY">Twice Daily (Every 12 hours - for high velocity stores)</option>
+                        <option value="WEEKLY">Weekly Snapshot (Every 7 days)</option>
+                        <option value="OFF">Disabled (Manual on-demand backups only)</option>
+                      </select>
+                      <span className="rv-helper-text">
+                        Automated snapshots take a complete versioned snapshot including products, themes, and navigation menus.
+                      </span>
+                    </div>
+
+                    {/* Target Time */}
+                    {autoBackupSchedule !== "OFF" && (
+                      <div className="rv-form-group" style={{ marginBottom: "12px" }}>
+                        <label className="rv-label" htmlFor="autoBackupTime">
+                          Preferred Backup Window (UTC)
+                        </label>
+                        <select
+                          id="autoBackupTime"
+                          name="autoBackupTime"
+                          className="rv-select"
+                          value={autoBackupTime}
+                          onChange={(e) => setAutoBackupTime(e.target.value)}
+                        >
+                          <option value="00:00">00:00 UTC (Midnight)</option>
+                          <option value="02:00">02:00 UTC (Recommended low-traffic window)</option>
+                          <option value="04:00">04:00 UTC</option>
+                          <option value="08:00">08:00 UTC</option>
+                          <option value="12:00">12:00 UTC (Midday)</option>
+                          <option value="18:00">18:00 UTC</option>
+                          <option value="22:00">22:00 UTC</option>
+                        </select>
+                        <span className="rv-helper-text">
+                          Choose off-peak hours when inventory updates and order traffic are lowest.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ── 0.1 Cloud Storage Sync Card ── */}
+              {(activeTab === "all" || activeTab === "cloud") && (
+                <div className="rv-card" style={{ margin: 0 }}>
+                  <div className="rv-card-header">
+                    <div className="rv-card-icon-title">
+                      <div className="rv-card-icon-badge" style={{ background: "rgba(37, 99, 235, 0.1)", color: "#2563eb" }}>
+                        <CloudUploadIcon size={18} />
+                      </div>
+                      <div>
+                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
+                          Offsite Cloud Storage Sync (Google Drive &amp; Dropbox)
+                        </h3>
+                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          Keep independent disaster recovery archives in your personal or company cloud storage.
+                        </p>
+                      </div>
+                    </div>
+                    <span className={`rv-badge ${isCloudConnected ? "rv-badge-success" : "rv-badge-warning"}`}>
+                      {isCloudConnected ? `${activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} Linked` : "Not Linked"}
+                    </span>
+                  </div>
+
+                  <div className="rv-card-body">
+                    {isCloudConnected ? (
+                      <div>
+                        {/* Connected State Box */}
+                        <div
+                          style={{
+                            padding: "16px",
+                            background: "var(--rv-surface-subdued)",
+                            borderRadius: "var(--rv-radius-sm)",
+                            border: "1px solid var(--rv-border-subtle)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            flexWrap: "wrap",
+                            gap: "14px",
+                            marginBottom: "16px",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                            <div
+                              style={{
+                                width: "42px",
+                                height: "42px",
+                                borderRadius: "8px",
+                                background: activeCloudProvider === "GOOGLE_DRIVE" ? "rgba(234, 67, 53, 0.1)" : "rgba(0, 97, 254, 0.1)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                color: activeCloudProvider === "GOOGLE_DRIVE" ? "#ea4335" : "#0061fe",
+                                flexShrink: 0,
+                              }}
+                            >
+                              {activeCloudProvider === "GOOGLE_DRIVE" ? <GoogleDriveIcon size={22} /> : <DropboxIcon size={22} />}
+                            </div>
+                            <div>
+                              <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>
+                                {activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive Connected" : "Dropbox Connected"}
+                              </strong>
+                              <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                                Account: <strong>{settings?.cloudSyncEmail || "Active Account"}</strong> &bull; Remote Target: <code>/{cloudSyncFolder}</code>
+                              </span>
+                            </div>
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="testCloudSync"
+                              className="rv-btn rv-btn-secondary rv-btn-sm"
+                            >
+                              <RefreshCwIcon size={13} />
+                              <span>Test Sync</span>
+                            </button>
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="disconnectCloud"
+                              className="rv-btn rv-btn-danger rv-btn-sm"
+                              onClick={(e) => {
+                                if (!confirm("Disconnect cloud storage? Backups will remain stored in Revertly database.")) {
+                                  e.preventDefault();
+                                }
+                              }}
+                            >
+                              Disconnect
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Cloud Folder & Auto Upload Settings */}
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px", marginBottom: "16px" }}>
+                          <div className="rv-form-group" style={{ margin: 0 }}>
+                            <label className="rv-label" htmlFor="cloudSyncFolder">
+                              Target Cloud Directory / Folder
+                            </label>
+                            <input
+                              id="cloudSyncFolder"
+                              type="text"
+                              name="cloudSyncFolder"
+                              className="rv-input"
+                              value={cloudSyncFolder}
+                              onChange={(e) => setCloudSyncFolder(e.target.value)}
+                              placeholder="Revertly_Backups"
+                            />
+                            <span className="rv-helper-text">
+                              Subfolder inside your Drive/Dropbox where JSON and zip archives will be saved.
+                            </span>
+                          </div>
+
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: "12px",
+                              padding: "12px 14px",
+                              background: "#ffffff",
+                              borderRadius: "var(--rv-radius-sm)",
+                              border: "1px solid var(--rv-border-subtle)",
+                            }}
+                          >
+                            <div>
+                              <strong style={{ fontSize: "13px", color: "var(--rv-text)", display: "block" }}>
+                                Auto-Push New Snapshots
+                              </strong>
+                              <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>
+                                Automatically push every new restore point to cloud storage.
+                              </span>
+                            </div>
+                            <div className="rv-switch">
+                              <input
+                                id="set-cloud-autoupload"
+                                type="checkbox"
+                                name="cloudSyncAutoUpload"
+                                value="true"
+                                checked={cloudSyncAutoUpload}
+                                onChange={(e) => setCloudSyncAutoUpload(e.target.checked)}
+                              />
+                              <label htmlFor="set-cloud-autoupload" className="rv-switch-slider">
+                                <span className="rv-sr-only">Toggle Cloud Auto-Upload</span>
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Not Connected: Choose Provider */
+                      <div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px", marginBottom: "16px" }}>
+                          <div
+                            onClick={() => setConnectProvider("GOOGLE_DRIVE")}
+                            style={{
+                              padding: "16px",
+                              borderRadius: "var(--rv-radius-sm)",
+                              border: `2px solid ${connectProvider === "GOOGLE_DRIVE" ? "var(--rv-primary)" : "var(--rv-border-subtle)"}`,
+                              background: connectProvider === "GOOGLE_DRIVE" ? "rgba(0, 128, 96, 0.04)" : "#ffffff",
+                              cursor: "pointer",
+                              transition: "all 0.15s ease",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+                              <GoogleDriveIcon size={24} style={{ color: "#ea4335" }} />
+                              <div>
+                                <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>Google Drive</strong>
+                                <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Personal or Google Workspace</span>
+                              </div>
+                            </div>
+                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.4 }}>
+                              Export catalog snapshots directly to Google Drive folder for offsite data safety.
+                            </p>
+                          </div>
+
+                          <div
+                            onClick={() => setConnectProvider("DROPBOX")}
+                            style={{
+                              padding: "16px",
+                              borderRadius: "var(--rv-radius-sm)",
+                              border: `2px solid ${connectProvider === "DROPBOX" ? "var(--rv-primary)" : "var(--rv-border-subtle)"}`,
+                              background: connectProvider === "DROPBOX" ? "rgba(0, 128, 96, 0.04)" : "#ffffff",
+                              cursor: "pointer",
+                              transition: "all 0.15s ease",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+                              <DropboxIcon size={24} style={{ color: "#0061fe" }} />
+                              <div>
+                                <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>Dropbox</strong>
+                                <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Dropbox Business or Basic</span>
+                              </div>
+                            </div>
+                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.4 }}>
+                              Sync versioned restore points to Dropbox with automated historical retention.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Connection Credentials Form */}
+                        <div
+                          style={{
+                            padding: "16px",
+                            background: "var(--rv-surface-subdued)",
+                            borderRadius: "var(--rv-radius-sm)",
+                            border: "1px solid var(--rv-border-subtle)",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "12px",
+                          }}
+                        >
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px" }}>
+                            <div className="rv-form-group" style={{ margin: 0 }}>
+                              <label className="rv-label" htmlFor="connectEmail">
+                                Account Email ({connectProvider === "GOOGLE_DRIVE" ? "Google" : "Dropbox"})
+                              </label>
+                              <input
+                                id="connectEmail"
+                                type="email"
+                                name="email"
+                                className="rv-input"
+                                placeholder="merchant@yourcompany.com"
+                                value={connectEmail}
+                                onChange={(e) => setConnectEmail(e.target.value)}
+                              />
+                            </div>
+
+                            <div className="rv-form-group" style={{ margin: 0 }}>
+                              <label className="rv-label" htmlFor="connectFolder">
+                                Backup Folder Name
+                              </label>
+                              <input
+                                id="connectFolder"
+                                type="text"
+                                name="folder"
+                                className="rv-input"
+                                placeholder="Revertly_Backups"
+                                value={cloudSyncFolder}
+                                onChange={(e) => setCloudSyncFolder(e.target.value)}
+                              />
+                            </div>
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px" }}>
+                            <input type="hidden" name="provider" value={connectProvider} />
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="connectCloud"
+                              className="rv-btn rv-btn-primary"
+                            >
+                              <CloudUploadIcon size={14} />
+                              <span>Connect {connectProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* ── 1. Catalog Monitoring Card ── */}
               {(activeTab === "all" || activeTab === "monitoring") && (

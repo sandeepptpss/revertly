@@ -252,3 +252,42 @@ export function ZapIcon({ size = 18, className = "" }) {
   );
 }
 
+export function CloudIcon({ size = 18, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+    </svg>
+  );
+}
+
+export function CloudUploadIcon({ size = 18, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M16 16l-4-4-4 4" />
+      <path d="M12 12v9" />
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+      <path d="M16 16l-4-4-4 4" />
+    </svg>
+  );
+}
+
+export function GoogleDriveIcon({ size = 18, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M4 14.5L9 5.5h6l-5 9z" />
+      <path d="M15 5.5l5 9h-6l-5-9z" />
+      <path d="M4 14.5h10l-3 5.5H1l3-5.5z" />
+    </svg>
+  );
+}
+
+export function DropboxIcon({ size = 18, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="7.5 4 2 8 7.5 12 2 16 7.5 20" />
+      <polyline points="16.5 4 22 8 16.5 12 22 16 16.5 20" />
+      <polygon points="12 8 7.5 12 12 16 16.5 12 12 8" />
+    </svg>
+  );
+}
+
