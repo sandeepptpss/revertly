@@ -70,13 +70,22 @@ export const action = async ({ request }) => {
 
       console.log(`[Revertly Webhook] Updated shop ${shop} plan to "${targetPlan}"`);
     } else if (TERMINAL_STATUSES.has(status)) {
+      // Disarm paid protections at the moment of downgrade. Leaving
+      // circuitBreakerEnabled=true would keep the Settings page reporting
+      // "Armed" for a feature the shop can no longer use, and the runtime
+      // guard in triggerCircuitBreaker would be the only thing standing
+      // between a free shop and automated catalog mutations.
       await prisma.appSettings.upsert({
         where: { shop },
         create: { shop, planId: "free", subscriptionId: null },
-        update: { planId: "free", subscriptionId: null },
+        update: {
+          planId: "free",
+          subscriptionId: null,
+          circuitBreakerEnabled: false,
+        },
       });
 
-      console.log(`[Revertly Webhook] Subscription ${status} — downgraded shop ${shop} to "free"`);
+      console.log(`[Revertly Webhook] Subscription ${status} — downgraded shop ${shop} to "free" and disarmed the circuit breaker`);
     } else {
       // PENDING / FROZEN / ACCEPTED / anything else transient: leave the
       // shop's current plan untouched until we see a terminal or ACTIVE status.

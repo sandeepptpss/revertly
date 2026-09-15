@@ -52,6 +52,11 @@ module.exports = {
       rules: {
         "react/no-unknown-property": ["error", { ignore: ["variant"] }],
         "react/prop-types": "off",
+        // Selection cards wrap a real input in a <label> and put the visible
+        // text a few elements deeper (badge + description inside the card
+        // layout). Browsers derive the accessible name from all descendant
+        // text, but this rule only looks `depth` levels down and defaults to 2.
+        "jsx-a11y/label-has-associated-control": ["error", { depth: 4 }],
       },
     },
 

@@ -707,9 +707,12 @@ s-page {
   font-size: 13px;
   color: var(--rv-text);
   outline: none;
-  min-width: 200px;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   line-height: 1.4;
+  font-family: inherit;
 }
 
 .rv-input-with-icon {
@@ -722,16 +725,31 @@ s-page {
 }
 
 .rv-select {
-  background: var(--rv-surface);
+  width: 100%;
+  box-sizing: border-box;
+  display: block;
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--rv-surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235c5f62' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
+  padding: 9px 36px 9px 12px;
   border: 1px solid var(--rv-border);
   border-radius: var(--rv-radius-sm);
-  padding: 8px 12px;
   font-size: 13px;
+  font-weight: 500;
   color: var(--rv-text);
+  font-family: inherit;
   outline: none;
   cursor: pointer;
-  line-height: 1.4;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  line-height: 1.5;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.rv-select:hover {
+  border-color: var(--rv-border-hover);
 }
 
 .rv-select:focus {
@@ -864,26 +882,34 @@ s-page {
   gap: 18px;
 }
 
-.rv-form-field {
+.rv-form-field,
+.rv-form-group {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 16px;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 0;
 }
 
-.rv-form-label {
+.rv-form-label,
+.rv-label {
   font-size: 13px;
   font-weight: 600;
   color: var(--rv-text);
   display: flex;
   align-items: center;
   gap: 6px;
+  line-height: 1.4;
+  margin: 0;
 }
 
-.rv-form-help {
+.rv-form-help,
+.rv-helper-text {
   font-size: 12px;
   color: var(--rv-text-subdued);
-  line-height: 1.4;
+  line-height: 1.45;
+  margin-top: 2px;
 }
 
 /* Toggle Card Selector */
@@ -1204,6 +1230,33 @@ s-page {
   justify-content: space-between;
 }
 
+.rv-settings-nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rv-settings-nav-section:not(:first-child) {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rv-border-subtle);
+}
+
+.rv-settings-nav-section-title {
+  padding: 6px 10px 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--rv-text-subdued);
+}
+
+.rv-settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .rv-settings-nav-item {
   display: flex;
   align-items: center;
@@ -1375,21 +1428,27 @@ s-page {
 }
 
 /* Input group with unit suffix */
-.rv-input-group {
-  display: flex;
-  align-items: stretch;
+.rv-input-group,
+.rv-input-addon-group {
+  display: flex !important;
+  align-items: stretch !important;
+  flex-wrap: nowrap !important;
   width: 100%;
+  box-sizing: border-box;
 }
 
-.rv-input-group .rv-input {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-  flex: 1;
+.rv-input-group .rv-input,
+.rv-input-addon-group .rv-input {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  min-width: 0 !important;
+  flex: 1 1 auto;
 }
 
 .rv-input-suffix {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   padding: 0 14px;
   background: var(--rv-surface-subdued);
   border: 1px solid var(--rv-border);
@@ -1398,16 +1457,24 @@ s-page {
   border-bottom-right-radius: var(--rv-radius-sm);
   font-size: 13px;
   color: var(--rv-text-subdued);
-  font-weight: 500;
+  font-weight: 600;
   user-select: none;
   white-space: nowrap;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 /* Interactive Severity Select Cards */
+/* auto-fit rather than a fixed 3 columns: the grid now holds four severities
+   (LOW was added), and a hardcoded count left the fourth card orphaned on its
+   own row. This also keeps the layout correct if severities change again. */
 .rv-severity-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 14px;
+  border: 0;
+  margin: 0;
+  padding: 0;
 }
 
 @media (max-width: 860px) {
@@ -1460,11 +1527,17 @@ s-page {
 }
 
 /* Cloud Storage Provider Select Cards */
+/* Rendered as a <fieldset> so the provider radios form a real group.
+   min-inline-size resets the fieldset's intrinsic min-content width, which
+   otherwise stops grid/flex children from shrinking on narrow screens. */
 .rv-cloud-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
   margin-bottom: 18px;
+  min-inline-size: 0;
+  border: 0;
+  padding: 0;
 }
 
 @media (max-width: 768px) {
@@ -1575,6 +1648,163 @@ s-page {
   border: none;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
   transition: transform 0.1s ease;
+}
+/* Feature Master Switch Card */
+.rv-feature-toggle-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  background: var(--rv-surface-subdued);
+  border-radius: var(--rv-radius-md);
+  border: 1px solid var(--rv-border-subtle);
+  margin-bottom: 20px;
+}
+
+/* Quick Threshold Preset Pills */
+.rv-preset-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.rv-preset-btn {
+  background: var(--rv-surface);
+  border: 1px solid var(--rv-border);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rv-text-subdued);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.rv-preset-btn:hover {
+  border-color: var(--rv-primary);
+  color: var(--rv-primary);
+  background: var(--rv-primary-surface);
+}
+
+.rv-preset-btn.active {
+  background: var(--rv-primary);
+  border-color: var(--rv-primary);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* Defensive Action Selectable Cards */
+/* Also a <fieldset> — see .rv-cloud-grid for the min-inline-size reset. */
+.rv-action-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  width: 100%;
+  min-inline-size: 0;
+  border: 0;
+  padding: 0;
+}
+
+.rv-action-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--rv-surface);
+  border: 1.5px solid var(--rv-border);
+  border-radius: var(--rv-radius-md);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+  text-align: left;
+}
+
+.rv-action-card:hover {
+  border-color: var(--rv-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.rv-action-card.selected {
+  border-color: var(--rv-primary);
+  background: var(--rv-primary-surface);
+  box-shadow: 0 0 0 1px var(--rv-primary);
+}
+
+.rv-action-card-radio {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--rv-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: all 0.15s ease;
+}
+
+.rv-action-card.selected .rv-action-card-radio {
+  border-color: var(--rv-primary);
+  background: var(--rv-primary);
+}
+
+.rv-action-card-radio-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+/* Interactive Live Simulation Flow Box */
+.rv-sim-box {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.02) 100%);
+  border: 1px solid var(--rv-warning-border);
+  border-radius: var(--rv-radius-md);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+
+.rv-sim-flow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.rv-sim-step {
+  display: flex;
+  flex-direction: column;
+  background: var(--rv-surface);
+  padding: 8px 14px;
+  border-radius: var(--rv-radius-sm);
+  border: 1px solid var(--rv-border-subtle);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.rv-sim-step-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--rv-text-subdued);
+}
+
+.rv-sim-step-val {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--rv-text);
+  margin-top: 2px;
+}
+
+.rv-sim-arrow {
+  color: var(--rv-text-subdued);
+  font-weight: 700;
+  font-size: 16px;
 }
 
 /* Card Header Action Pill */

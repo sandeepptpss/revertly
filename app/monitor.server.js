@@ -2,6 +2,7 @@
  * Product snapshot and comparison utilities for Revertly
  */
 import prisma from "./db.server.js";
+import { checkFeatureAccess } from "./billing.server.js";
 
 // Fields we monitor on products
 export const MONITORED_PRODUCT_FIELDS = [
@@ -613,16 +614,83 @@ export async function getOrCreateSettings(shop) {
 }
 
 /**
+ * Slack webhook URLs are merchant-supplied strings that the SERVER later makes
+ * outbound POSTs to — both from the "Test" button and from every incident
+ * alert. Without a host allowlist that is a stored SSRF primitive: a staff
+ * account could point it at cloud metadata endpoints or internal services and
+ * read the outcome back from the banner. `type="url"` on the input is a
+ * client-side hint and guarantees nothing.
+ *
+ * Returns { ok: true, url } or { ok: false, message }.
+ */
+export function validateSlackWebhookUrl(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value) {
+    return { ok: false, message: "Please provide a Slack Webhook URL first." };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { ok: false, message: "That doesn't look like a valid URL. Paste the full https://hooks.slack.com/services/... address." };
+  }
+
+  if (parsed.protocol !== "https:") {
+    return { ok: false, message: "Slack webhooks must use https://." };
+  }
+  if (parsed.hostname.toLowerCase() !== "hooks.slack.com") {
+    return { ok: false, message: "Only Slack incoming webhooks are accepted. The URL must start with https://hooks.slack.com/services/." };
+  }
+  if (!parsed.pathname.startsWith("/services/")) {
+    return { ok: false, message: "That Slack URL is missing the /services/ path. Copy the full webhook URL from Slack." };
+  }
+
+  return { ok: true, url: parsed.toString() };
+}
+
+/**
+ * Is this incident's severity one the merchant asked to be notified about?
+ *
+ * Unknown severities fail OPEN: dropping an alert we don't recognise is the
+ * worse failure, because the merchant never learns the incident happened.
+ */
+export function isSeverityAlertEnabled(severity, settings) {
+  switch (severity) {
+    case "CRITICAL":
+      return Boolean(settings?.alertOnCritical);
+    case "HIGH":
+      return Boolean(settings?.alertOnHigh);
+    case "MEDIUM":
+      return Boolean(settings?.alertOnMedium);
+    case "LOW":
+      return Boolean(settings?.alertOnLow);
+    default:
+      return true;
+  }
+}
+
+/**
  * Send a merchant alert email & Slack notification for an incident.
  * Respects the shop's alertEmail, slackWebhookUrl, and toggles.
  * Alerting is non-fatal and must never break the webhook that triggered it.
  */
 export async function sendIncidentAlert(shop, incident, settings) {
+  // The severity toggles gate BOTH channels. Checking this before the Slack
+  // block (rather than only before the email) is the whole point — a merchant
+  // who unticks MEDIUM must stop getting MEDIUM pings in Slack too.
+  if (!isSeverityAlertEnabled(incident.severity, settings)) return;
+
   const appUrl = process.env.SHOPIFY_APP_URL;
   const incidentLink = appUrl ? `${appUrl}/app/incidents/${incident.id}` : null;
 
-  // 1. Slack notification
-  if (settings?.slackWebhookUrl) {
+  // 1. Slack notification. Re-validated at send time so a URL stored before
+  // the allowlist existed can never be dialled.
+  const slackTarget = validateSlackWebhookUrl(settings?.slackWebhookUrl);
+  if (settings?.slackWebhookUrl && !slackTarget.ok) {
+    console.warn(`[Revertly] Refusing to POST to non-Slack webhook for ${shop}: ${slackTarget.message}`);
+  }
+  if (slackTarget.ok) {
     try {
       const color =
         incident.severity === "CRITICAL"
@@ -631,7 +699,7 @@ export async function sendIncidentAlert(shop, incident, settings) {
             ? "#E57800"
             : "#008060";
 
-      await fetch(settings.slackWebhookUrl, {
+      await fetch(slackTarget.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -660,13 +728,6 @@ export async function sendIncidentAlert(shop, incident, settings) {
 
   // 2. Email alert via Resend — delivered to the shop alert address plus every
   // active team member who opted in, so multi-user stores are all notified.
-  const severityEnabled = {
-    CRITICAL: settings?.alertOnCritical,
-    HIGH: settings?.alertOnHigh,
-    MEDIUM: settings?.alertOnMedium,
-  };
-  if (!severityEnabled[incident.severity]) return;
-
   const { getAlertRecipients } = await import("./team.server.js");
   const recipients = await getAlertRecipients(shop, settings);
   if (recipients.length === 0) return;
@@ -716,6 +777,19 @@ export async function sendIncidentAlert(shop, incident, settings) {
  */
 export async function triggerCircuitBreaker(admin, shop, productId, productTitle, priceChange, settings) {
   if (!settings?.circuitBreakerEnabled) return null;
+
+  // Entitlement is re-checked at execution time, not just when the merchant
+  // saves Settings. A downgrade leaves circuitBreakerEnabled=true in the row,
+  // and this function MUTATES the catalog — drafting products or rewriting
+  // prices for a shop that no longer pays for the feature.
+  const access = await checkFeatureAccess(shop, "circuitBreaker");
+  if (!access.allowed) {
+    console.warn(
+      `[CircuitBreaker] Skipped for ${shop}: plan "${access.plan}" no longer includes this feature.`,
+    );
+    return null;
+  }
+
   const threshold = settings.circuitBreakerThreshold || 50;
   const oldPrice = parseFloat(priceChange.oldValue);
   const newPrice = parseFloat(priceChange.newValue);

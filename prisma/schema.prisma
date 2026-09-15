@@ -235,6 +235,7 @@ model AppSettings {
   alertOnCritical     Boolean @default(true)
   alertOnHigh         Boolean @default(true)
   alertOnMedium       Boolean @default(false)
+  alertOnLow          Boolean @default(false)
   monitoringEnabled   Boolean @default(true)
   bulkThreshold       Int     @default(20)   // products changed to trigger bulk detection
   bulkWindowMinutes   Int     @default(10)

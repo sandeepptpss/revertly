@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { fetchThemeBackup } from "../backup.server.js";
+import { validateSlackWebhookUrl } from "../monitor.server.js";
 
 export const action = async ({ request }) => {
   const { topic, shop, payload, admin } = await authenticate.webhook(request);
@@ -45,10 +46,12 @@ export const action = async ({ request }) => {
       },
     });
 
-    // Notify merchant via Slack webhook if configured
-    if (settings?.slackWebhookUrl) {
+    // Notify merchant via Slack webhook if configured. Host-allowlisted so a
+    // stored non-Slack URL can't turn this webhook into an SSRF trigger.
+    const slackTarget = validateSlackWebhookUrl(settings?.slackWebhookUrl);
+    if (slackTarget.ok) {
       try {
-        await fetch(settings.slackWebhookUrl, {
+        await fetch(slackTarget.url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
