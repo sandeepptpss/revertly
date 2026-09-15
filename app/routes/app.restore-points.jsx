@@ -1,10 +1,22 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { createMultiResourceRestorePoint } from "../backup.server.js";
 import { checkRestorePointLimit, checkFeatureAccess } from "../billing.server.js";
+import {
+  SaveIcon,
+  BoxIcon,
+  FileCodeIcon,
+  ClockIcon,
+  DownloadIcon,
+  Trash2Icon,
+  SparklesIcon,
+  ArrowRightIcon,
+} from "../components/Icons.jsx";
+import { Banner } from "../components/Banner.jsx";
+import { EmptyState } from "../components/EmptyState.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -27,74 +39,87 @@ export const loader = async ({ request }) => {
 };
 
 export const action = async ({ request }) => {
-  const { session, admin } = await authenticate.admin(request);
-  const shop = session.shop;
-  const formData = await request.formData();
-  const intent = formData.get("intent");
+  try {
+    const { session, admin } = await authenticate.admin(request);
+    const shop = session.shop;
+    const formData = await request.formData();
+    const intent = formData.get("intent");
 
-  if (intent === "create") {
-    // 1. Enforce Plan Limits
-    const limitCheck = await checkRestorePointLimit(shop);
-    if (!limitCheck.allowed) {
+    if (intent === "create") {
+      const limitCheck = await checkRestorePointLimit(shop);
+      if (!limitCheck.allowed) {
+        return {
+          success: false,
+          message: `Restore Point Limit Reached (${limitCheck.currentCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Please upgrade in Plans & Billing to create more restore points.`,
+        };
+      }
+
+      const rawName = formData.get("name")?.trim();
+      const defaultName = `Snapshot - ${new Date().toISOString().slice(0, 19).replace("T", " ")}`;
+      const name = rawName || defaultName;
+      const description = formData.get("description") || "";
+
+      const themeCheck = await checkFeatureAccess(shop, "themes");
+      const includeProducts = formData.get("includeProducts") !== "0";
+      const includeThemes = themeCheck.allowed && formData.get("includeThemes") === "1";
+      const includeCollections = formData.get("includeCollections") !== "0";
+      const includePages = formData.get("includePages") !== "0";
+      const includeArticles = formData.get("includeArticles") !== "0";
+
+      const result = await createMultiResourceRestorePoint({
+        admin,
+        shop,
+        name,
+        description,
+        options: {
+          includeProducts,
+          includeThemes,
+          includeCollections,
+          includePages,
+          includeMenus: includePages,
+          includeArticles,
+        },
+      });
+
+      if (!result.success) {
+        return { success: false, message: result.message || "Failed to create restore point." };
+      }
+
+      const s = result.summary || {};
+      const parts = [];
+      if (s.products > 0) parts.push(`${s.products} products`);
+      if (s.themes > 0) parts.push(`1 theme`);
+      if (s.collections > 0) parts.push(`${s.collections} collections`);
+      if (s.pages > 0) parts.push(`${s.pages} pages & menus`);
+      if (s.articles > 0) parts.push(`${s.articles} blog articles`);
+
       return {
-        success: false,
-        message: `Restore Point Limit Reached (${limitCheck.currentCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Please upgrade your plan in Plans & Billing to create more restore points.`,
+        success: true,
+        message: `Restore point "${name}" successfully captured (${parts.join(", ") || "Full Store"}).`,
       };
     }
 
-    const name = formData.get("name");
-    const description = formData.get("description") || "";
-
-    const themeCheck = await checkFeatureAccess(shop, "themes");
-    const includeProducts = formData.get("includeProducts") !== "0";
-    const includeThemes = themeCheck.allowed && formData.get("includeThemes") === "1";
-    const includeCollections = formData.get("includeCollections") !== "0";
-    const includePages = formData.get("includePages") !== "0";
-    const includeArticles = formData.get("includeArticles") !== "0";
-
-    const result = await createMultiResourceRestorePoint({
-      admin,
-      shop,
-      name,
-      description,
-      options: {
-        includeProducts,
-        includeThemes,
-        includeCollections,
-        includePages,
-        includeMenus: includePages,
-        includeArticles,
-      },
-    });
-
-    if (!result.success) {
-      return { success: false, message: result.message || "Failed to create restore point." };
+    if (intent === "delete") {
+      const rpId = parseInt(formData.get("rpId"), 10);
+      if (!rpId || isNaN(rpId)) {
+        return { success: false, message: "Invalid restore point ID." };
+      }
+      const rp = await prisma.restorePoint.findUnique({ where: { id: rpId } });
+      if (rp && rp.shop === shop) {
+        await prisma.restorePoint.delete({ where: { id: rpId } });
+        return { success: true, message: "Restore point deleted." };
+      }
+      return { success: false, message: "Restore point not found or access denied." };
     }
 
-    const s = result.summary;
-    const parts = [];
-    if (s.products > 0) parts.push(`${s.products} products`);
-    if (s.themes > 0) parts.push(`1 theme`);
-    if (s.collections > 0) parts.push(`${s.collections} collections`);
-    if (s.pages > 0) parts.push(`${s.pages} pages & menus`);
-    if (s.articles > 0) parts.push(`${s.articles} blog articles`);
-
+    return { success: false, message: "Unknown action." };
+  } catch (error) {
+    console.error("Restore points action error:", error);
     return {
-      success: true,
-      message: `Restore point "${name}" successfully created (${parts.join(", ") || "Full Store"}).`,
+      success: false,
+      message: error?.message || "An unexpected error occurred while processing your request.",
     };
   }
-
-  if (intent === "delete") {
-    const rpId = parseInt(formData.get("rpId"));
-    const rp = await prisma.restorePoint.findUnique({ where: { id: rpId } });
-    if (rp && rp.shop === shop) {
-      await prisma.restorePoint.delete({ where: { id: rpId } });
-    }
-    return { success: true, message: "Restore point deleted." };
-  }
-
-  return { success: false };
 };
 
 function formatTime(date) {
@@ -108,92 +133,98 @@ export default function RestorePoints() {
   const isCreating = fetcher.state !== "idle";
   const [showCreateForm, setShowCreateForm] = useState(false);
 
+  useEffect(() => {
+    if (result?.success) {
+      setShowCreateForm(false);
+    }
+  }, [result]);
+
+  const usedCount = limitInfo?.currentCount ?? restorePoints.length;
+  const maxLimit = limitInfo?.limit ?? Infinity;
+  const isLimitReached = !limitInfo?.allowed;
+  const quotaPercent = maxLimit === Infinity ? 0 : Math.min(100, Math.round((usedCount / maxLimit) * 100));
+
   return (
     <s-page heading="Restore Points" inlineSize="large">
 
-      {/* ── Action Feedback Toast / Banner ── */}
+      {/* ── Action Feedback Banner ── */}
       {result?.message && (
-        <div
-          style={{
-            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
-            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
-            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "14px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
+        <Banner
+          tone={result.success ? "success" : "critical"}
+          title={result.success ? "Restore Point Action Complete" : "Action Failed"}
         >
-          <span>{result.success ? "✅" : "⚠️"}</span>
-          <span>{result.message}</span>
-        </div>
+          {result.message}
+        </Banner>
       )}
 
       {/* ── Limit Warning Banner ── */}
-      {!limitInfo?.allowed && (
-        <div
-          style={{
-            background: "#fff4f2",
-            border: "1px solid #fed2cd",
-            color: "#d72c0d",
-            padding: "12px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "13px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
+      {isLimitReached && (
+        <Banner
+          tone="warning"
+          title={`Restore Point Limit Reached (${usedCount} / ${maxLimit})`}
+          action={
+            <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+              Upgrade Plan
+            </Link>
+          }
         >
-          <div>
-            <strong>Restore Point Limit Reached ({limitInfo.currentCount} / {limitInfo.limit}):</strong> You have reached the maximum allowed restore points for the {limitInfo.plan.toUpperCase()} plan. Delete older snapshots or upgrade your plan to capture new restore points.
-          </div>
-          <Link to="/app/plan" className="rv-btn rv-btn-primary" style={{ fontSize: "12px", padding: "6px 12px" }}>
-            Upgrade Plan
-          </Link>
-        </div>
+          You have reached the maximum allowed restore points for the {limitInfo?.plan?.toUpperCase()} plan. Delete older snapshots or upgrade your plan to capture new restore points.
+        </Banner>
       )}
 
-      {/* ── Header Summary Bar ── */}
+      {/* ── Header Summary Bar with Quota Meter ── */}
       <div className="rv-hero-banner">
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+        <div style={{ maxWidth: "680px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px", flexWrap: "wrap" }}>
+            <strong style={{ fontSize: "17px", color: "var(--rv-text)", fontWeight: 700 }}>
               Full Store Snapshots &amp; Time Machine
             </strong>
             <span className="rv-badge rv-badge-info">
-              {restorePoints.length} / {limitInfo?.limit === Infinity ? "Unlimited" : limitInfo?.limit} Used
+              {maxLimit === Infinity ? "Unlimited Quota" : `${usedCount} / ${maxLimit} Used`}
             </span>
           </div>
-          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Capture a complete freeze of your Products, Liquid Theme code, Collections, Pages, and Blog Articles. Restore individual components or entire catalogs whenever needed.
+          <p style={{ margin: "0 0 10px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+            Capture a frozen state of your Products, Liquid Theme code, Collections, Pages, and Blog Articles. Revert individual components or your entire store anytime with 1 click.
           </p>
+
+          {maxLimit !== Infinity && (
+            <div style={{ maxWidth: "340px" }}>
+              <div className="rv-progress-track">
+                <div
+                  className="rv-progress-fill"
+                  style={{
+                    width: `${quotaPercent}%`,
+                    background: quotaPercent >= 100 ? "var(--rv-critical)" : quotaPercent >= 80 ? "var(--rv-warning)" : "var(--rv-primary)",
+                  }}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
-        <button
-          type="button"
-          disabled={!limitInfo?.allowed}
-          onClick={() => setShowCreateForm(!showCreateForm)}
-          className={`rv-btn ${limitInfo?.allowed ? "rv-btn-primary" : "rv-btn-secondary"}`}
-          title={!limitInfo?.allowed ? "Plan limit reached" : ""}
-        >
-          {showCreateForm ? "✕ Close Form" : !limitInfo?.allowed ? "Limit Reached" : "+ Create Restore Point"}
-        </button>
+        <div>
+          <button
+            type="button"
+            disabled={isLimitReached}
+            onClick={() => setShowCreateForm(!showCreateForm)}
+            className={`rv-btn rv-btn-lg ${!isLimitReached ? "rv-btn-primary" : "rv-btn-secondary"}`}
+          >
+            <SaveIcon size={16} />
+            <span>{showCreateForm ? "✕ Close Form" : "+ Create Restore Point"}</span>
+          </button>
+        </div>
       </div>
 
       {/* ── Create Restore Point Form Card ── */}
       {showCreateForm && (
-        <div className="rv-card" style={{ border: "2px solid #008060", marginBottom: "24px" }}>
+        <div className="rv-card" style={{ border: "2px solid var(--rv-primary)", marginBottom: "24px" }}>
           <div className="rv-card-header" style={{ background: "var(--rv-primary-surface)" }}>
-            <h3 className="rv-card-title" style={{ color: "var(--rv-primary)" }}>
-              <span>💾</span> Take New Store Restore Point
+            <h3 className="rv-card-title" style={{ color: "var(--rv-primary-text)" }}>
+              <SparklesIcon size={18} />
+              <span>Capture New Store Restore Point</span>
             </h3>
             <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-              Snapshots take 2-5 seconds
+              Estimated time: 2–5 seconds
             </span>
           </div>
 
@@ -201,101 +232,113 @@ export default function RestorePoints() {
             <fetcher.Form method="POST">
               <input type="hidden" name="intent" value="create" />
 
-              <div className="rv-form-grid" style={{ marginBottom: "16px" }}>
+              <div className="rv-form-grid" style={{ marginBottom: "20px" }}>
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Restore Point Name *</label>
+                  <label htmlFor="rp-name" className="rv-form-label">Restore Point Name *</label>
                   <input
+                    id="rp-name"
                     type="text"
                     name="name"
                     required
                     placeholder="e.g. Before Major Redesign & Summer Sale"
                     className="rv-input"
+                    defaultValue={`Snapshot - ${new Date().toLocaleDateString()}`}
                   />
-                  <span className="rv-form-help">A recognizable label for your team or audits.</span>
+                  <span className="rv-form-help">A clear name for your team or audit records.</span>
                 </div>
 
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Description / Notes (Optional)</label>
+                  <label htmlFor="rp-description" className="rv-form-label">Description / Notes (Optional)</label>
                   <input
+                    id="rp-description"
                     type="text"
                     name="description"
-                    placeholder="e.g. Backed up before installing wholesale bulk price app"
+                    placeholder="e.g. Taken before installing wholesale pricing app"
                     className="rv-input"
                   />
-                  <span className="rv-form-help">Any context on campaigns, apps, or staff changes.</span>
+                  <span className="rv-form-help">Any context on campaigns, third-party apps, or staff changes.</span>
                 </div>
               </div>
 
-              <div style={{ marginBottom: "20px" }}>
-                <label className="rv-form-label" style={{ marginBottom: "8px", display: "block" }}>
+              <div style={{ marginBottom: "22px" }}>
+                <div className="rv-form-label" style={{ marginBottom: "10px", display: "block" }}>
                   Components Included in this Snapshot:
-                </label>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px" }}>
-                  <label className="rv-toggle-row">
-                    <input type="checkbox" name="includeProducts" defaultChecked value="1" />
-                    <div>
-                      <strong style={{ fontSize: "13px" }}>📦 Products &amp; Prices</strong>
-                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Variants, Metafields &amp; SKUs</div>
-                    </div>
-                  </label>
+                </div>
+                <div className="rv-toggle-grid">
+                  <div className="rv-toggle-card rv-toggle-card-active">
+                    <input id="chk-products" type="checkbox" name="includeProducts" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                    <label htmlFor="chk-products" style={{ cursor: "pointer", flexGrow: 1 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <BoxIcon size={15} style={{ color: "var(--rv-primary)" }} />
+                        <strong style={{ fontSize: "13px" }}>Products &amp; Prices</strong>
+                      </span>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Variants, Metafields &amp; SKUs</span>
+                    </label>
+                  </div>
 
-                  <label className="rv-toggle-row" style={{ opacity: hasThemeAccess ? 1 : 0.6, cursor: hasThemeAccess ? "pointer" : "not-allowed" }}>
+                  <div
+                    className={`rv-toggle-card ${hasThemeAccess ? "rv-toggle-card-active" : ""}`}
+                    style={{ opacity: hasThemeAccess ? 1 : 0.65, cursor: hasThemeAccess ? "pointer" : "not-allowed" }}
+                  >
                     <input
+                      id="chk-themes"
                       type="checkbox"
                       name="includeThemes"
                       defaultChecked={hasThemeAccess}
                       disabled={!hasThemeAccess}
                       value="1"
+                      style={{ marginTop: "3px", cursor: hasThemeAccess ? "pointer" : "not-allowed" }}
                     />
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <strong style={{ fontSize: "13px" }}>🎨 Active Theme</strong>
+                    <label htmlFor="chk-themes" style={{ cursor: hasThemeAccess ? "pointer" : "not-allowed", flexGrow: 1 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <FileCodeIcon size={15} style={{ color: "var(--rv-primary)" }} />
+                        <strong style={{ fontSize: "13px" }}>Active Theme</strong>
                         {!hasThemeAccess && (
-                          <span className="rv-badge rv-badge-warning" style={{ fontSize: "10px", padding: "1px 5px" }}>
+                          <span className="rv-badge rv-badge-warning rv-badge-sm">
                             Business+
                           </span>
                         )}
-                      </div>
-                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>
+                      </span>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>
                         {hasThemeAccess ? "Liquid, JSON & Assets" : "Requires Business or Enterprise"}
-                      </div>
-                    </div>
-                  </label>
+                      </span>
+                    </label>
+                  </div>
 
-                  <label className="rv-toggle-row">
-                    <input type="checkbox" name="includeCollections" defaultChecked value="1" />
-                    <div>
-                      <strong style={{ fontSize: "13px" }}>🗂️ Collections</strong>
-                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Manual &amp; Smart Rules</div>
-                    </div>
-                  </label>
+                  <div className="rv-toggle-card rv-toggle-card-active">
+                    <input id="chk-collections" type="checkbox" name="includeCollections" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                    <label htmlFor="chk-collections" style={{ cursor: "pointer", flexGrow: 1 }}>
+                      <strong style={{ fontSize: "13px", display: "block" }}>Collections</strong>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Manual &amp; Smart Rules</span>
+                    </label>
+                  </div>
 
-                  <label className="rv-toggle-row">
-                    <input type="checkbox" name="includePages" defaultChecked value="1" />
-                    <div>
-                      <strong style={{ fontSize: "13px" }}>📄 Pages &amp; Menus</strong>
-                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Store Pages &amp; Navigation</div>
-                    </div>
-                  </label>
+                  <div className="rv-toggle-card rv-toggle-card-active">
+                    <input id="chk-pages" type="checkbox" name="includePages" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                    <label htmlFor="chk-pages" style={{ cursor: "pointer", flexGrow: 1 }}>
+                      <strong style={{ fontSize: "13px", display: "block" }}>Pages &amp; Menus</strong>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Store Pages &amp; Navigation</span>
+                    </label>
+                  </div>
 
-                  <label className="rv-toggle-row">
-                    <input type="checkbox" name="includeArticles" defaultChecked value="1" />
-                    <div>
-                      <strong style={{ fontSize: "13px" }}>📝 Blog Articles</strong>
-                      <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Blog Posts &amp; Content</div>
-                    </div>
-                  </label>
+                  <div className="rv-toggle-card rv-toggle-card-active">
+                    <input id="chk-articles" type="checkbox" name="includeArticles" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                    <label htmlFor="chk-articles" style={{ cursor: "pointer", flexGrow: 1 }}>
+                      <strong style={{ fontSize: "13px", display: "block" }}>Blog Articles</strong>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Blog Posts &amp; Content</span>
+                    </label>
+                  </div>
                 </div>
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingTop: "8px", borderTop: "1px solid var(--rv-border)" }}>
                 <button
                   type="submit"
                   disabled={isCreating}
-                  className="rv-btn rv-btn-primary"
-                  style={{ padding: "10px 20px", fontWeight: 600 }}
+                  className="rv-btn rv-btn-primary rv-btn-lg"
                 >
-                  {isCreating ? "⏳ Capturing Full Store Snapshot..." : "⚡ Capture Restore Point Now"}
+                  <SaveIcon size={16} />
+                  <span>{isCreating ? "Capturing Full Store Snapshot..." : "Capture Restore Point Now"}</span>
                 </button>
                 <button
                   type="button"
@@ -312,20 +355,21 @@ export default function RestorePoints() {
 
       {/* ── Restore Points List / Empty State ── */}
       {restorePoints.length === 0 ? (
-        <div className="rv-empty-state">
-          <div className="rv-empty-icon-circle">💾</div>
-          <div className="rv-empty-title">No Restore Points Created Yet</div>
-          <div className="rv-empty-desc">
-            Create snapshot restore points before running bulk discounts, editing theme code, or running third-party CSV syncs. You can revert your entire store with one click.
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowCreateForm(true)}
-            className="rv-btn rv-btn-primary"
-          >
-            + Create Your First Restore Point
-          </button>
-        </div>
+        <EmptyState
+          icon={<SaveIcon size={26} style={{ color: "var(--rv-primary)" }} />}
+          title="No Restore Points Created Yet"
+          description="Create snapshot restore points before running bulk discounts, editing theme code, or running third-party CSV imports. You can revert individual files or your entire catalog with 1 click."
+          action={
+            <button
+              type="button"
+              onClick={() => setShowCreateForm(true)}
+              className="rv-btn rv-btn-primary"
+            >
+              <SaveIcon size={15} />
+              <span>Create Your First Restore Point</span>
+            </button>
+          }
+        />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
           {restorePoints.map((rp) => (
@@ -337,7 +381,7 @@ export default function RestorePoints() {
                   alignItems: "center",
                   justifyContent: "space-between",
                   flexWrap: "wrap",
-                  gap: "16px",
+                  gap: "18px",
                 }}
               >
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -367,21 +411,22 @@ export default function RestorePoints() {
                     </p>
                   )}
 
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
-                    <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                      🕒 {formatTime(rp.createdAt)}
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "2px" }}>
+                    <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <ClockIcon size={13} />
+                      <span>{formatTime(rp.createdAt)}</span>
                     </span>
                     <span style={{ color: "var(--rv-text-subdued)" }}>·</span>
-                    <span className="rv-badge rv-badge-info">{rp.productCount} Products</span>
-                    {rp.themeCount > 0 && <span className="rv-badge rv-badge-success">1 Theme</span>}
+                    <span className="rv-badge rv-badge-info rv-badge-sm">{rp.productCount} Products</span>
+                    {rp.themeCount > 0 && <span className="rv-badge rv-badge-success rv-badge-sm">1 Theme</span>}
                     {rp.collectionCount > 0 && (
-                      <span className="rv-badge rv-badge-info">{rp.collectionCount} Collections</span>
+                      <span className="rv-badge rv-badge-info rv-badge-sm">{rp.collectionCount} Collections</span>
                     )}
                     {rp.pageCount > 0 && (
-                      <span className="rv-badge rv-badge-neutral">{rp.pageCount} Pages</span>
+                      <span className="rv-badge rv-badge-neutral rv-badge-sm">{rp.pageCount} Pages</span>
                     )}
                     {rp.articleCount > 0 && (
-                      <span className="rv-badge rv-badge-success">{rp.articleCount} Articles</span>
+                      <span className="rv-badge rv-badge-success rv-badge-sm">{rp.articleCount} Articles</span>
                     )}
                   </div>
                 </div>
@@ -389,18 +434,18 @@ export default function RestorePoints() {
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                   <Link
                     to={`/app/restore-points/${rp.id}`}
-                    className="rv-btn rv-btn-primary"
-                    style={{ fontSize: "13px" }}
+                    className="rv-btn rv-btn-primary rv-btn-sm"
                   >
-                    ⚡ Inspect / Restore
+                    <span>Inspect / Restore</span>
+                    <ArrowRightIcon size={13} />
                   </Link>
 
                   <a
                     href={`/app/restore-points/${rp.id}/export`}
-                    className="rv-btn rv-btn-secondary"
-                    style={{ fontSize: "13px" }}
+                    className="rv-btn rv-btn-secondary rv-btn-sm"
                   >
-                    ⬇️ JSON
+                    <DownloadIcon size={13} />
+                    <span>JSON</span>
                   </a>
 
                   <fetcher.Form method="POST" style={{ display: "inline" }}>
@@ -413,10 +458,11 @@ export default function RestorePoints() {
                           e.preventDefault();
                         }
                       }}
-                      className="rv-btn rv-btn-subtle"
-                      style={{ fontSize: "13px", color: "var(--rv-critical)" }}
+                      className="rv-btn rv-btn-subtle rv-btn-sm"
+                      style={{ color: "var(--rv-critical)" }}
                     >
-                      Delete
+                      <Trash2Icon size={13} />
+                      <span>Delete</span>
                     </button>
                   </fetcher.Form>
                 </div>

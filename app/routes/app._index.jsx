@@ -2,6 +2,21 @@ import { useLoaderData, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import {
+  ShieldCheckIcon,
+  BoxIcon,
+  ClockIcon,
+  AlertTriangleIcon,
+  SaveIcon,
+  ArrowRightIcon,
+  HistoryIcon,
+  DatabaseIcon,
+  SettingsIcon,
+  FilterIcon,
+} from "../components/Icons.jsx";
+import { StatCard } from "../components/StatCard.jsx";
+import { Banner } from "../components/Banner.jsx";
+import { EmptyState } from "../components/EmptyState.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -75,39 +90,44 @@ export default function Dashboard() {
       {/* ── Top Hero Protection Status ── */}
       <div className="rv-hero-banner">
         <div className="rv-hero-status">
-          <div
-            className="rv-pulse-indicator"
-            style={{ background: isInitialized ? "#008060" : "#d97706" }}
-          />
+          <div className="rv-pulse-wrapper">
+            <div
+              className="rv-pulse-indicator"
+              style={{ background: isInitialized ? "var(--rv-primary)" : "var(--rv-warning)" }}
+            />
+          </div>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
-              <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
-                {isInitialized ? "Catalog Watchdog Active" : "Catalog Monitoring Setup Required"}
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "3px", flexWrap: "wrap" }}>
+              <strong style={{ fontSize: "16px", color: "var(--rv-text)", fontWeight: 700 }}>
+                {isInitialized ? "Store Protection Active" : "Store Monitoring Setup Required"}
               </strong>
               <span className={`rv-badge ${isInitialized ? "rv-badge-success" : "rv-badge-warning"}`}>
-                {isInitialized ? "Protected" : "Action Needed"}
+                {isInitialized ? "Guarded 24/7" : "Action Needed"}
               </span>
             </div>
-            <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
               {isInitialized
-                ? `${stats.totalProducts.toLocaleString()} products actively guarded against accidental price crashes, CSV mistakes, and deletions.`
-                : "Initialize your store baseline snapshot to start monitoring catalog changes and prevent revenue loss."}
+                ? `${stats.totalProducts.toLocaleString()} products guarded against accidental price crashes, bad CSV imports, and unintended deletions.`
+                : "Initialize your store baseline snapshot to start monitoring product edits and prevent revenue loss."}
             </p>
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           {!isInitialized ? (
-            <Link to="/app/initialize" className="rv-btn rv-btn-primary">
-              ⚡ Initialize Monitoring Now
+            <Link to="/app/initialize" className="rv-btn rv-btn-primary rv-btn-lg">
+              <ShieldCheckIcon size={16} />
+              <span>Initialize Monitoring Now</span>
             </Link>
           ) : (
             <>
               <Link to="/app/restore-points" className="rv-btn rv-btn-primary">
-                + Create Restore Point
+                <SaveIcon size={15} />
+                <span>+ Create Restore Point</span>
               </Link>
               <Link to="/app/vault" className="rv-btn rv-btn-secondary">
-                Orders Vault
+                <DatabaseIcon size={15} />
+                <span>Data Vault</span>
               </Link>
             </>
           )}
@@ -116,48 +136,27 @@ export default function Dashboard() {
 
       {/* ── Open Incidents Warning Banner ── */}
       {stats.openIncidents > 0 && (
-        <div
-          style={{
-            background: "var(--rv-critical-surface)",
-            border: "1px solid var(--rv-critical-border)",
-            borderRadius: "var(--rv-radius-md)",
-            padding: "16px 20px",
-            marginBottom: "20px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: "12px",
-          }}
+        <Banner
+          tone="critical"
+          title={`${stats.openIncidents} open incident${stats.openIncidents > 1 ? "s" : ""} require your attention`}
+          action={
+            <Link to="/app/incidents" className="rv-btn rv-btn-critical rv-btn-sm">
+              <span>Review Incidents</span>
+              <ArrowRightIcon size={13} />
+            </Link>
+          }
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <span style={{ fontSize: "22px" }}>⚠️</span>
-            <div>
-              <strong style={{ color: "var(--rv-critical)", fontSize: "14px" }}>
-                {stats.openIncidents} open incident{stats.openIncidents > 1 ? "s" : ""} require your attention
-              </strong>
-              <p style={{ margin: "2px 0 0", fontSize: "13px", color: "#771919" }}>
-                Suspicious product changes or sudden price drops have been flagged. Review and rollback immediately.
-              </p>
-            </div>
-          </div>
-          <Link to="/app/incidents" className="rv-btn rv-btn-critical">
-            Review Incidents →
-          </Link>
-        </div>
+          Suspicious product edits or steep price crashes have been flagged by your detection rules. Review and rollback immediately.
+        </Banner>
       )}
 
       {/* ── 4 KPI Stats Grid ── */}
       <div className="rv-stat-grid">
-        {/* Monitored Products */}
-        <div className="rv-stat-card">
-          <div>
-            <div className="rv-stat-card-top">
-              <span className="rv-stat-label">Monitored Products</span>
-              <div className="rv-stat-icon-wrapper rv-stat-icon-blue">📦</div>
-            </div>
-            <div className="rv-stat-number">{stats.totalProducts.toLocaleString()}</div>
-            <div className="rv-stat-subtext">
+        <StatCard
+          label="Monitored Products"
+          value={stats.totalProducts.toLocaleString()}
+          subtext={
+            <>
               <span
                 style={{
                   width: "8px",
@@ -165,150 +164,120 @@ export default function Dashboard() {
                   borderRadius: "50%",
                   background: isInitialized ? "#10b981" : "#f59e0b",
                   display: "inline-block",
+                  flexShrink: 0,
                 }}
               />
-              {isInitialized ? "Real-time tracking active" : "Baseline not initialized"}
-            </div>
-          </div>
-          <Link
-            to={isInitialized ? "/app/initialize" : "/app/initialize"}
-            className="rv-stat-link"
-          >
-            {isInitialized ? "Sync snapshots →" : "Initialize now →"}
-          </Link>
-        </div>
+              <span>{isInitialized ? "Real-time tracking active" : "Baseline not initialized"}</span>
+            </>
+          }
+          icon={<BoxIcon size={18} />}
+          iconTone="blue"
+          linkTo="/app/initialize"
+          linkLabel={isInitialized ? "Sync catalog snapshots" : "Initialize baseline"}
+        />
 
-        {/* Changes Today */}
-        <div className="rv-stat-card">
-          <div>
-            <div className="rv-stat-card-top">
-              <span className="rv-stat-label">Changes Today</span>
-              <div className="rv-stat-icon-wrapper rv-stat-icon-purple">🕒</div>
-            </div>
-            <div className="rv-stat-number">{stats.todayChanges.toLocaleString()}</div>
-            <div className="rv-stat-subtext">
-              {stats.todayChanges === 0 ? "No product edits in 24h" : "Logged in the last 24 hours"}
-            </div>
-          </div>
-          <Link to="/app/activity" className="rv-stat-link">
-            View activity log →
-          </Link>
-        </div>
+        <StatCard
+          label="Changes Today (24h)"
+          value={stats.todayChanges.toLocaleString()}
+          subtext={stats.todayChanges === 0 ? "No catalog edits in 24h" : "Logged in the last 24 hours"}
+          icon={<ClockIcon size={18} />}
+          iconTone="purple"
+          linkTo="/app/activity"
+          linkLabel="Open activity stream"
+        />
 
-        {/* Open Incidents */}
-        <div className="rv-stat-card">
-          <div>
-            <div className="rv-stat-card-top">
-              <span className="rv-stat-label">Open Incidents</span>
-              <div
-                className={`rv-stat-icon-wrapper ${stats.openIncidents > 0 ? "rv-stat-icon-red" : "rv-stat-icon-green"}`}
-              >
-                {stats.openIncidents > 0 ? "🚨" : "🛡️"}
-              </div>
-            </div>
-            <div
-              className="rv-stat-number"
-              style={{ color: stats.openIncidents > 0 ? "var(--rv-critical)" : "inherit" }}
-            >
-              {stats.openIncidents.toLocaleString()}
-            </div>
-            <div className="rv-stat-subtext">
-              {stats.openIncidents > 0 ? "Requires your review" : "Store catalog is all clear"}
-            </div>
-          </div>
-          <Link to="/app/incidents" className="rv-stat-link">
-            {stats.openIncidents > 0 ? "Resolve incidents →" : "View incidents →"}
-          </Link>
-        </div>
+        <StatCard
+          label="Open Incidents"
+          value={stats.openIncidents.toLocaleString()}
+          subtext={stats.openIncidents > 0 ? "Requires merchant review" : "Store catalog is all clear"}
+          icon={stats.openIncidents > 0 ? <AlertTriangleIcon size={18} /> : <ShieldCheckIcon size={18} />}
+          iconTone={stats.openIncidents > 0 ? "rose" : "emerald"}
+          linkTo="/app/incidents"
+          linkLabel={stats.openIncidents > 0 ? "Resolve incidents" : "View incidents log"}
+        />
 
-        {/* Restore Points */}
-        <div className="rv-stat-card">
-          <div>
-            <div className="rv-stat-card-top">
-              <span className="rv-stat-label">Restore Points</span>
-              <div className="rv-stat-icon-wrapper rv-stat-icon-green">💾</div>
-            </div>
-            <div className="rv-stat-number">{stats.readyRestorePoints.toLocaleString()}</div>
-            <div className="rv-stat-subtext">
-              {stats.readyRestorePoints === 0 ? "None created yet" : "Ready for 1-click restore"}
-            </div>
-          </div>
-          <Link to="/app/restore-points" className="rv-stat-link">
-            {stats.readyRestorePoints === 0 ? "Create your first →" : "Manage backups →"}
-          </Link>
-        </div>
+        <StatCard
+          label="Restore Points"
+          value={stats.readyRestorePoints.toLocaleString()}
+          subtext={stats.readyRestorePoints === 0 ? "None captured yet" : "Ready for 1-click restore"}
+          icon={<SaveIcon size={18} />}
+          iconTone="emerald"
+          linkTo="/app/restore-points"
+          linkLabel={stats.readyRestorePoints === 0 ? "Take first snapshot" : "Manage backups"}
+        />
       </div>
 
-      {/* ── Quick Action Shortcuts ── */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          flexWrap: "wrap",
-          marginBottom: "24px",
-        }}
-      >
-        <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--rv-text-subdued)", textTransform: "uppercase", letterSpacing: "0.5px", marginRight: "6px" }}>
-          Quick Navigation:
+      {/* ── Quick Navigation Hub ── */}
+      <div className="rv-quick-nav-row">
+        <span style={{ fontSize: "12px", fontWeight: 700, color: "var(--rv-text-subdued)", textTransform: "uppercase", letterSpacing: "0.5px", marginRight: "4px" }}>
+          Quick Hub:
         </span>
-        <Link to="/app/activity" className="rv-pill">
-          📋 Activity Log
+        <Link to="/app/activity" className="rv-quick-pill">
+          <ClockIcon size={14} />
+          <span>Activity Log</span>
         </Link>
-        <Link to="/app/incidents" className="rv-pill">
-          🚨 Incidents
+        <Link to="/app/incidents" className="rv-quick-pill">
+          <AlertTriangleIcon size={14} />
+          <span>Incidents</span>
         </Link>
-        <Link to="/app/restore-points" className="rv-pill">
-          💾 Restore Points
+        <Link to="/app/restore-points" className="rv-quick-pill">
+          <SaveIcon size={14} />
+          <span>Restore Points</span>
         </Link>
-        <Link to="/app/vault" className="rv-pill">
-          🏛️ Data Vault
+        <Link to="/app/vault" className="rv-quick-pill">
+          <DatabaseIcon size={14} />
+          <span>Data Vault</span>
         </Link>
-        <Link to="/app/rules" className="rv-pill">
-          ⚙️ Detection Rules
+        <Link to="/app/rules" className="rv-quick-pill">
+          <FilterIcon size={14} />
+          <span>Detection Rules</span>
         </Link>
-        <Link to="/app/rollback-history" className="rv-pill">
-          ⏪ Rollback History
+        <Link to="/app/rollback-history" className="rv-quick-pill">
+          <HistoryIcon size={14} />
+          <span>Rollback History</span>
         </Link>
-        <Link to="/app/settings" className="rv-pill">
-          🔧 Settings
+        <Link to="/app/settings" className="rv-quick-pill">
+          <SettingsIcon size={14} />
+          <span>Settings</span>
         </Link>
       </div>
 
-      {/* ── Main Two Column Feed: Recent Incidents + Recent Activity ── */}
+      {/* ── Two Column Feed: Incidents & Activity ── */}
       <div className="rv-two-col" style={{ marginBottom: "24px" }}>
         
-        {/* Left: Recent Incidents */}
-        <div className="rv-card">
+        {/* Left Column: Recent Incidents */}
+        <div className="rv-card" style={{ margin: 0 }}>
           <div className="rv-card-header">
             <h3 className="rv-card-title">
-              <span>🚨</span> Recent Incidents
+              <AlertTriangleIcon size={18} style={{ color: "var(--rv-critical)" }} />
+              <span>Recent Incidents</span>
             </h3>
-            <Link to="/app/incidents" style={{ fontSize: "13px", color: "var(--rv-info)", fontWeight: 500, textDecoration: "none" }}>
-              View all →
+            <Link to="/app/incidents" className="rv-stat-link">
+              <span>View all</span>
+              <ArrowRightIcon size={13} />
             </Link>
           </div>
 
           <div>
             {recentIncidents.length === 0 ? (
-              <div className="rv-empty-state" style={{ border: "none", margin: 0, padding: "36px 20px" }}>
-                <div className="rv-empty-icon-circle" style={{ background: "#e8f5e9", color: "#16a34a" }}>
-                  🛡️
-                </div>
-                <div className="rv-empty-title">Zero Incidents Detected</div>
-                <div className="rv-empty-desc">
-                  Your store is completely protected. Any bulk changes or steep price drops will be flagged here immediately.
-                </div>
-                <Link to="/app/rules" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
-                  Configure Detection Rules
-                </Link>
-              </div>
+              <EmptyState
+                icon={<ShieldCheckIcon size={26} style={{ color: "var(--rv-primary)" }} />}
+                title="Zero Incidents Detected"
+                description="Your store catalog is safe and sound. Any bulk changes or steep price crashes will be flagged here immediately."
+                action={
+                  <Link to="/app/rules" className="rv-btn rv-btn-secondary rv-btn-sm">
+                    Configure Rules
+                  </Link>
+                }
+              />
             ) : (
               recentIncidents.map((inc) => (
                 <div key={inc.id} className="rv-item-card">
                   <div className="rv-item-main">
                     <div className="rv-item-title">
-                      <span>{inc.name}</span>
+                      <Link to={`/app/incidents/${inc.id}`} style={{ color: "var(--rv-text)", textDecoration: "none" }}>
+                        {inc.name}
+                      </Link>
                       <span
                         className={`rv-badge ${
                           inc.status === "OPEN"
@@ -323,7 +292,7 @@ export default function Dashboard() {
                     </div>
                     <div className="rv-item-meta">
                       <span
-                        className={`rv-badge ${
+                        className={`rv-badge rv-badge-sm ${
                           inc.severity === "CRITICAL"
                             ? "rv-badge-critical"
                             : inc.severity === "HIGH"
@@ -333,18 +302,18 @@ export default function Dashboard() {
                       >
                         {inc.severity}
                       </span>
-                      <span>{inc.affectedCount} product{inc.affectedCount !== 1 ? "s" : ""} affected</span>
+                      <span>{inc.affectedCount} product{inc.affectedCount !== 1 ? "s" : ""}</span>
                       <span>·</span>
                       <span>{timeAgo(inc.createdAt)}</span>
                     </div>
                   </div>
                   <div>
                     {inc.status === "OPEN" ? (
-                      <Link to={`/app/incidents/${inc.id}`} className="rv-btn rv-btn-critical" style={{ fontSize: "12px", padding: "6px 12px" }}>
+                      <Link to={`/app/incidents/${inc.id}`} className="rv-btn rv-btn-critical rv-btn-sm">
                         Review &amp; Rollback
                       </Link>
                     ) : (
-                      <Link to={`/app/incidents/${inc.id}`} className="rv-btn rv-btn-secondary" style={{ fontSize: "12px", padding: "6px 12px" }}>
+                      <Link to={`/app/incidents/${inc.id}`} className="rv-btn rv-btn-secondary rv-btn-sm">
                         Details
                       </Link>
                     )}
@@ -355,42 +324,42 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Right: Recent Activity */}
-        <div className="rv-card">
+        {/* Right Column: Recent Activity Log */}
+        <div className="rv-card" style={{ margin: 0 }}>
           <div className="rv-card-header">
             <h3 className="rv-card-title">
-              <span>📋</span> Recent Activity Log
+              <ClockIcon size={18} style={{ color: "var(--rv-info)" }} />
+              <span>Recent Activity Log</span>
             </h3>
-            <Link to="/app/activity" style={{ fontSize: "13px", color: "var(--rv-info)", fontWeight: 500, textDecoration: "none" }}>
-              View all →
+            <Link to="/app/activity" className="rv-stat-link">
+              <span>View all</span>
+              <ArrowRightIcon size={13} />
             </Link>
           </div>
 
           <div>
             {recentChanges.length === 0 ? (
-              <div className="rv-empty-state" style={{ border: "none", margin: 0, padding: "36px 20px" }}>
-                <div className="rv-empty-icon-circle" style={{ background: "#f0fdf4", color: "#008060" }}>
-                  📡
-                </div>
-                <div className="rv-empty-title">Listening for Updates</div>
-                <div className="rv-empty-desc">
-                  When you or an app edit product prices, titles, or inventory, change records will appear here in real time.
-                </div>
-                <Link to="/app/activity" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
-                  Open Activity Stream
-                </Link>
-              </div>
+              <EmptyState
+                icon={<ClockIcon size={26} style={{ color: "var(--rv-info)" }} />}
+                title="Listening for Updates"
+                description="When you or an external app edit product prices, titles, or inventory, change records will stream here in real time."
+                action={
+                  <Link to="/app/activity" className="rv-btn rv-btn-secondary rv-btn-sm">
+                    Open Activity Stream
+                  </Link>
+                }
+              />
             ) : (
               recentChanges.map((c) => (
                 <div key={c.id} className="rv-item-card">
                   <div className="rv-item-main" style={{ maxWidth: "70%" }}>
-                    <div className="rv-item-title" style={{ fontSize: "13px", fontWeight: 600 }}>
+                    <div className="rv-item-title" style={{ fontSize: "13px" }}>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {c.productTitle}
                       </span>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "2px" }}>
-                      <span className="rv-badge rv-badge-neutral" style={{ fontSize: "11px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "3px" }}>
+                      <span className="rv-badge rv-badge-neutral rv-badge-sm">
                         {fieldLabel(c.fieldName)}
                       </span>
                       <span className="rv-diff-old">{c.oldValue || "—"}</span>
@@ -409,40 +378,40 @@ export default function Dashboard() {
 
       </div>
 
-      {/* ── System Status & Protection Guardrails ── */}
+      {/* ── System Status & Guardrails ── */}
       <div className="rv-card">
         <div className="rv-card-header">
           <h3 className="rv-card-title">
-            <span>⚙️</span> System Guardrails &amp; Protection Status
+            <ShieldCheckIcon size={18} style={{ color: "var(--rv-primary)" }} />
+            <span>Protection Engine &amp; Health Status</span>
           </h3>
           <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
             Shop: <code>{stats.shop || "Connected"}</code>
           </span>
         </div>
         <div className="rv-card-body" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981" }} />
-              <span style={{ fontSize: "13px", fontWeight: 500 }}>Webhooks Active</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "20px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", flexShrink: 0 }} />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>Live Webhooks Active</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981" }} />
-              <span style={{ fontSize: "13px", fontWeight: 500 }}>Prisma Database Connected</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", flexShrink: 0 }} />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>Encrypted Snapshot Storage</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981" }} />
-              <span style={{ fontSize: "13px", fontWeight: 500 }}>Automated Snapshots Running</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", flexShrink: 0 }} />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>Automatic Anomaly Detection</span>
             </div>
             {stats.totalRollbacks > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <span className="rv-badge rv-badge-success">
-                  {stats.totalRollbacks} rollbacks performed safely
-                </span>
-              </div>
+              <span className="rv-badge rv-badge-success">
+                {stats.totalRollbacks} safe rollbacks completed
+              </span>
             )}
           </div>
-          <Link to="/app/settings" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
-            Adjust Protection Settings →
+          <Link to="/app/settings" className="rv-btn rv-btn-secondary rv-btn-sm">
+            <SettingsIcon size={14} />
+            <span>Protection Settings</span>
           </Link>
         </div>
       </div>

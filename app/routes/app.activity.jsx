@@ -3,6 +3,18 @@ import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { restoreDeletedProduct } from "../monitor.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import {
+  ClockIcon,
+  Trash2Icon,
+  RefreshCwIcon,
+  SearchIcon,
+  BoxIcon,
+  ArrowRightIcon,
+  ArrowLeftIcon,
+  FilterIcon,
+} from "../components/Icons.jsx";
+import { Banner } from "../components/Banner.jsx";
+import { EmptyState } from "../components/EmptyState.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -38,28 +50,36 @@ export const loader = async ({ request }) => {
 };
 
 export const action = async ({ request }) => {
-  const { session, admin } = await authenticate.admin(request);
-  const shop = session.shop;
-  const formData = await request.formData();
-  const intent = formData.get("intent");
+  try {
+    const { session, admin } = await authenticate.admin(request);
+    const shop = session.shop;
+    const formData = await request.formData();
+    const intent = formData.get("intent");
 
-  if (intent === "restoreDeleted") {
-    const productId = formData.get("productId");
-    const res = await restoreDeletedProduct(admin, shop, productId);
-    if (res.success) {
-      return {
-        success: true,
-        message: `Successfully recreated "${res.title}" as Draft in Shopify!`,
-      };
-    } else {
-      return {
-        success: false,
-        message: `Restore failed: ${res.error}`,
-      };
+    if (intent === "restoreDeleted") {
+      const productId = formData.get("productId");
+      const res = await restoreDeletedProduct(admin, shop, productId);
+      if (res.success) {
+        return {
+          success: true,
+          message: `Successfully recreated "${res.title}" as Draft in Shopify!`,
+        };
+      } else {
+        return {
+          success: false,
+          message: `Restore failed: ${res.error}`,
+        };
+      }
     }
-  }
 
-  return { success: false, message: "Unknown action" };
+    return { success: false, message: "Unknown action" };
+  } catch (error) {
+    console.error("Activity action error:", error);
+    return {
+      success: false,
+      message: error?.message || "An unexpected error occurred while restoring product.",
+    };
+  }
 };
 
 function formatTime(date) {
@@ -83,39 +103,28 @@ export default function Activity() {
   return (
     <s-page heading="Activity Log" inlineSize="large">
       
-      {/* ── Action Feedback Toast / Banner ── */}
+      {/* ── Action Feedback Banner ── */}
       {result?.message && (
-        <div
-          style={{
-            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
-            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
-            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "14px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
+        <Banner
+          tone={result.success ? "success" : "critical"}
+          title={result.success ? "Recovery Complete" : "Recovery Error"}
         >
-          <span>{result.success ? "✅" : "⚠️"}</span>
-          <span>{result.message}</span>
-        </div>
+          {result.message}
+        </Banner>
       )}
 
-      {/* ── Deleted Products Watchdog ── */}
+      {/* ── Deleted Products Watchdog (Recycle Bin) ── */}
       {deletedProducts && deletedProducts.length > 0 && (
-        <div className="rv-card" style={{ borderLeft: "4px solid #d97706", marginBottom: "24px" }}>
-          <div className="rv-card-header" style={{ background: "#fffbeb" }}>
-            <h3 className="rv-card-title" style={{ color: "#92400e" }}>
-              <span>🗑️</span> Deleted Products Watchdog ({deletedProducts.length} Recoverable)
+        <div className="rv-card" style={{ borderLeft: "4px solid var(--rv-warning)", marginBottom: "24px" }}>
+          <div className="rv-card-header" style={{ background: "var(--rv-warning-surface)" }}>
+            <h3 className="rv-card-title" style={{ color: "var(--rv-warning-text)" }}>
+              <Trash2Icon size={18} />
+              <span>Deleted Products Watchdog ({deletedProducts.length} Recoverable)</span>
             </h3>
-            <span className="rv-badge rv-badge-warning">Vault Preserved</span>
+            <span className="rv-badge rv-badge-warning rv-badge-sm">Vault Preserved</span>
           </div>
           <div className="rv-card-body" style={{ padding: 0 }}>
-            <p style={{ margin: "16px 20px 12px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+            <p style={{ margin: "16px 22px 14px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
               These products were deleted from your Shopify store. Revertly has preserved their complete snapshots in memory. Click <strong>1-Click Restore</strong> to recreate them in your catalog as Drafts.
             </p>
             <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
@@ -131,11 +140,16 @@ export default function Activity() {
                 <tbody>
                   {deletedProducts.map((p) => (
                     <tr key={p.productId}>
-                      <td style={{ fontWeight: 600 }}>{p.title || `Product #${p.productId}`}</td>
-                      <td>
-                        <span className="rv-badge rv-badge-critical">DELETED</span>
+                      <td style={{ fontWeight: 600 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <BoxIcon size={16} style={{ color: "var(--rv-text-subdued)" }} />
+                          <span>{p.title || `Product #${p.productId}`}</span>
+                        </div>
                       </td>
-                      <td style={{ color: "var(--rv-text-subdued)" }}>
+                      <td>
+                        <span className="rv-badge rv-badge-critical rv-badge-sm">DELETED</span>
+                      </td>
+                      <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px" }}>
                         {formatTime(p.deletedAt || p.updatedAt)}
                       </td>
                       <td style={{ textAlign: "right" }}>
@@ -144,11 +158,11 @@ export default function Activity() {
                           <input type="hidden" name="productId" value={p.productId} />
                           <button
                             type="submit"
-                            className="rv-btn rv-btn-primary"
                             disabled={isRestoring}
-                            style={{ fontSize: "12px", padding: "6px 12px" }}
+                            className="rv-btn rv-btn-primary rv-btn-sm"
                           >
-                            {isRestoring ? "Restoring..." : "⚡ 1-Click Restore"}
+                            <RefreshCwIcon size={13} />
+                            <span>1-Click Restore to Shopify</span>
                           </button>
                         </fetcher.Form>
                       </td>
@@ -163,101 +177,106 @@ export default function Activity() {
 
       {/* ── Search & Filter Toolbar ── */}
       <div className="rv-filter-bar">
-        <form method="get" style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-          <input type="hidden" name="page" value="1" />
-          <div className="rv-input-group">
+        <form method="get" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+          <div className="rv-search-wrapper" style={{ flexGrow: 1, maxWidth: "320px" }}>
+            <span className="rv-search-icon">
+              <SearchIcon size={15} />
+            </span>
             <input
               type="text"
               name="product"
+              placeholder="Search product title..."
               defaultValue={product}
-              placeholder="🔍 Search product title..."
-              className="rv-input"
+              className="rv-input rv-input-with-icon"
+              style={{ width: "100%" }}
             />
-            <input
-              type="text"
-              name="field"
-              defaultValue={field}
-              placeholder="Filter by field (e.g. price)..."
-              className="rv-input"
-            />
-            <button type="submit" className="rv-btn rv-btn-primary">
-              Filter Changes
-            </button>
-            {(product || field) && (
-              <Link to="/app/activity" className="rv-btn rv-btn-subtle">
-                ✕ Clear Filters
-              </Link>
-            )}
+          </div>
+
+          <select name="field" defaultValue={field} className="rv-select">
+            <option value="">All Field Types</option>
+            <option value="price">Price Changes</option>
+            <option value="compareAtPrice">Compare At Price</option>
+            <option value="inventory">Inventory Changes</option>
+            <option value="title">Product Title</option>
+            <option value="status">Status Changes</option>
+            <option value="vendor">Vendor</option>
+            <option value="tags">Tags</option>
+            <option value="sku">SKU Changes</option>
+          </select>
+
+          <button type="submit" className="rv-btn rv-btn-secondary rv-btn-sm">
+            <FilterIcon size={13} />
+            <span>Apply Filters</span>
+          </button>
+
+          {(field || product) && (
+            <Link to="/app/activity" className="rv-btn rv-btn-subtle rv-btn-sm">
+              Clear Filters
+            </Link>
+          )}
+
+          <div style={{ marginLeft: "auto", fontSize: "13px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
+            {total.toLocaleString()} change event{total !== 1 ? "s" : ""}
           </div>
         </form>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
-            {total.toLocaleString()} total changes
-          </span>
-          <Link to="/app/rollback-history" className="rv-btn rv-btn-secondary" style={{ fontSize: "12px" }}>
-            ⏪ View Rollback History →
-          </Link>
-        </div>
       </div>
 
       {/* ── Activity Table / Empty State ── */}
       {changes.length === 0 ? (
-        <div className="rv-empty-state">
-          <div className="rv-empty-icon-circle">📋</div>
-          <div className="rv-empty-title">
-            {product || field ? "No matching changes found" : "No catalog activity logged yet"}
-          </div>
-          <div className="rv-empty-desc">
-            {product || field
-              ? "Try adjusting or clearing your search filters to view recorded product changes."
-              : "As products, prices, variants, and tags are updated in your Shopify admin or via bulk apps, audit records will appear here in real time."}
-          </div>
-          {product || field ? (
-            <Link to="/app/activity" className="rv-btn rv-btn-secondary">
-              Clear All Filters
-            </Link>
-          ) : (
-            <Link to="/app/initialize" className="rv-btn rv-btn-primary">
-              Verify Monitoring Baseline
-            </Link>
-          )}
-        </div>
+        <EmptyState
+          icon={<ClockIcon size={28} style={{ color: "var(--rv-info)" }} />}
+          title={field || product ? "No matching activity records" : "No Activity Logged Yet"}
+          description={
+            field || product
+              ? "Try adjusting your search query or field filter to find historical change records."
+              : "Revertly monitors your catalog in real-time. Edits to product prices, inventory, titles, and tags will stream here automatically."
+          }
+          action={
+            (field || product) && (
+              <Link to="/app/activity" className="rv-btn rv-btn-secondary">
+                Reset Filter
+              </Link>
+            )
+          }
+        />
       ) : (
         <div className="rv-table-container">
           <table className="rv-table">
             <thead>
               <tr>
-                <th style={{ width: "180px" }}>Timestamp</th>
-                <th>Product</th>
-                <th style={{ width: "140px" }}>Field</th>
+                <th>Product Title</th>
+                <th style={{ width: "180px" }}>Field Changed</th>
                 <th>Previous Value</th>
-                <th style={{ width: "20px" }}></th>
+                <th style={{ width: "24px" }}></th>
                 <th>New Value</th>
+                <th style={{ width: "180px" }}>Timestamp</th>
               </tr>
             </thead>
             <tbody>
               {changes.map((c) => (
                 <tr key={c.id}>
-                  <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px" }}>
-                    {formatTime(c.changedAt)}
-                  </td>
-                  <td style={{ fontWeight: 600, color: "var(--rv-text)" }}>
-                    {c.productTitle}
+                  <td style={{ fontWeight: 600 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <BoxIcon size={15} style={{ color: "var(--rv-text-subdued)", flexShrink: 0 }} />
+                      <span style={{ maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {c.productTitle}
+                      </span>
+                    </div>
                   </td>
                   <td>
-                    <span className="rv-badge rv-badge-neutral">
+                    <span className="rv-badge rv-badge-neutral rv-badge-sm">
                       {fieldLabel(c.fieldName)}
                     </span>
                   </td>
                   <td>
                     <span className="rv-diff-old">{c.oldValue || "—"}</span>
                   </td>
-                  <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px", textAlign: "center" }}>
-                    →
-                  </td>
+                  <td style={{ color: "var(--rv-text-subdued)", textAlign: "center" }}>→</td>
                   <td>
                     <span className="rv-diff-new">{c.newValue || "—"}</span>
+                  </td>
+                  <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px", whiteSpace: "nowrap" }}>
+                    {formatTime(c.changedAt)}
                   </td>
                 </tr>
               ))}
@@ -266,41 +285,41 @@ export default function Activity() {
         </div>
       )}
 
-      {/* ── Pagination Bar ── */}
+      {/* ── Pagination Controls ── */}
       {totalPages > 1 && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginTop: "20px",
-            padding: "12px 16px",
-            background: "var(--rv-surface)",
-            border: "1px solid var(--rv-border)",
-            borderRadius: "var(--rv-radius-md)",
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "20px", padding: "10px 0" }}>
           <div style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({total} total records)
+            Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({total.toLocaleString()} records)
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            {page > 1 && (
+            {page > 1 ? (
               <Link
-                to={`/app/activity?page=${page - 1}&field=${field}&product=${product}`}
-                className="rv-btn rv-btn-secondary"
-                style={{ fontSize: "12px", padding: "6px 12px" }}
+                to={`/app/activity?page=${page - 1}${field ? `&field=${field}` : ""}${product ? `&product=${product}` : ""}`}
+                className="rv-btn rv-btn-secondary rv-btn-sm"
               >
-                ← Previous
+                <ArrowLeftIcon size={13} />
+                <span>Previous</span>
               </Link>
+            ) : (
+              <button disabled className="rv-btn rv-btn-secondary rv-btn-sm">
+                <ArrowLeftIcon size={13} />
+                <span>Previous</span>
+              </button>
             )}
-            {page < totalPages && (
+
+            {page < totalPages ? (
               <Link
-                to={`/app/activity?page=${page + 1}&field=${field}&product=${product}`}
-                className="rv-btn rv-btn-secondary"
-                style={{ fontSize: "12px", padding: "6px 12px" }}
+                to={`/app/activity?page=${page + 1}${field ? `&field=${field}` : ""}${product ? `&product=${product}` : ""}`}
+                className="rv-btn rv-btn-secondary rv-btn-sm"
               >
-                Next →
+                <span>Next</span>
+                <ArrowRightIcon size={13} />
               </Link>
+            ) : (
+              <button disabled className="rv-btn rv-btn-secondary rv-btn-sm">
+                <span>Next</span>
+                <ArrowRightIcon size={13} />
+              </button>
             )}
           </div>
         </div>

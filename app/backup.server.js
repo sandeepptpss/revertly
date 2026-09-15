@@ -883,11 +883,15 @@ export async function createMultiResourceRestorePoint({
     includeArticles: true,
   },
 }) {
+  const safeName =
+    (name && String(name).trim()) ||
+    `Manual Snapshot - ${new Date().toISOString().slice(0, 19).replace("T", " ")}`;
+
   // 1. Create the pending restore point
   const rp = await prisma.restorePoint.create({
     data: {
       shop,
-      name,
+      name: safeName,
       description,
       status: "CREATING",
       backupType: "FULL",

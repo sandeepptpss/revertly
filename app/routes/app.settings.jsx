@@ -5,6 +5,20 @@ import prisma from "../db.server.js";
 import { getOrCreateSettings } from "../monitor.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { checkFeatureAccess } from "../billing.server.js";
+import {
+  SettingsIcon,
+  ShieldCheckIcon,
+  ClockIcon,
+  BoxIcon,
+  SaveIcon,
+  ExternalLinkIcon,
+  AlertTriangleIcon,
+  CheckCircleIcon,
+  ZapIcon,
+  BellIcon,
+  MailIcon,
+} from "../components/Icons.jsx";
+import { Banner } from "../components/Banner.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -62,91 +76,132 @@ export const loader = async ({ request }) => {
   };
 };
 
+function safeParseInt(val, fallback) {
+  if (val === null || val === undefined || String(val).trim() === "") return fallback;
+  const parsed = parseInt(String(val).trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
-  const shop = session.shop;
-  const formData = await request.formData();
-  const intent = formData.get("intent");
+  try {
+    const { session } = await authenticate.admin(request);
+    const shop = session.shop;
+    const formData = await request.formData();
+    const intent = formData.get("intent");
 
-  if (intent === "testSlack") {
-    const slackCheck = await checkFeatureAccess(shop, "slack");
-    if (!slackCheck.allowed) {
-      return {
-        success: false,
-        message: `Slack Alerts require the Business ($49) or Enterprise ($79) plan. Please upgrade your plan in Plans & Billing to enable Slack webhooks.`,
-      };
-    }
-
-    const slackUrl = formData.get("slackWebhookUrl");
-    if (!slackUrl) {
-      return { success: false, message: "Please provide a Slack Webhook URL first." };
-    }
-    try {
-      const resp = await fetch(slackUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: "*[Revertly Test Notification]*",
-          attachments: [
-            {
-              color: "#008060",
-              title: "Slack Alerts Connected Successfully!",
-              text: `Revertly is active for ${shop}. Critical price drops and anomaly incidents will be delivered to this channel in real time.`,
-              footer: "Revertly Product Guard",
-              ts: Math.floor(Date.now() / 1000),
-            },
-          ],
-        }),
-      });
-      if (resp.ok) {
-        return { success: true, message: "Test Slack alert delivered successfully!" };
-      } else {
-        return { success: false, message: `Slack webhook responded with status ${resp.status}` };
+    if (intent === "testSlack") {
+      const slackCheck = await checkFeatureAccess(shop, "slack");
+      if (!slackCheck.allowed) {
+        return {
+          success: false,
+          message: `Slack Alerts require the Business ($49) or Enterprise ($79) plan. Please upgrade your plan in Plans & Billing to enable Slack webhooks.`,
+        };
       }
-    } catch (err) {
-      return { success: false, message: `Failed to deliver Slack alert: ${err.message}` };
+
+      const slackUrl = formData.get("slackWebhookUrl")?.trim();
+      if (!slackUrl) {
+        return { success: false, message: "Please provide a Slack Webhook URL first." };
+      }
+      try {
+        const resp = await fetch(slackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: "*[Revertly Test Notification]*",
+            attachments: [
+              {
+                color: "#008060",
+                title: "Slack Alerts Connected Successfully!",
+                text: `Revertly is active for ${shop}. Critical price drops and anomaly incidents will be delivered to this channel in real time.`,
+                footer: "Revertly Product Guard",
+                ts: Math.floor(Date.now() / 1000),
+              },
+            ],
+          }),
+        });
+        if (resp.ok) {
+          return { success: true, message: "Test Slack alert delivered successfully!" };
+        } else {
+          return { success: false, message: `Slack webhook responded with status ${resp.status}` };
+        }
+      } catch (err) {
+        return { success: false, message: `Failed to deliver Slack alert: ${err.message}` };
+      }
     }
-  }
 
-  const [cbCheck, slackCheck] = await Promise.all([
-    checkFeatureAccess(shop, "circuitBreaker"),
-    checkFeatureAccess(shop, "slack"),
-  ]);
+    const [cbCheck, slackCheck, existing] = await Promise.all([
+      checkFeatureAccess(shop, "circuitBreaker"),
+      checkFeatureAccess(shop, "slack"),
+      getOrCreateSettings(shop),
+    ]);
 
-  const requestedCb = formData.get("circuitBreakerEnabled") === "true";
-  if (requestedCb && !cbCheck.allowed) {
+    const hasCbParam = formData.has("circuitBreakerEnabled");
+    const requestedCb = formData.get("circuitBreakerEnabled") === "true";
+
+    const circuitBreakerEnabled = cbCheck.allowed
+      ? (hasCbParam ? requestedCb : (existing.circuitBreakerEnabled || false))
+      : false;
+
+    const circuitBreakerThreshold = cbCheck.allowed && formData.has("circuitBreakerThreshold")
+      ? safeParseInt(formData.get("circuitBreakerThreshold"), existing.circuitBreakerThreshold || 50)
+      : (existing.circuitBreakerThreshold || 50);
+
+    const circuitBreakerAction = cbCheck.allowed && formData.has("circuitBreakerAction")
+      ? (formData.get("circuitBreakerAction") || existing.circuitBreakerAction || "DRAFT")
+      : (existing.circuitBreakerAction || "DRAFT");
+
+    const slackWebhookUrl = slackCheck.allowed
+      ? (formData.has("slackWebhookUrl") ? (formData.get("slackWebhookUrl")?.trim() || null) : existing.slackWebhookUrl)
+      : existing.slackWebhookUrl;
+
+    const alertEmail = formData.has("alertEmail") ? (formData.get("alertEmail")?.trim() || null) : existing.alertEmail;
+    const alertOnCritical = formData.has("alertOnCritical") ? formData.get("alertOnCritical") === "true" : existing.alertOnCritical;
+    const alertOnHigh = formData.has("alertOnHigh") ? formData.get("alertOnHigh") === "true" : existing.alertOnHigh;
+    const alertOnMedium = formData.has("alertOnMedium") ? formData.get("alertOnMedium") === "true" : existing.alertOnMedium;
+    const monitoringEnabled = formData.has("monitoringEnabled") ? formData.get("monitoringEnabled") === "true" : existing.monitoringEnabled;
+
+    const bulkThreshold = safeParseInt(formData.get("bulkThreshold"), existing.bulkThreshold || 20);
+    const bulkWindowMinutes = safeParseInt(formData.get("bulkWindowMinutes"), existing.bulkWindowMinutes || 10);
+
+    await prisma.appSettings.upsert({
+      where: { shop },
+      create: {
+        shop,
+        alertEmail,
+        alertOnCritical,
+        alertOnHigh,
+        alertOnMedium,
+        monitoringEnabled,
+        bulkThreshold,
+        bulkWindowMinutes,
+        slackWebhookUrl,
+        circuitBreakerEnabled,
+        circuitBreakerThreshold,
+        circuitBreakerAction,
+      },
+      update: {
+        alertEmail,
+        alertOnCritical,
+        alertOnHigh,
+        alertOnMedium,
+        monitoringEnabled,
+        bulkThreshold,
+        bulkWindowMinutes,
+        slackWebhookUrl,
+        circuitBreakerEnabled,
+        circuitBreakerThreshold,
+        circuitBreakerAction,
+      },
+    });
+
+    return { success: true, message: "Settings saved successfully." };
+  } catch (err) {
+    console.error("[Revertly Settings Error] Failed to save settings:", err);
     return {
       success: false,
-      message: `Emergency Circuit Breaker is only available on Business ($49) and Enterprise ($79) plans. Upgrade your plan to enable automatic protection.`,
+      message: `Failed to save settings: ${err?.message || "An unexpected database error occurred. Please try again."}`,
     };
   }
-
-  const requestedSlack = Boolean(formData.get("slackWebhookUrl") && formData.get("slackWebhookUrl").trim() !== "");
-  if (requestedSlack && !slackCheck.allowed) {
-    return {
-      success: false,
-      message: `Slack Webhook Alerts are only available on Business ($49) and Enterprise ($79) plans. Upgrade your plan to connect Slack channels.`,
-    };
-  }
-
-  await prisma.appSettings.update({
-    where: { shop },
-    data: {
-      alertEmail: formData.get("alertEmail") || null,
-      alertOnCritical: formData.get("alertOnCritical") === "true",
-      alertOnHigh: formData.get("alertOnHigh") === "true",
-      alertOnMedium: formData.get("alertOnMedium") === "true",
-      monitoringEnabled: formData.get("monitoringEnabled") === "true",
-      bulkThreshold: parseInt(formData.get("bulkThreshold") || "20"),
-      bulkWindowMinutes: parseInt(formData.get("bulkWindowMinutes") || "10"),
-      slackWebhookUrl: slackCheck.allowed ? (formData.get("slackWebhookUrl") || null) : null,
-      circuitBreakerEnabled: cbCheck.allowed ? requestedCb : false,
-      circuitBreakerThreshold: parseInt(formData.get("circuitBreakerThreshold") || "50"),
-      circuitBreakerAction: formData.get("circuitBreakerAction") || "DRAFT",
-    },
-  });
-
-  return { success: true, message: "Settings saved successfully." };
 };
 
 export default function Settings() {
@@ -154,433 +209,813 @@ export default function Settings() {
     settings,
     hasCircuitBreakerAccess = false,
     hasSlackAccess = false,
+    plan = "free",
     themeEmbedActive = false,
     activeThemeName = "Dawn",
     themeEditorUrl = "",
   } = useLoaderData();
+
   const fetcher = useFetcher();
   const result = fetcher.data;
-  const isSaving = fetcher.state !== "idle";
+  const isSaving = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "save";
+  const isTestingSlack = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "testSlack";
+
+  // Navigation tab
+  const [activeTab, setActiveTab] = useState("all");
+
+  // Local form states for real-time reactivity
+  const [monitoringEnabled, setMonitoringEnabled] = useState(settings?.monitoringEnabled ?? true);
+  const [circuitBreakerEnabled, setCircuitBreakerEnabled] = useState(Boolean(hasCircuitBreakerAccess && settings?.circuitBreakerEnabled));
+  const [threshold, setThreshold] = useState(settings?.circuitBreakerThreshold || 50);
+  const [actionChoice, setActionChoice] = useState(settings?.circuitBreakerAction || "DRAFT");
   const [slackUrl, setSlackUrl] = useState(settings?.slackWebhookUrl || "");
+  const [alertCritical, setAlertCritical] = useState(settings?.alertOnCritical ?? true);
+  const [alertHigh, setAlertHigh] = useState(settings?.alertOnHigh ?? true);
+  const [alertMedium, setAlertMedium] = useState(settings?.alertOnMedium ?? false);
+
+  const numThreshold = parseInt(String(threshold), 10) || 50;
+  const sampleReducedPrice = Math.max(0, 100 * (1 - numThreshold / 100)).toFixed(0);
+
+  const navItems = [
+    { id: "all", label: "All Settings", icon: SettingsIcon, statusBadge: null, statusTone: "neutral" },
+    { id: "monitoring", label: "Catalog Monitoring", icon: ClockIcon, statusBadge: monitoringEnabled ? "Active" : "Paused", statusTone: monitoringEnabled ? "success" : "neutral" },
+    { id: "circuit", label: "Price Crash Breaker", icon: ZapIcon, statusBadge: circuitBreakerEnabled ? "Armed" : "Off", statusTone: circuitBreakerEnabled ? "warning" : "neutral" },
+    { id: "bulk", label: "Anomaly Detection", icon: BoxIcon, statusBadge: `${settings?.bulkThreshold ?? 20} items`, statusTone: "neutral" },
+    { id: "alerts", label: "Alert Channels", icon: BellIcon, statusBadge: hasSlackAccess ? "Slack + Email" : "Email", statusTone: "neutral" },
+    { id: "embed", label: "Storefront Embed", icon: ShieldCheckIcon, statusBadge: themeEmbedActive ? "Active" : "Setup", statusTone: themeEmbedActive ? "success" : "warning" },
+  ];
 
   return (
-    <s-page heading="Settings" inlineSize="large">
+    <s-page heading="Settings" inlineSize="full">
+      <div className="rv-settings-wrapper">
 
-      {/* ── Action Result Banner ── */}
-      {result?.message && (
-        <div
-          style={{
-            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
-            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
-            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "14px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
-        >
-          <span>{result.success ? "✅" : "⚠️"}</span>
-          <span>{result.message}</span>
-        </div>
-      )}
-
-      <fetcher.Form method="POST">
-        <input type="hidden" name="intent" value="save" />
-
-        {/* ── Top Header & Save CTA ── */}
-        <div className="rv-hero-banner">
-          <div>
-            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
-              Protection Configuration &amp; Alert Routing
-            </strong>
-            <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-              Configure automatic catalog watchdog filters, price crash circuit breakers, and emergency alert channels.
-            </p>
-          </div>
-          <button
-            type="submit"
-            disabled={isSaving}
-            className="rv-btn rv-btn-primary"
-            style={{ fontWeight: 600, padding: "10px 22px" }}
+        {/* Action Result Banner */}
+        {result?.message && (
+          <Banner
+            tone={result.success ? "success" : "critical"}
+            title={result.success ? "Settings Saved" : "Settings Error"}
+            className="rv-fade-in"
           >
-            {isSaving ? "Saving..." : "Save All Settings"}
-          </button>
-        </div>
+            {result.message}
+          </Banner>
+        )}
 
-        {/* ── Theme App Embed Protection ── */}
-        <div className="rv-card">
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>🎨</span> Theme App Embed (Storefront Protection)
-            </h3>
-            {themeEmbedActive ? (
-              <span className="rv-badge rv-badge-success">● Active in {activeThemeName}</span>
-            ) : (
-              <span className="rv-badge rv-badge-warning">○ Action Required</span>
-            )}
-          </div>
-          <div className="rv-card-body">
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "12px",
-                background: themeEmbedActive ? "rgba(16, 185, 129, 0.06)" : "rgba(245, 158, 11, 0.08)",
-                border: `1px solid ${themeEmbedActive ? "rgba(16, 185, 129, 0.25)" : "rgba(245, 158, 11, 0.3)"}`,
-                borderRadius: "var(--rv-radius-sm)",
-                padding: "16px",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
-                <div>
-                  <h4 style={{ margin: "0 0 4px", fontSize: "14px", fontWeight: 600, color: "var(--rv-text)" }}>
-                    {themeEmbedActive ? "✅ Revertly Protection App Embed is Enabled" : "⚠️ Revertly Protection App Embed is not yet enabled"}
-                  </h4>
-                  <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-                    {themeEmbedActive
-                      ? `Your active theme (${activeThemeName}) has Revertly Protection enabled. Storefront activity monitoring, rollback checkpoints, and trust badges are active.`
-                      : `To enable storefront change monitoring and optional trust badges, please enable Revertly in your Shopify Theme Customizer under App Embeds.`}
-                  </p>
-                </div>
-                <a
-                  href={themeEditorUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="rv-btn rv-btn-primary"
-                  style={{
-                    fontSize: "13px",
-                    padding: "8px 16px",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    textDecoration: "none",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <span>🎨</span>
-                  <span>{themeEmbedActive ? "Configure in Theme Editor" : "Enable in Theme Editor"}</span>
-                  <span style={{ fontSize: "11px" }}>↗</span>
-                </a>
+        <fetcher.Form method="POST">
+          <input type="hidden" name="intent" value="save" />
+
+          {/* Top Hero Banner */}
+          <div
+            className="rv-hero-banner"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "16px",
+              marginBottom: "24px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+              <div
+                className="rv-card-icon-badge success"
+                style={{ width: "42px", height: "42px", borderRadius: "var(--rv-radius-md)" }}
+              >
+                <SettingsIcon size={22} />
               </div>
-
-              {!themeEmbedActive && (
-                <div style={{ borderTop: "1px dashed rgba(245, 158, 11, 0.3)", paddingTop: "12px", marginTop: "4px" }}>
-                  <strong style={{ fontSize: "12px", color: "var(--rv-text)", display: "block", marginBottom: "6px" }}>
-                    Quick Setup Instructions:
-                  </strong>
-                  <ol style={{ margin: 0, paddingLeft: "18px", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.6 }}>
-                    <li>Click <strong>Enable in Theme Editor</strong> above to open the theme customizer.</li>
-                    <li>In the left sidebar, locate <strong>Revertly Protection</strong> under <em>App embeds</em>.</li>
-                    <li>Toggle the switch <strong>ON</strong>.</li>
-                    <li>Click <strong>Save</strong> in the top right corner.</li>
-                  </ol>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* ── 1. Catalog Monitoring ── */}
-        <div className="rv-card">
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>📡</span> Real-Time Catalog Monitoring
-            </h3>
-          </div>
-          <div className="rv-card-body">
-            <label className="rv-toggle-row" style={{ background: "#ffffff", padding: "14px 16px" }}>
-              <input
-                type="checkbox"
-                name="monitoringEnabled"
-                value="true"
-                defaultChecked={settings.monitoringEnabled}
-                style={{ width: "18px", height: "18px", marginTop: "2px" }}
-              />
               <div>
-                <strong style={{ fontSize: "14px", color: "var(--rv-text)" }}>
-                  Enable Real-Time Catalog Monitoring
-                </strong>
-                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-                  When enabled, Revertly listens to instant Shopify product updates and deletion events to capture baseline drifts, unauthorized price changes, and inventory discrepancies in real time.
+                <h1 style={{ fontSize: "18px", fontWeight: 800, color: "var(--rv-text)", margin: "0 0 3px" }}>
+                  Store Protection &amp; Alert Engine
+                </h1>
+                <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                  Automate catalog change defense, price crash circuit breakers, and operations alerting.
                 </p>
               </div>
-            </label>
-          </div>
-        </div>
+            </div>
 
-        {/* ── 2. Emergency Circuit Breaker ── */}
-        <div className="rv-card" style={{ opacity: hasCircuitBreakerAccess ? 1 : 0.85 }}>
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>⚡</span> Emergency Circuit Breaker (Price Crash Guard)
-            </h3>
-            {hasCircuitBreakerAccess ? (
-              <span className="rv-badge rv-badge-warning">Revenue Protection</span>
-            ) : (
-              <span className="rv-badge rv-badge-neutral">Requires Business Plan ($49/mo)</span>
-            )}
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="rv-btn rv-btn-primary rv-btn-lg"
+              style={{ minWidth: "160px" }}
+            >
+              <SaveIcon size={16} />
+              <span>{isSaving ? "Saving Settings..." : "Save All Settings"}</span>
+            </button>
           </div>
-          <div className="rv-card-body">
-            {!hasCircuitBreakerAccess && (
+
+          {/* 2-Column Responsive Layout */}
+          <div className="rv-settings-grid">
+
+            {/* Left Sidebar: Navigation & Protection Health Card */}
+            <aside className="rv-settings-sidebar">
+              <nav className="rv-settings-nav" aria-label="Settings Categories">
+                <div style={{ padding: "6px 10px 4px", fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--rv-text-subdued)" }}>
+                  Settings Menu
+                </div>
+                {navItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`rv-settings-nav-item ${isActive ? "active" : ""}`}
+                      onClick={() => setActiveTab(item.id)}
+                    >
+                      <div className="rv-settings-nav-item-content">
+                        <span className="rv-settings-nav-icon">
+                          <Icon size={16} />
+                        </span>
+                        <span>{item.label}</span>
+                      </div>
+                      {item.statusBadge && (
+                        <span className={`rv-badge rv-badge-${item.statusTone} rv-badge-sm`} style={{ fontSize: "10px", padding: "1px 6px" }}>
+                          {item.statusBadge}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </nav>
+
+              {/* Store Protection Overview Card */}
               <div
+                className="rv-card"
                 style={{
-                  background: "#fff4f2",
-                  border: "1px solid #fed2cd",
-                  borderRadius: "var(--rv-radius-sm)",
-                  padding: "10px 14px",
-                  fontSize: "12px",
-                  color: "#d72c0d",
-                  marginBottom: "16px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
+                  padding: "16px",
+                  margin: 0,
+                  background: "linear-gradient(135deg, var(--rv-surface) 0%, var(--rv-surface-subdued) 100%)",
+                  border: "1px solid var(--rv-border)",
                 }}
               >
-                <span>🔒 Emergency Circuit Breaker requires the Business or Enterprise tier to automate product auto-drafting.</span>
-                <Link to="/app/plan" className="rv-btn rv-btn-primary" style={{ fontSize: "11px", padding: "4px 10px" }}>
-                  Upgrade
-                </Link>
-              </div>
-            )}
-
-            <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 16px", lineHeight: 1.5 }}>
-              Protect your store from catastrophic revenue loss. If a bulk CSV upload, third-party pricing app, or staff mistake drops prices below safe margins, the circuit breaker triggers immediate defensive action.
-            </p>
-
-            <label className="rv-toggle-row" style={{ background: "#ffffff", padding: "14px 16px", marginBottom: "16px", cursor: hasCircuitBreakerAccess ? "pointer" : "not-allowed" }}>
-              <input
-                type="checkbox"
-                name="circuitBreakerEnabled"
-                value="true"
-                disabled={!hasCircuitBreakerAccess}
-                defaultChecked={hasCircuitBreakerAccess && settings.circuitBreakerEnabled}
-                style={{ width: "18px", height: "18px", marginTop: "2px" }}
-              />
-              <div>
-                <strong style={{ fontSize: "14px", color: "var(--rv-text)" }}>
-                  Activate Price Crash Circuit Breaker
-                </strong>
-                <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-                  Immediately intervene when a sudden price drop exceeds your defined safety percentage.
-                </p>
-              </div>
-            </label>
-
-            <div className="rv-form-grid" style={{ opacity: hasCircuitBreakerAccess ? 1 : 0.6 }}>
-              <div className="rv-form-field">
-                <label className="rv-form-label">Price Crash Trigger Threshold (%)</label>
-                <input
-                  type="number"
-                  name="circuitBreakerThreshold"
-                  disabled={!hasCircuitBreakerAccess}
-                  defaultValue={String(settings.circuitBreakerThreshold || 50)}
-                  className="rv-input"
-                />
-                <span className="rv-form-help">Trigger when variant price drops by this percentage or more.</span>
-              </div>
-
-              <div className="rv-form-field">
-                <label className="rv-form-label">Emergency Defensive Action</label>
-                <select
-                  name="circuitBreakerAction"
-                  disabled={!hasCircuitBreakerAccess}
-                  defaultValue={settings.circuitBreakerAction || "DRAFT"}
-                  className="rv-select"
-                >
-                  <option value="DRAFT">Set Product to DRAFT (Hide from storefront instantly)</option>
-                  <option value="AUTO_REVERT">Auto-Revert Price (Restore previous baseline price)</option>
-                </select>
-                <span className="rv-form-help">Action taken automatically when a crash is detected.</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── 3. Bulk Change Detection ── */}
-        <div className="rv-card">
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>📦</span> Bulk Change Anomaly Detection
-            </h3>
-          </div>
-          <div className="rv-card-body">
-            <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 16px" }}>
-              Automatically create a high-priority incident when more than the threshold of products are modified within a short burst window.
-            </p>
-
-            <div className="rv-form-grid">
-              <div className="rv-form-field">
-                <label className="rv-form-label">Bulk Product Threshold</label>
-                <input
-                  type="number"
-                  name="bulkThreshold"
-                  defaultValue={String(settings.bulkThreshold)}
-                  className="rv-input"
-                />
-                <span className="rv-form-help">Trigger incident if this many products change...</span>
-              </div>
-
-              <div className="rv-form-field">
-                <label className="rv-form-label">Time Window (Minutes)</label>
-                <input
-                  type="number"
-                  name="bulkWindowMinutes"
-                  defaultValue={String(settings.bulkWindowMinutes)}
-                  className="rv-input"
-                />
-                <span className="rv-form-help">...within this number of minutes.</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── 4. Alert Routing (Email & Slack) ── */}
-        <div className="rv-card">
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>🔔</span> Alert Channels &amp; Notifications
-            </h3>
-          </div>
-          <div className="rv-card-body">
-            <div className="rv-form-field" style={{ marginBottom: "20px" }}>
-              <label className="rv-form-label">Alert Email Address</label>
-              <input
-                type="email"
-                name="alertEmail"
-                defaultValue={settings.alertEmail || ""}
-                placeholder="merchant@example.com"
-                className="rv-input"
-                style={{ maxWidth: "420px" }}
-              />
-              <span className="rv-form-help">Incidents and circuit breaker activations will be sent here.</span>
-            </div>
-
-            {/* Slack Webhook */}
-            <div className="rv-form-field" style={{ marginBottom: "20px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
-                <label className="rv-form-label" style={{ margin: 0 }}>Slack Incoming Webhook URL</label>
-                {!hasSlackAccess && (
-                  <span className="rv-badge rv-badge-neutral" style={{ fontSize: "10px" }}>
-                    Requires Business Plan ($49/mo)
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                  <ShieldCheckIcon size={18} style={{ color: "var(--rv-primary)" }} />
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--rv-text)" }}>
+                    Protection Status
                   </span>
-                )}
-              </div>
-
-              {!hasSlackAccess ? (
-                <div
-                  style={{
-                    background: "#fff4f2",
-                    border: "1px solid #fed2cd",
-                    borderRadius: "var(--rv-radius-sm)",
-                    padding: "10px 14px",
-                    fontSize: "12px",
-                    color: "#d72c0d",
-                    maxWidth: "600px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <span>🔒 Real-time Slack Webhook alerts require the Business or Enterprise tier.</span>
-                  <Link to="/app/plan" className="rv-btn rv-btn-primary" style={{ fontSize: "11px", padding: "4px 10px" }}>
-                    Upgrade
-                  </Link>
                 </div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", maxWidth: "600px" }}>
-                  <input
-                    type="url"
-                    name="slackWebhookUrl"
-                    value={slackUrl}
-                    onChange={(e) => setSlackUrl(e.target.value)}
-                    placeholder="https://hooks.slack.com/services/T.../B.../..."
-                    className="rv-input"
-                    style={{ flexGrow: 1 }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      fetcher.submit(
-                        { intent: "testSlack", slackWebhookUrl: slackUrl },
-                        { method: "POST" }
-                      );
-                    }}
-                    className="rv-btn rv-btn-secondary"
-                  >
-                    🔔 Send Test Alert
-                  </button>
+                <p style={{ margin: "0 0 12px", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                  Webhooks are active and syncing changes in real time.
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "12px", borderTop: "1px solid var(--rv-border-subtle)", paddingTop: "10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "var(--rv-text-subdued)" }}>Active Plan:</span>
+                    <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ fontWeight: 700, textTransform: "uppercase" }}>
+                      {plan}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "var(--rv-text-subdued)" }}>Monitoring:</span>
+                    <span style={{ fontWeight: 600, color: monitoringEnabled ? "var(--rv-primary)" : "var(--rv-text-subdued)" }}>
+                      {monitoringEnabled ? "Enabled" : "Paused"}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "var(--rv-text-subdued)" }}>Circuit Breaker:</span>
+                    <span style={{ fontWeight: 600, color: circuitBreakerEnabled ? "var(--rv-warning)" : "var(--rv-text-subdued)" }}>
+                      {circuitBreakerEnabled ? "Armed" : "Inactive"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </aside>
+
+            {/* Right Column: Settings Cards */}
+            <main style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+
+              {/* ── 1. Catalog Monitoring Card ── */}
+              {(activeTab === "all" || activeTab === "monitoring") && (
+                <div className="rv-card" style={{ margin: 0 }}>
+                  <div className="rv-card-header">
+                    <div className="rv-card-icon-title">
+                      <div className="rv-card-icon-badge info">
+                        <ClockIcon size={18} />
+                      </div>
+                      <div>
+                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
+                          Real-Time Catalog Monitoring
+                        </h3>
+                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          Background event listener for price drops, title changes, and inventory spikes.
+                        </p>
+                      </div>
+                    </div>
+                    <span className={`rv-badge ${monitoringEnabled ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                      {monitoringEnabled ? "Actively Protecting" : "Paused"}
+                    </span>
+                  </div>
+
+                  <div className="rv-card-body">
+                    {/* Modern Switch Row */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "16px",
+                        padding: "16px 18px",
+                        background: "var(--rv-surface-subdued)",
+                        borderRadius: "var(--rv-radius-sm)",
+                        border: "1px solid var(--rv-border-subtle)",
+                        marginBottom: "16px",
+                      }}
+                    >
+                      <div>
+                        <label
+                          htmlFor="set-monitoring"
+                          style={{ fontSize: "14px", fontWeight: 600, color: "var(--rv-text)", display: "block", cursor: "pointer", marginBottom: "2px" }}
+                        >
+                          Enable Real-Time Catalog Monitoring
+                        </label>
+                        <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5, display: "block" }}>
+                          Capture instant Shopify webhooks for product edits and inventory events to maintain drift history.
+                        </span>
+                      </div>
+                      <div className="rv-switch">
+                        <input
+                          id="set-monitoring"
+                          type="checkbox"
+                          name="monitoringEnabled"
+                          value="true"
+                          checked={monitoringEnabled}
+                          onChange={(e) => setMonitoringEnabled(e.target.checked)}
+                        />
+                        <label htmlFor="set-monitoring" className="rv-switch-slider">
+                          <span className="rv-sr-only">Toggle Real-Time Catalog Monitoring</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Monitored Webhook Events Grid */}
+                    <div>
+                      <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--rv-text-subdued)", display: "block", marginBottom: "8px" }}>
+                        Active Monitored Webhook Channels:
+                      </span>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "8px" }}>
+                        {[
+                          { title: "Price Adjustments", desc: "Variants & Compare-at prices" },
+                          { title: "Product Deletions", desc: "Deleted item recovery guard" },
+                          { title: "Inventory Depletions", desc: "Out-of-stock anomaly watch" },
+                          { title: "Metafield Updates", desc: "Custom fields & SEO tags" },
+                        ].map((evt, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              padding: "8px 12px",
+                              background: "#ffffff",
+                              border: "1px solid var(--rv-border-subtle)",
+                              borderRadius: "var(--rv-radius-sm)",
+                              fontSize: "12px",
+                            }}
+                          >
+                            <CheckCircleIcon size={14} style={{ color: "var(--rv-primary)", flexShrink: 0 }} />
+                            <div>
+                              <strong style={{ display: "block", color: "var(--rv-text)" }}>{evt.title}</strong>
+                              <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>{evt.desc}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
-              <span className="rv-form-help">Receive real-time notifications directly into your team&apos;s Slack channel.</span>
-            </div>
 
-            {/* Severity Checkboxes */}
-            <div>
-              <label className="rv-form-label" style={{ marginBottom: "8px", display: "block" }}>
-                Notify on Incidents of Severity:
-              </label>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    name="alertOnCritical"
-                    value="true"
-                    defaultChecked={settings.alertOnCritical}
-                  />
-                  <span>
-                    <span className="rv-badge rv-badge-critical" style={{ marginRight: "6px" }}>CRITICAL</span>
-                    Price crashes, mass deletions, and catastrophic errors
-                  </span>
-                </label>
+              {/* ── 2. Price Crash Circuit Breaker Card ── */}
+              {(activeTab === "all" || activeTab === "circuit") && (
+                <div className="rv-card" style={{ margin: 0, opacity: hasCircuitBreakerAccess ? 1 : 0.9 }}>
+                  <div className="rv-card-header">
+                    <div className="rv-card-icon-title">
+                      <div className="rv-card-icon-badge warning">
+                        <ZapIcon size={18} />
+                      </div>
+                      <div>
+                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
+                          Emergency Circuit Breaker (Price Crash Guard)
+                        </h3>
+                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          Automatic emergency defensive action when sudden price drops threaten merchant revenue.
+                        </p>
+                      </div>
+                    </div>
+                    {hasCircuitBreakerAccess ? (
+                      <span className="rv-badge rv-badge-warning">
+                        {circuitBreakerEnabled ? "Armed & Protecting" : "Disarmed"}
+                      </span>
+                    ) : (
+                      <span className="rv-badge rv-badge-neutral">Requires Business Plan</span>
+                    )}
+                  </div>
 
-                <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    name="alertOnHigh"
-                    value="true"
-                    defaultChecked={settings.alertOnHigh}
-                  />
-                  <span>
-                    <span className="rv-badge rv-badge-warning" style={{ marginRight: "6px" }}>HIGH</span>
-                    Bulk discount anomalies and sudden variant updates
-                  </span>
-                </label>
+                  <div className="rv-card-body">
+                    {!hasCircuitBreakerAccess && (
+                      <div
+                        style={{
+                          background: "var(--rv-warning-surface)",
+                          border: "1px solid var(--rv-warning-border)",
+                          borderRadius: "var(--rv-radius-sm)",
+                          padding: "12px 16px",
+                          fontSize: "13px",
+                          color: "var(--rv-text)",
+                          marginBottom: "16px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "12px",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <AlertTriangleIcon size={16} style={{ color: "var(--rv-warning)", flexShrink: 0 }} />
+                          <span>Emergency Circuit Breaker is an automated revenue guard available on <strong>Business</strong> and <strong>Enterprise</strong> tiers.</span>
+                        </div>
+                        <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+                          Upgrade to Business ($49/mo)
+                        </Link>
+                      </div>
+                    )}
 
-                <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    name="alertOnMedium"
-                    value="true"
-                    defaultChecked={settings.alertOnMedium}
+                    {/* Switch Row */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "16px",
+                        padding: "16px 18px",
+                        background: "var(--rv-surface-subdued)",
+                        borderRadius: "var(--rv-radius-sm)",
+                        border: "1px solid var(--rv-border-subtle)",
+                        marginBottom: "18px",
+                      }}
+                    >
+                      <div>
+                        <label
+                          htmlFor="set-circuit-breaker"
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: 600,
+                            color: "var(--rv-text)",
+                            display: "block",
+                            cursor: hasCircuitBreakerAccess ? "pointer" : "not-allowed",
+                            marginBottom: "2px",
+                          }}
+                        >
+                          Activate Price Crash Circuit Breaker
+                        </label>
+                        <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5, display: "block" }}>
+                          Intervene instantly if an unauthorized CSV upload or rogue app drops prices past safety margins.
+                        </span>
+                      </div>
+                      <div className={`rv-switch ${!hasCircuitBreakerAccess ? "disabled" : ""}`}>
+                        <input
+                          id="set-circuit-breaker"
+                          type="checkbox"
+                          name="circuitBreakerEnabled"
+                          value="true"
+                          disabled={!hasCircuitBreakerAccess}
+                          checked={circuitBreakerEnabled}
+                          onChange={(e) => setCircuitBreakerEnabled(e.target.checked)}
+                        />
+                        <label htmlFor="set-circuit-breaker" className="rv-switch-slider">
+                          <span className="rv-sr-only">Toggle Price Crash Circuit Breaker</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Interactive Live Formula / Simulation Box */}
+                    <div
+                      style={{
+                        background: "linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.02) 100%)",
+                        border: "1px solid var(--rv-warning-border)",
+                        borderRadius: "var(--rv-radius-sm)",
+                        padding: "14px 16px",
+                        marginBottom: "18px",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, color: "var(--rv-warning)", marginBottom: "4px" }}>
+                        <ZapIcon size={14} />
+                        <span>Live Protection Formula:</span>
+                      </div>
+                      <p style={{ margin: 0, color: "var(--rv-text)", lineHeight: 1.5 }}>
+                        If a product priced at <strong>$100.00</strong> suddenly drops by <strong>{numThreshold}%</strong> or more (to <strong>${sampleReducedPrice}</strong> or less), Revertly will automatically <strong>{actionChoice === "DRAFT" ? "switch it to DRAFT to instantly hide it from customers" : "auto-revert the price to its baseline"}</strong>.
+                      </p>
+                    </div>
+
+                    {/* Inputs */}
+                    <div className="rv-form-grid" style={{ opacity: hasCircuitBreakerAccess && circuitBreakerEnabled ? 1 : 0.65 }}>
+                      <div className="rv-form-field">
+                        <label htmlFor="circuit-breaker-threshold" className="rv-form-label">
+                          Crash Trigger Threshold (%)
+                        </label>
+                        <div className="rv-input-group">
+                          <input
+                            id="circuit-breaker-threshold"
+                            type="number"
+                            min="5"
+                            max="95"
+                            name="circuitBreakerThreshold"
+                            disabled={!hasCircuitBreakerAccess}
+                            value={threshold}
+                            onChange={(e) => setThreshold(e.target.value)}
+                            className="rv-input"
+                          />
+                          <span className="rv-input-suffix">% price drop</span>
+                        </div>
+                        <span className="rv-form-help">Trigger when variant price drops by this percentage or more.</span>
+                      </div>
+
+                      <div className="rv-form-field">
+                        <label htmlFor="circuit-breaker-action" className="rv-form-label">
+                          Emergency Defensive Action
+                        </label>
+                        <select
+                          id="circuit-breaker-action"
+                          name="circuitBreakerAction"
+                          disabled={!hasCircuitBreakerAccess}
+                          value={actionChoice}
+                          onChange={(e) => setActionChoice(e.target.value)}
+                          className="rv-select"
+                        >
+                          <option value="DRAFT">Set Product to DRAFT (Hide from storefront instantly)</option>
+                          <option value="AUTO_REVERT">Auto-Revert Price (Restore previous baseline price)</option>
+                        </select>
+                        <span className="rv-form-help">Action taken automatically within seconds of webhook detection.</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── 3. Bulk Change Anomaly Detection Card ── */}
+              {(activeTab === "all" || activeTab === "bulk") && (
+                <div className="rv-card" style={{ margin: 0 }}>
+                  <div className="rv-card-header">
+                    <div className="rv-card-icon-title">
+                      <div className="rv-card-icon-badge info">
+                        <BoxIcon size={18} />
+                      </div>
+                      <div>
+                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
+                          Bulk Change Anomaly Detection
+                        </h3>
+                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          Detect and quarantine rogue bulk syncs, CSV import mistakes, or third-party app crashes.
+                        </p>
+                      </div>
+                    </div>
+                    <span className="rv-badge rv-badge-neutral">Burst Guard</span>
+                  </div>
+
+                  <div className="rv-card-body">
+                    <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 16px", lineHeight: 1.5 }}>
+                      When products are modified in sudden bursts exceeding your threshold, Revertly registers a high-priority incident and alerts your team immediately.
+                    </p>
+
+                    <div className="rv-form-grid">
+                      <div className="rv-form-field">
+                        <label htmlFor="bulk-threshold" className="rv-form-label">
+                          Bulk Product Threshold
+                        </label>
+                        <div className="rv-input-group">
+                          <input
+                            id="bulk-threshold"
+                            type="number"
+                            min="1"
+                            max="1000"
+                            name="bulkThreshold"
+                            defaultValue={String(settings?.bulkThreshold ?? 20)}
+                            className="rv-input"
+                          />
+                          <span className="rv-input-suffix">products</span>
+                        </div>
+                        <span className="rv-form-help">Trigger incident if this many products change...</span>
+                      </div>
+
+                      <div className="rv-form-field">
+                        <label htmlFor="bulk-window-minutes" className="rv-form-label">
+                          Burst Time Window
+                        </label>
+                        <div className="rv-input-group">
+                          <input
+                            id="bulk-window-minutes"
+                            type="number"
+                            min="1"
+                            max="120"
+                            name="bulkWindowMinutes"
+                            defaultValue={String(settings?.bulkWindowMinutes ?? 10)}
+                            className="rv-input"
+                          />
+                          <span className="rv-input-suffix">minutes</span>
+                        </div>
+                        <span className="rv-form-help">...within this sliding time window.</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── 4. Alert Channels & Notifications Card ── */}
+              {(activeTab === "all" || activeTab === "alerts") && (
+                <div className="rv-card" style={{ margin: 0 }}>
+                  <div className="rv-card-header">
+                    <div className="rv-card-icon-title">
+                      <div className="rv-card-icon-badge neutral">
+                        <BellIcon size={18} />
+                      </div>
+                      <div>
+                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
+                          Alert Channels &amp; Notifications
+                        </h3>
+                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          Deliver instant warnings to your operations team via Email and Slack webhooks.
+                        </p>
+                      </div>
+                    </div>
+                    <span className="rv-badge rv-badge-neutral">Instant Delivery</span>
+                  </div>
+
+                  <div className="rv-card-body">
+                    {/* Email Input */}
+                    <div className="rv-form-field" style={{ marginBottom: "22px" }}>
+                      <label htmlFor="alert-email" className="rv-form-label">
+                        Primary Alert Email Address
+                      </label>
+                      <div className="rv-search-wrapper" style={{ width: "100%", maxWidth: "460px" }}>
+                        <span className="rv-search-icon">
+                          <MailIcon size={16} />
+                        </span>
+                        <input
+                          id="alert-email"
+                          type="email"
+                          name="alertEmail"
+                          defaultValue={settings?.alertEmail || ""}
+                          placeholder="merchant-security@example.com"
+                          className="rv-input rv-input-with-icon"
+                          style={{ width: "100%" }}
+                        />
+                      </div>
+                      <span className="rv-form-help">Incidents, circuit breaker trips, and recovery confirmations are sent here.</span>
+                    </div>
+
+                    {/* Slack Webhook */}
+                    <div className="rv-form-field" style={{ marginBottom: "24px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                        <label htmlFor="slack-webhook-url" className="rv-form-label" style={{ margin: 0 }}>
+                          Slack Incoming Webhook URL
+                        </label>
+                        {!hasSlackAccess && (
+                          <span className="rv-badge rv-badge-neutral rv-badge-sm">
+                            Requires Business Plan ($49/mo)
+                          </span>
+                        )}
+                      </div>
+
+                      {!hasSlackAccess ? (
+                        <div
+                          style={{
+                            background: "var(--rv-surface-subdued)",
+                            border: "1px dashed var(--rv-border)",
+                            borderRadius: "var(--rv-radius-sm)",
+                            padding: "14px 18px",
+                            fontSize: "13px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: "12px",
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span style={{ color: "var(--rv-text-subdued)" }}>
+                            Real-time Slack Webhook notifications require the <strong>Business</strong> or <strong>Enterprise</strong> plan.
+                          </span>
+                          <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+                            Upgrade to Business
+                          </Link>
+                        </div>
+                      ) : (
+                        <div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", maxWidth: "640px" }}>
+                            <input
+                              id="slack-webhook-url"
+                              type="url"
+                              name="slackWebhookUrl"
+                              value={slackUrl}
+                              onChange={(e) => setSlackUrl(e.target.value)}
+                              placeholder="https://hooks.slack.com/services/T.../B.../..."
+                              className="rv-input"
+                              style={{ flex: 1, minWidth: "260px" }}
+                            />
+                            <button
+                              type="button"
+                              disabled={isTestingSlack}
+                              onClick={() => {
+                                fetcher.submit(
+                                  { intent: "testSlack", slackWebhookUrl: slackUrl },
+                                  { method: "POST" }
+                                );
+                              }}
+                              className="rv-btn rv-btn-secondary"
+                            >
+                              <BellIcon size={14} />
+                              <span>{isTestingSlack ? "Delivering Test..." : "Send Test Alert"}</span>
+                            </button>
+                          </div>
+                          <span className="rv-form-help">Post automated incident cards into your team&apos;s Slack channel.</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Interactive Severity Selection Cards */}
+                    <div>
+                      <div className="rv-form-label" style={{ marginBottom: "10px", display: "block" }}>
+                        Notify on Incidents of Severity:
+                      </div>
+                      <div className="rv-severity-grid">
+
+                        {/* Critical Card */}
+                        <div className={`rv-severity-card critical ${alertCritical ? "selected" : ""}`}>
+                          <input
+                            id="alert-critical"
+                            type="checkbox"
+                            name="alertOnCritical"
+                            value="true"
+                            checked={alertCritical}
+                            onChange={(e) => setAlertCritical(e.target.checked)}
+                            style={{ marginTop: "3px", cursor: "pointer" }}
+                          />
+                          <label htmlFor="alert-critical" style={{ cursor: "pointer", flex: 1 }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                              <span className="rv-badge rv-badge-critical rv-badge-sm">CRITICAL</span>
+                            </span>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
+                              Price crashes, mass deletions, and circuit breaker activations.
+                            </span>
+                          </label>
+                        </div>
+
+                        {/* High Card */}
+                        <div className={`rv-severity-card warning ${alertHigh ? "selected" : ""}`}>
+                          <input
+                            id="alert-high"
+                            type="checkbox"
+                            name="alertOnHigh"
+                            value="true"
+                            checked={alertHigh}
+                            onChange={(e) => setAlertHigh(e.target.checked)}
+                            style={{ marginTop: "3px", cursor: "pointer" }}
+                          />
+                          <label htmlFor="alert-high" style={{ cursor: "pointer", flex: 1 }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                              <span className="rv-badge rv-badge-warning rv-badge-sm">HIGH</span>
+                            </span>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
+                              Bulk discount anomalies and sudden variant updates.
+                            </span>
+                          </label>
+                        </div>
+
+                        {/* Medium Card */}
+                        <div className={`rv-severity-card info ${alertMedium ? "selected" : ""}`}>
+                          <input
+                            id="alert-medium"
+                            type="checkbox"
+                            name="alertOnMedium"
+                            value="true"
+                            checked={alertMedium}
+                            onChange={(e) => setAlertMedium(e.target.checked)}
+                            style={{ marginTop: "3px", cursor: "pointer" }}
+                          />
+                          <label htmlFor="alert-medium" style={{ cursor: "pointer", flex: 1 }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                              <span className="rv-badge rv-badge-info rv-badge-sm">MEDIUM</span>
+                            </span>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
+                              Moderate catalog modifications exceeding detection rules.
+                            </span>
+                          </label>
+                        </div>
+
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── 5. Theme App Embed Card ── */}
+              {(activeTab === "all" || activeTab === "embed") && (
+                <div className="rv-card" style={{ margin: 0 }}>
+                  <div className="rv-card-header">
+                    <div className="rv-card-icon-title">
+                      <div className="rv-card-icon-badge success">
+                        <ShieldCheckIcon size={18} />
+                      </div>
+                      <div>
+                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
+                          Theme App Embed (Storefront Protection)
+                        </h3>
+                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          Injects baseline checkpoints into your active theme for frontend drift detection.
+                        </p>
+                      </div>
+                    </div>
+                    {themeEmbedActive ? (
+                      <span className="rv-badge rv-badge-success">Active on {activeThemeName}</span>
+                    ) : (
+                      <span className="rv-badge rv-badge-warning">Action Required</span>
+                    )}
+                  </div>
+
+                  <div className="rv-card-body">
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "14px",
+                        background: themeEmbedActive ? "var(--rv-primary-surface)" : "var(--rv-warning-surface)",
+                        border: `1px solid ${themeEmbedActive ? "var(--rv-primary-border)" : "var(--rv-warning-border)"}`,
+                        borderRadius: "var(--rv-radius-md)",
+                        padding: "18px 20px",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
+                        <div>
+                          <h4 style={{ margin: "0 0 4px", fontSize: "15px", fontWeight: 700, color: "var(--rv-text)" }}>
+                            {themeEmbedActive ? "Revertly Protection App Embed is Enabled" : "Theme Embed is Not Yet Activated"}
+                          </h4>
+                          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                            {themeEmbedActive
+                              ? `Your active theme (${activeThemeName}) has Revertly Protection enabled. Storefront activity monitoring and rollback checkpoints are active.`
+                              : "To enable storefront change monitoring and instant checkpoint verification, please enable Revertly in your Shopify Theme Editor under App Embeds."}
+                          </p>
+                        </div>
+                        <a
+                          href={themeEditorUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rv-btn rv-btn-primary rv-btn-sm"
+                        >
+                          <span>{themeEmbedActive ? "Configure in Theme Editor" : "Enable in Theme Editor"}</span>
+                          <ExternalLinkIcon size={13} />
+                        </a>
+                      </div>
+
+                      {!themeEmbedActive && (
+                        <div style={{ borderTop: "1px dashed rgba(245, 158, 11, 0.4)", paddingTop: "14px", marginTop: "4px" }}>
+                          <strong style={{ fontSize: "12px", color: "var(--rv-text)", display: "block", marginBottom: "6px" }}>
+                            Quick 4-Step Setup:
+                          </strong>
+                          <ol style={{ margin: 0, paddingLeft: "18px", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.6 }}>
+                            <li>Click <strong>Enable in Theme Editor</strong> above to open your store theme customizer.</li>
+                            <li>In the left sidebar, locate <strong>Revertly Protection</strong> under <em>App embeds</em>.</li>
+                            <li>Toggle the switch <strong>ON</strong>.</li>
+                            <li>Click <strong>Save</strong> in the top right corner.</li>
+                          </ol>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Sticky Bottom Action Bar ── */}
+              <div className="rv-sticky-save-bar">
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div
+                    style={{
+                      width: "10px",
+                      height: "10px",
+                      borderRadius: "50%",
+                      background: "var(--rv-primary)",
+                      boxShadow: "0 0 0 3px rgba(0, 128, 96, 0.2)",
+                    }}
                   />
-                  <span>
-                    <span className="rv-badge rv-badge-info" style={{ marginRight: "6px" }}>MEDIUM</span>
-                    Moderate catalog changes exceeding defined rules
+                  <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--rv-text)" }}>
+                    {isSaving ? "Saving changes..." : "Ready to update store settings"}
                   </span>
-                </label>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <button
+                    type="submit"
+                    disabled={isSaving}
+                    className="rv-btn rv-btn-primary rv-btn-lg"
+                  >
+                    <SaveIcon size={16} />
+                    <span>{isSaving ? "Saving..." : "Save Settings"}</span>
+                  </button>
+                </div>
               </div>
-            </div>
+
+            </main>
           </div>
-        </div>
 
-        {/* ── Bottom Save Button ── */}
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "32px" }}>
-          <button
-            type="submit"
-            disabled={isSaving}
-            className="rv-btn rv-btn-primary"
-            style={{ fontWeight: 600, padding: "12px 28px", fontSize: "14px" }}
-          >
-            {isSaving ? "Saving Settings..." : "Save Settings"}
-          </button>
-        </div>
+        </fetcher.Form>
 
-      </fetcher.Form>
-
+      </div>
     </s-page>
   );
 }

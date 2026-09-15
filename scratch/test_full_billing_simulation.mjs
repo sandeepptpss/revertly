@@ -17,7 +17,7 @@ import {
   checkFeatureAccess,
 } from "../app/billing.server.js";
 
-const TEST_SHOP = "quickstart-749ac396.myshopify.com";
+const TEST_SHOP = "billing-simulation-store.myshopify.com";
 
 console.log("===============================================================");
 console.log("  REVERTLY PLANS & BILLING MODULE: FULL QA SIMULATION SUITE   ");
@@ -1006,8 +1006,9 @@ async function testNegativeCases() {
     );
   }
 
-  // Check Theme restore gating in app.restore-points.$id.jsx:
-  const restorePointDetailJsx = fs.readFileSync("./app/routes/app.restore-points.$id.jsx", "utf8");
+  // Check Theme restore gating in app.restore-points_.$id.jsx:
+  const rpDetailPath = fs.existsSync("./app/routes/app.restore-points_.$id.jsx") ? "./app/routes/app.restore-points_.$id.jsx" : "./app/routes/app.restore-points.$id.jsx";
+  const restorePointDetailJsx = fs.readFileSync(rpDetailPath, "utf8");
   const checksThemeAccessOnRestore = restorePointDetailJsx.includes('checkFeatureAccess(shop, "themes")') ||
     restorePointDetailJsx.includes('checkFeatureAccess(shop, \'themes\')');
 
@@ -1016,7 +1017,7 @@ async function testNegativeCases() {
       "Negative: Theme restore execution on existing restore point after downgrade",
       "Negative Cases",
       "Theme restore action should check current plan feature access before deploying liquid files",
-      "Theme restore action in app.restore-points.$id.jsx does NOT check checkFeatureAccess(shop, 'themes')",
+      "Theme restore action in app.restore-points_.$id.jsx does NOT check checkFeatureAccess(shop, 'themes')",
       "FAIL",
       "Security / Entitlement bypass: A downgraded shop can still restore theme files from an existing snapshot created during a previous paid tier."
     );
@@ -1030,8 +1031,9 @@ async function testNegativeCases() {
     );
   }
 
-  // Check Bulk Rollback gating in app.incidents.$id.jsx:
-  const incidentDetailJsx = fs.readFileSync("./app/routes/app.incidents.$id.jsx", "utf8");
+  // Check Bulk Rollback gating in app.incidents_.$id.jsx:
+  const incDetailPath = fs.existsSync("./app/routes/app.incidents_.$id.jsx") ? "./app/routes/app.incidents_.$id.jsx" : "./app/routes/app.incidents.$id.jsx";
+  const incidentDetailJsx = fs.readFileSync(incDetailPath, "utf8");
   const checksBulkRollback = incidentDetailJsx.includes('bulkRollback');
 
   if (!checksBulkRollback) {

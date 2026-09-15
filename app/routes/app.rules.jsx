@@ -1,9 +1,16 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { checkRuleLimit } from "../billing.server.js";
+import {
+  FilterIcon,
+  Trash2Icon,
+  SparklesIcon,
+} from "../components/Icons.jsx";
+import { Banner } from "../components/Banner.jsx";
+import { EmptyState } from "../components/EmptyState.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -21,73 +28,112 @@ export const loader = async ({ request }) => {
 };
 
 export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
-  const shop = session.shop;
-  const formData = await request.formData();
-  const intent = formData.get("intent");
+  try {
+    const { session } = await authenticate.admin(request);
+    const shop = session.shop;
+    const formData = await request.formData();
+    const intent = formData.get("intent");
 
-  if (intent === "create") {
-    // 1. Enforce Plan Limits
-    const limitCheck = await checkRuleLimit(shop);
-    if (!limitCheck.allowed) {
-      return {
-        success: false,
-        message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate unused rules or upgrade your plan in Plans & Billing to create more active rules.`,
-      };
-    }
-
-    await prisma.detectionRule.create({
-      data: {
-        shop,
-        name: formData.get("name"),
-        field: formData.get("field"),
-        condition: formData.get("condition"),
-        threshold: formData.get("threshold") ? parseFloat(formData.get("threshold")) : null,
-        minProducts: formData.get("minProducts") ? parseInt(formData.get("minProducts")) : null,
-        windowMinutes: formData.get("windowMinutes") ? parseInt(formData.get("windowMinutes")) : 10,
-        severity: formData.get("severity") || "HIGH",
-        isActive: true,
-      },
-    });
-    return { success: true, message: "Rule created successfully." };
-  }
-
-  if (intent === "toggle") {
-    const ruleId = parseInt(formData.get("ruleId"));
-    const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
-    if (rule && rule.shop === shop) {
-      const willBeActive = !rule.isActive;
-
-      // Check limit before activating an inactive rule
-      if (willBeActive) {
-        const limitCheck = await checkRuleLimit(shop);
-        if (!limitCheck.allowed) {
-          return {
-            success: false,
-            message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate another rule or upgrade your plan to activate this rule.`,
-          };
-        }
+    if (intent === "create") {
+      const limitCheck = await checkRuleLimit(shop);
+      if (!limitCheck.allowed) {
+        return {
+          success: false,
+          message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate unused rules or upgrade your plan in Plans & Billing to create more active rules.`,
+        };
       }
 
-      await prisma.detectionRule.update({
-        where: { id: ruleId },
-        data: { isActive: willBeActive },
+      const name = formData.get("name")?.trim();
+      if (!name) {
+        return { success: false, message: "Rule name is required." };
+      }
+
+      const field = formData.get("field") || "price";
+      const condition = formData.get("condition") || "CHANGED";
+
+      const rawThreshold = formData.get("threshold");
+      const parsedThreshold = rawThreshold && String(rawThreshold).trim() !== "" ? parseFloat(String(rawThreshold).trim()) : null;
+      const threshold = Number.isFinite(parsedThreshold) ? parsedThreshold : null;
+
+      const rawMinProducts = formData.get("minProducts");
+      const parsedMin = rawMinProducts && String(rawMinProducts).trim() !== "" ? parseInt(String(rawMinProducts).trim(), 10) : null;
+      const minProducts = Number.isFinite(parsedMin) && parsedMin > 0 ? parsedMin : null;
+
+      const rawWindow = formData.get("windowMinutes");
+      const parsedWindow = rawWindow && String(rawWindow).trim() !== "" ? parseInt(String(rawWindow).trim(), 10) : 10;
+      const windowMinutes = Number.isFinite(parsedWindow) && parsedWindow > 0 ? parsedWindow : 10;
+
+      const severity = formData.get("severity") || "HIGH";
+
+      await prisma.detectionRule.create({
+        data: {
+          shop,
+          name,
+          field,
+          condition,
+          threshold,
+          minProducts,
+          windowMinutes,
+          severity,
+          isActive: true,
+        },
       });
-      return { success: true, message: `Rule "${rule.name}" is now ${willBeActive ? "Active" : "Inactive"}.` };
+      return { success: true, message: `Detection rule "${name}" created successfully.` };
     }
-    return { success: true, message: "Rule status updated." };
-  }
 
-  if (intent === "delete") {
-    const ruleId = parseInt(formData.get("ruleId"));
-    const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
-    if (rule && rule.shop === shop) {
-      await prisma.detectionRule.delete({ where: { id: ruleId } });
+    if (intent === "toggle") {
+      const rawRuleId = formData.get("ruleId");
+      const ruleId = parseInt(String(rawRuleId || "").trim(), 10);
+      if (!Number.isFinite(ruleId)) {
+        return { success: false, message: "Invalid rule identifier." };
+      }
+
+      const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
+      if (rule && rule.shop === shop) {
+        const willBeActive = !rule.isActive;
+
+        if (willBeActive) {
+          const limitCheck = await checkRuleLimit(shop);
+          if (!limitCheck.allowed) {
+            return {
+              success: false,
+              message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate another rule or upgrade your plan to activate this rule.`,
+            };
+          }
+        }
+
+        await prisma.detectionRule.update({
+          where: { id: ruleId },
+          data: { isActive: willBeActive },
+        });
+        return { success: true, message: `Rule "${rule.name}" is now ${willBeActive ? "Active" : "Disabled"}.` };
+      }
+      return { success: true, message: "Rule status updated." };
     }
-    return { success: true, message: "Rule deleted." };
-  }
 
-  return { success: false, message: "Action failed." };
+    if (intent === "delete") {
+      const rawRuleId = formData.get("ruleId");
+      const ruleId = parseInt(String(rawRuleId || "").trim(), 10);
+      if (!Number.isFinite(ruleId)) {
+        return { success: false, message: "Invalid rule identifier." };
+      }
+
+      const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
+      if (rule && rule.shop === shop) {
+        await prisma.detectionRule.delete({ where: { id: ruleId } });
+        return { success: true, message: `Rule "${rule.name}" deleted successfully.` };
+      }
+      return { success: true, message: "Rule deleted." };
+    }
+
+    return { success: false, message: "Unknown action intent." };
+  } catch (err) {
+    console.error("[Revertly Rules Error] Action failed:", err);
+    return {
+      success: false,
+      message: `Failed to process rule request: ${err?.message || "An unexpected error occurred."}`,
+    };
+  }
 };
 
 const FIELDS = ["price", "compareAtPrice", "title", "status", "vendor", "tags", "sku", "inventory"];
@@ -101,102 +147,109 @@ export default function Rules() {
   const isSaving = fetcher.state !== "idle";
   const [showCreateForm, setShowCreateForm] = useState(false);
 
+  useEffect(() => {
+    if (result?.success && showCreateForm) {
+      setShowCreateForm(false);
+    }
+  }, [result, showCreateForm]);
+
+  const activeCount = limitInfo?.activeCount ?? 0;
+  const maxLimit = limitInfo?.limit ?? Infinity;
+  const isLimitReached = !limitInfo?.allowed;
+  const quotaPercent = maxLimit === Infinity ? 0 : Math.min(100, Math.round((activeCount / maxLimit) * 100));
+
   return (
     <s-page heading="Detection Rules" inlineSize="large">
 
       {/* ── Action Result Banner ── */}
       {result?.message && (
-        <div
-          style={{
-            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
-            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
-            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "14px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
+        <Banner
+          tone={result.success ? "success" : "critical"}
+          title={result.success ? "Rule Updated" : "Rule Error"}
         >
-          <span>{result.success ? "✅" : "⚠️"}</span>
-          <span>{result.message}</span>
-        </div>
+          {result.message}
+        </Banner>
       )}
 
       {/* ── Limit Warning Banner ── */}
-      {!limitInfo?.allowed && (
-        <div
-          style={{
-            background: "#fff4f2",
-            border: "1px solid #fed2cd",
-            color: "#d72c0d",
-            padding: "12px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "13px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
+      {isLimitReached && (
+        <Banner
+          tone="warning"
+          title={`Active Rule Limit Reached (${activeCount} / ${maxLimit})`}
+          action={
+            <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+              Upgrade Plan
+            </Link>
+          }
         >
-          <div>
-            <strong>Active Rule Limit Reached ({limitInfo.activeCount} / {limitInfo.limit}):</strong> You have reached the maximum active detection rules allowed for the {limitInfo.plan.toUpperCase()} plan. Deactivate unused rules or upgrade to a higher tier.
-          </div>
-          <Link to="/app/plan" className="rv-btn rv-btn-primary" style={{ fontSize: "12px", padding: "6px 12px" }}>
-            Upgrade Plan
-          </Link>
-        </div>
+          You have reached the maximum active detection rules allowed for the {limitInfo?.plan?.toUpperCase()} plan. Deactivate unused rules or upgrade to a higher tier.
+        </Banner>
       )}
 
       {/* ── Top Header Hero ── */}
       <div className="rv-hero-banner">
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+        <div style={{ maxWidth: "680px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px", flexWrap: "wrap" }}>
+            <strong style={{ fontSize: "17px", color: "var(--rv-text)", fontWeight: 700 }}>
               Automated Anomaly &amp; Crash Detection
             </strong>
             <span className="rv-badge rv-badge-info">
-              {limitInfo?.activeCount} / {limitInfo?.limit === Infinity ? "Unlimited" : limitInfo?.limit} Active Rules Used
+              {maxLimit === Infinity ? "Unlimited Rules" : `${activeCount} / ${maxLimit} Active Rules Used`}
             </span>
           </div>
-          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Define automated guardrails to instantly detect unauthorized price cuts, bulk tag wipes, or accidental status changes.
+          <p style={{ margin: "0 0 10px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+            Define automated guardrails to instantly quarantine unauthorized price crashes, bulk inventory wipes, or accidental status changes.
           </p>
+
+          {maxLimit !== Infinity && (
+            <div style={{ maxWidth: "320px" }}>
+              <div className="rv-progress-track">
+                <div
+                  className="rv-progress-fill"
+                  style={{
+                    width: `${quotaPercent}%`,
+                    background: quotaPercent >= 100 ? "var(--rv-critical)" : quotaPercent >= 80 ? "var(--rv-warning)" : "var(--rv-primary)",
+                  }}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
-        <button
-          type="button"
-          disabled={!limitInfo?.allowed}
-          onClick={() => setShowCreateForm(!showCreateForm)}
-          className={`rv-btn ${limitInfo?.allowed ? "rv-btn-primary" : "rv-btn-secondary"}`}
-          title={!limitInfo?.allowed ? "Plan limit reached" : ""}
-        >
-          {showCreateForm ? "✕ Close Form" : !limitInfo?.allowed ? "Limit Reached" : "+ Create New Rule"}
-        </button>
+        <div>
+          <button
+            type="button"
+            disabled={isLimitReached}
+            onClick={() => setShowCreateForm(!showCreateForm)}
+            className={`rv-btn rv-btn-lg ${!isLimitReached ? "rv-btn-primary" : "rv-btn-secondary"}`}
+          >
+            <FilterIcon size={16} />
+            <span>{showCreateForm ? "✕ Close Form" : "+ Create New Rule"}</span>
+          </button>
+        </div>
       </div>
 
       {/* ── Create Rule Form ── */}
       {showCreateForm && (
-        <div className="rv-card" style={{ border: "2px solid #005bd3", marginBottom: "24px" }}>
+        <div className="rv-card" style={{ border: "2px solid var(--rv-info)", marginBottom: "24px" }}>
           <div className="rv-card-header" style={{ background: "var(--rv-info-surface)" }}>
-            <h3 className="rv-card-title" style={{ color: "#0045a1" }}>
-              <span>⚙️</span> New Catalog Anomaly Rule
+            <h3 className="rv-card-title" style={{ color: "var(--rv-info-text)" }}>
+              <SparklesIcon size={18} />
+              <span>New Catalog Anomaly Rule</span>
             </h3>
             <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-              Evaluated on every product update event
+              Evaluated automatically on every product update event
             </span>
           </div>
 
           <div className="rv-card-body">
-            <fetcher.Form method="POST" onSubmit={() => setShowCreateForm(false)}>
+            <fetcher.Form method="POST">
               <input type="hidden" name="intent" value="create" />
 
               <div className="rv-form-field">
-                <label className="rv-form-label">Rule Name *</label>
+                <label htmlFor="rule-name" className="rv-form-label">Rule Name *</label>
                 <input
+                  id="rule-name"
                   type="text"
                   name="name"
                   required
@@ -208,17 +261,17 @@ export default function Rules() {
 
               <div className="rv-form-grid" style={{ marginBottom: "16px" }}>
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Monitored Field</label>
-                  <select name="field" className="rv-select">
+                  <label htmlFor="rule-field" className="rv-form-label">Monitored Field</label>
+                  <select id="rule-field" name="field" className="rv-select">
                     {FIELDS.map((f) => (
-                      <option key={f} value={f}>{f}</option>
+                      <option key={f} value={f}>{f.replace(/([A-Z])/g, " $1").toUpperCase()}</option>
                     ))}
                   </select>
                 </div>
 
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Trigger Condition</label>
-                  <select name="condition" className="rv-select">
+                  <label htmlFor="rule-condition" className="rv-form-label">Trigger Condition</label>
+                  <select id="rule-condition" name="condition" className="rv-select">
                     {CONDITIONS.map((c) => (
                       <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
                     ))}
@@ -226,8 +279,8 @@ export default function Rules() {
                 </div>
 
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Severity Level</label>
-                  <select name="severity" className="rv-select" defaultValue="HIGH">
+                  <label htmlFor="rule-severity" className="rv-form-label">Severity Level</label>
+                  <select id="rule-severity" name="severity" className="rv-select" defaultValue="HIGH">
                     {SEVERITIES.map((s) => (
                       <option key={s} value={s}>{s}</option>
                     ))}
@@ -237,8 +290,9 @@ export default function Rules() {
 
               <div className="rv-form-grid" style={{ marginBottom: "20px" }}>
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Threshold (%)</label>
+                  <label htmlFor="rule-threshold" className="rv-form-label">Threshold (%)</label>
                   <input
+                    id="rule-threshold"
                     type="number"
                     name="threshold"
                     placeholder="30"
@@ -248,8 +302,9 @@ export default function Rules() {
                 </div>
 
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Min Affected Products</label>
+                  <label htmlFor="rule-minProducts" className="rv-form-label">Min Affected Products</label>
                   <input
+                    id="rule-minProducts"
                     type="number"
                     name="minProducts"
                     placeholder="10"
@@ -259,8 +314,9 @@ export default function Rules() {
                 </div>
 
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Time Window (Minutes)</label>
+                  <label htmlFor="rule-windowMinutes" className="rv-form-label">Time Window (Minutes)</label>
                   <input
+                    id="rule-windowMinutes"
                     type="number"
                     name="windowMinutes"
                     defaultValue="10"
@@ -270,14 +326,14 @@ export default function Rules() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", paddingTop: "8px", borderTop: "1px solid var(--rv-border)" }}>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="rv-btn rv-btn-primary"
-                  style={{ fontWeight: 600, padding: "10px 20px" }}
+                  className="rv-btn rv-btn-primary rv-btn-lg"
                 >
-                  {isSaving ? "Saving Rule..." : "Save Detection Rule"}
+                  <FilterIcon size={15} />
+                  <span>{isSaving ? "Saving Rule..." : "Save Detection Rule"}</span>
                 </button>
                 <button
                   type="button"
@@ -294,20 +350,21 @@ export default function Rules() {
 
       {/* ── Rules List / Empty State ── */}
       {rules.length === 0 ? (
-        <div className="rv-empty-state">
-          <div className="rv-empty-icon-circle">⚙️</div>
-          <div className="rv-empty-title">No Custom Detection Rules Configured</div>
-          <div className="rv-empty-desc">
-            Detection rules monitor for sudden price drops, unauthorized product deletions, or bulk changes by apps.
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowCreateForm(true)}
-            className="rv-btn rv-btn-primary"
-          >
-            + Create Your First Detection Rule
-          </button>
-        </div>
+        <EmptyState
+          icon={<FilterIcon size={28} style={{ color: "var(--rv-info)" }} />}
+          title="No Custom Detection Rules Configured"
+          description="Detection rules monitor your store 24/7 for sudden price drops, unauthorized product deletions, or bulk changes by external apps."
+          action={
+            <button
+              type="button"
+              onClick={() => setShowCreateForm(true)}
+              className="rv-btn rv-btn-primary"
+            >
+              <FilterIcon size={15} />
+              <span>Create Your First Detection Rule</span>
+            </button>
+          }
+        />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
           {rules.map((rule) => {
@@ -341,7 +398,7 @@ export default function Rules() {
                         {rule.name}
                       </strong>
                       <span
-                        className={`rv-badge ${
+                        className={`rv-badge rv-badge-sm ${
                           rule.severity === "CRITICAL"
                             ? "rv-badge-critical"
                             : rule.severity === "HIGH"
@@ -351,21 +408,21 @@ export default function Rules() {
                       >
                         {rule.severity}
                       </span>
-                      <span className={`rv-badge ${rule.isActive ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                      <span className={`rv-badge rv-badge-sm ${rule.isActive ? "rv-badge-success" : "rv-badge-neutral"}`}>
                         {rule.isActive ? "Active" : "Disabled"}
                       </span>
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "2px" }}>
-                      <span className="rv-badge rv-badge-neutral">Field: {rule.field}</span>
-                      <span className="rv-badge rv-badge-warning">
+                      <span className="rv-badge rv-badge-neutral rv-badge-sm">Field: {rule.field}</span>
+                      <span className="rv-badge rv-badge-warning rv-badge-sm">
                         Condition: {rule.condition.replace(/_/g, " ")}{rule.threshold ? ` (≥ ${rule.threshold}%)` : ""}
                       </span>
                       {rule.minProducts && (
-                        <span className="rv-badge rv-badge-neutral">{rule.minProducts}+ products</span>
+                        <span className="rv-badge rv-badge-neutral rv-badge-sm">{rule.minProducts}+ products</span>
                       )}
                       {rule.windowMinutes && (
-                        <span className="rv-badge rv-badge-neutral">within {rule.windowMinutes}m</span>
+                        <span className="rv-badge rv-badge-neutral rv-badge-sm">within {rule.windowMinutes}m</span>
                       )}
                     </div>
                   </div>
@@ -376,10 +433,9 @@ export default function Rules() {
                       <input type="hidden" name="ruleId" value={rule.id} />
                       <button
                         type="submit"
-                        className="rv-btn rv-btn-secondary"
-                        style={{ fontSize: "13px" }}
+                        className="rv-btn rv-btn-secondary rv-btn-sm"
                       >
-                        {rule.isActive ? "⏸️ Disable" : "▶️ Enable"}
+                        {rule.isActive ? "Disable" : "Enable"}
                       </button>
                     </fetcher.Form>
 
@@ -393,10 +449,11 @@ export default function Rules() {
                             e.preventDefault();
                           }
                         }}
-                        className="rv-btn rv-btn-subtle"
-                        style={{ fontSize: "13px", color: "var(--rv-critical)" }}
+                        className="rv-btn rv-btn-subtle rv-btn-sm"
+                        style={{ color: "var(--rv-critical)" }}
                       >
-                        Delete
+                        <Trash2Icon size={14} />
+                        <span>Delete</span>
                       </button>
                     </fetcher.Form>
                   </div>

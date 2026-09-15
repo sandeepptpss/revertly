@@ -68,9 +68,15 @@ export async function fetchProductData(admin, productId) {
               compareAtPrice
               sku
               inventoryQuantity
-              weight
-              weightUnit
               barcode
+              inventoryItem {
+                measurement {
+                  weight {
+                    value
+                    unit
+                  }
+                }
+              }
             }
           }
         }
@@ -86,17 +92,22 @@ export async function fetchProductData(admin, productId) {
  * Build a flat snapshot object from Shopify product data
  */
 export function buildSnapshot(product) {
-  const variants = (product.variants?.edges || []).map((e) => ({
-    id: e.node.id,
-    title: e.node.title,
-    price: e.node.price,
-    compareAtPrice: e.node.compareAtPrice,
-    sku: e.node.sku,
-    inventoryQuantity: e.node.inventoryQuantity,
-    weight: e.node.weight,
-    weightUnit: e.node.weightUnit,
-    barcode: e.node.barcode,
-  }));
+  const variants = (product.variants?.edges || []).map((e) => {
+    const node = e.node || {};
+    const weightVal = node.inventoryItem?.measurement?.weight?.value ?? node.weight ?? null;
+    const weightUnit = node.inventoryItem?.measurement?.weight?.unit ?? node.weightUnit ?? null;
+    return {
+      id: node.id,
+      title: node.title,
+      price: node.price,
+      compareAtPrice: node.compareAtPrice,
+      sku: node.sku,
+      inventoryQuantity: node.inventoryQuantity,
+      weight: weightVal,
+      weightUnit: weightUnit,
+      barcode: node.barcode,
+    };
+  });
 
   const metafields = (product.metafields?.edges || []).map((e) => ({
     id: e.node.id,

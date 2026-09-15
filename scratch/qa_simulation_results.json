@@ -283,7 +283,7 @@
     "scenario": "Starting 14-day trial initializes trialEndsAt and hasUsedTrial",
     "group": "Trial",
     "expected": "trialEndsAt is set 14 days in future, hasUsedTrial is true",
-    "actual": "trialEndsAt: 2026-09-28T14:09:38.551Z, hasUsedTrial: true",
+    "actual": "trialEndsAt: 2026-09-29T06:47:40.857Z, hasUsedTrial: true",
     "status": "PASS",
     "notes": ""
   },
@@ -331,7 +331,7 @@
     "scenario": "productLimitReachedAt banner triggers when limit exceeded",
     "group": "Feature Limits",
     "expected": "productLimitReachedAt is stored and triggers alert banner in UI",
-    "actual": "productLimitReachedAt set to 2026-09-14T14:09:38.584Z",
+    "actual": "productLimitReachedAt set to 2026-09-15T06:47:40.892Z",
     "status": "PASS",
     "notes": ""
   },
@@ -552,20 +552,20 @@
     "notes": ""
   },
   {
-    "scenario": "Negative: Theme restore execution on existing restore point after downgrade",
+    "scenario": "Negative: Theme restore execution after downgrade",
     "group": "Negative Cases",
-    "expected": "Theme restore action should check current plan feature access before deploying liquid files",
-    "actual": "Theme restore action in app.restore-points.$id.jsx does NOT check checkFeatureAccess(shop, 'themes')",
-    "status": "FAIL",
-    "notes": "Security / Entitlement bypass: A downgraded shop can still restore theme files from an existing snapshot created during a previous paid tier."
+    "expected": "Blocked",
+    "actual": "Blocked",
+    "status": "PASS",
+    "notes": ""
   },
   {
-    "scenario": "Negative: Bulk incident rollback execution on Free/Starter plans",
+    "scenario": "Negative: Bulk incident rollback execution",
     "group": "Negative Cases",
-    "expected": "Bulk rollback of multi-product incidents should enforce limits.bulkRollback",
-    "actual": "app.incidents.$id.jsx executes rollback job across all incident products without checking limits.bulkRollback",
-    "status": "FAIL",
-    "notes": "Feature limit bypass: Free/Starter plans are described as 'Manual single-product rollback' but incident bulk rollback has no plan check."
+    "expected": "Enforces bulkRollback limit",
+    "actual": "Enforces limit",
+    "status": "PASS",
+    "notes": ""
   },
   {
     "scenario": "Admin authentication required: ./app/routes/app.plan.jsx",

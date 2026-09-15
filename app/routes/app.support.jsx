@@ -3,6 +3,17 @@ import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import {
+  HelpCircleIcon,
+  SearchIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  ShieldCheckIcon,
+  FileCodeIcon,
+  ClockIcon,
+  SparklesIcon,
+} from "../components/Icons.jsx";
+import { Banner } from "../components/Banner.jsx";
 
 const HELP_ARTICLES = [
   {
@@ -11,18 +22,18 @@ const HELP_ARTICLES = [
     category: "Getting Started",
   },
   {
-    title: "Why wasn't a change detected?",
+    title: "Why wasn't a catalog change detected?",
     body: "Make sure monitoring is enabled in Settings. The app detects product changes via real-time Shopify webhooks after the baseline snapshot is initialized.",
     category: "Monitoring",
   },
   {
     title: "What does an atomic rollback actually do?",
-    body: "A rollback restores only the specific fields that were modified — not the entire product. For example, rolling back a price drop restores the previous price while leaving newer photos, descriptions, and tags intact.",
+    body: "A rollback restores only the specific fields that were modified — not the entire product. For example, rolling back a price crash restores the previous price while leaving newer photos, descriptions, and inventory levels intact.",
     category: "Rollback",
   },
   {
     title: "How do I set up custom detection rules?",
-    body: "Go to Rules in the top navigation. Click '+ Create New Rule' to select the field (e.g. price), condition (e.g. DECREASE_BY_PERCENT), and threshold (e.g. 30%).",
+    body: "Go to Rules in the top navigation. Click '+ Create New Rule' to select the field (e.g. price), condition (e.g. DECREASE_BY_PERCENT), and threshold percentage (e.g. 30%).",
     category: "Detection Rules",
   },
   {
@@ -51,7 +62,7 @@ export const loader = async ({ request }) => {
 };
 
 export const action = async ({ request }) => {
-  const { session, admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
   const subject = formData.get("subject")?.trim();
@@ -67,7 +78,7 @@ export const action = async ({ request }) => {
     await prisma.supportTicket.create({
       data: { shop, subject, category: category || "General", message, email: email || null },
     });
-    return { success: true, message: "Your ticket has been submitted. Our team will respond within 24 hours." };
+    return { success: true, message: "Your ticket has been submitted. Our developer support team will respond within 24 hours." };
   } catch {
     return { success: true, message: "Your message has been received. We'll be in touch soon!" };
   }
@@ -107,55 +118,31 @@ export default function Support() {
 
       {/* ── Action Result Banner ── */}
       {result?.message && (
-        <div
-          style={{
-            background: "var(--rv-primary-surface)",
-            border: "1px solid var(--rv-primary-border)",
-            color: "var(--rv-primary)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "14px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
+        <Banner
+          tone="success"
+          title="Inquiry Submitted"
         >
-          <span>✅</span>
-          <span>{result.message}</span>
-        </div>
+          {result.message}
+        </Banner>
       )}
 
       {result?.error && (
-        <div
-          style={{
-            background: "var(--rv-critical-surface)",
-            border: "1px solid var(--rv-critical-border)",
-            color: "var(--rv-critical)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "14px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
+        <Banner
+          tone="critical"
+          title="Submission Error"
         >
-          <span>⚠️</span>
-          <span>{result.error}</span>
-        </div>
+          {result.error}
+        </Banner>
       )}
 
       {/* ── Top Hero Banner ── */}
       <div className="rv-hero-banner">
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+            <strong style={{ fontSize: "17px", color: "var(--rv-text)", fontWeight: 700 }}>
               Merchant Help &amp; Technical Support
             </strong>
-            <span className="rv-badge rv-badge-success">SLA: Under 24h</span>
+            <span className="rv-badge rv-badge-success">Response SLA: Under 24h</span>
           </div>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
             Have a question about rollback safety, theme restoration, or high-volume API limits? We&apos;re here to help.
@@ -163,50 +150,50 @@ export default function Support() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-          <span>✉️ Direct Email: <a href="mailto:support@revertly.app" style={{ color: "var(--rv-info)", fontWeight: 600 }}>support@revertly.app</a></span>
+          <span>Direct Email: <a href="mailto:support@revertly.app" style={{ color: "var(--rv-info)", fontWeight: 600 }}>support@revertly.app</a></span>
         </div>
       </div>
 
-      {/* ── Quick Knowledge Base Cards ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "24px" }}>
-        <a
-          href="https://shopify.dev/docs/apps"
-          target="_blank"
-          rel="noreferrer"
-          className="rv-card"
-          style={{ textDecoration: "none", margin: 0 }}
-        >
-          <div className="rv-card-body">
-            <span style={{ fontSize: "24px", display: "block", marginBottom: "8px" }}>📚</span>
-            <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block", marginBottom: "4px" }}>
-              Documentation &amp; Guides
-            </strong>
-            <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-              Complete walkthrough of restore points, webhook architecture, and CSV imports.
-            </p>
-          </div>
-        </a>
-
+      {/* ── Quick Knowledge Cards ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "16px", marginBottom: "24px" }}>
         <div className="rv-card" style={{ margin: 0 }}>
           <div className="rv-card-body">
-            <span style={{ fontSize: "24px", display: "block", marginBottom: "8px" }}>🛡️</span>
+            <div className="rv-stat-icon-wrapper rv-stat-icon-emerald" style={{ marginBottom: "10px" }}>
+              <ShieldCheckIcon size={20} />
+            </div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block", marginBottom: "4px" }}>
-              Dispute Evidence Vault
+              Atomic Rollback Engine
             </strong>
             <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-              Learn how to export timestamped JSON proofs to defeat payment chargebacks.
+              Only modified attributes are rolled back. New photos, tags, and reviews remain preserved.
             </p>
           </div>
         </div>
 
         <div className="rv-card" style={{ margin: 0 }}>
           <div className="rv-card-body">
-            <span style={{ fontSize: "24px", display: "block", marginBottom: "8px" }}>⚡</span>
+            <div className="rv-stat-icon-wrapper rv-stat-icon-blue" style={{ marginBottom: "10px" }}>
+              <FileCodeIcon size={20} />
+            </div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block", marginBottom: "4px" }}>
-              Theme Safety Staging
+              Theme Staging Preview
             </strong>
             <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-              Deploy theme restorations to safe draft themes to preview storefronts before going live.
+              Deploy theme backups directly to draft themes to preview storefronts before making them live.
+            </p>
+          </div>
+        </div>
+
+        <div className="rv-card" style={{ margin: 0 }}>
+          <div className="rv-card-body">
+            <div className="rv-stat-icon-wrapper rv-stat-icon-purple" style={{ marginBottom: "10px" }}>
+              <ClockIcon size={20} />
+            </div>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block", marginBottom: "4px" }}>
+              Dispute Proof Vault
+            </strong>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+              Export timestamped JSON records to provide definitive evidence for payment disputes and audits.
             </p>
           </div>
         </div>
@@ -220,60 +207,48 @@ export default function Support() {
           <div className="rv-card" style={{ margin: 0 }}>
             <div className="rv-card-header">
               <h3 className="rv-card-title">
-                <span>❓</span> Frequently Asked Questions
+                <HelpCircleIcon size={18} style={{ color: "var(--rv-info)" }} />
+                <span>Frequently Asked Questions</span>
               </h3>
             </div>
             <div className="rv-card-body">
-              <div style={{ marginBottom: "14px" }}>
+              <div className="rv-search-wrapper" style={{ width: "100%", marginBottom: "16px" }}>
+                <span className="rv-search-icon">
+                  <SearchIcon size={15} />
+                </span>
                 <input
                   type="text"
-                  placeholder="🔍 Search FAQ topics..."
+                  aria-label="Search FAQ topics"
+                  placeholder="Search FAQ topics..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="rv-input"
-                  style={{ width: "100%" }}
+                  className="rv-input rv-input-with-icon"
+                  style={{ width: "100%", boxSizing: "border-box" }}
                 />
               </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div className="rv-accordion">
                 {filteredArticles.map((article, i) => {
                   const isExpanded = expandedIndex === i;
                   return (
-                    <div
-                      key={i}
-                      style={{
-                        border: "1px solid var(--rv-border)",
-                        borderRadius: "var(--rv-radius-sm)",
-                        overflow: "hidden",
-                        background: isExpanded ? "#fafbfb" : "#ffffff",
-                      }}
-                    >
-                      <div
+                    <div key={i} className="rv-accordion-item">
+                      <button
+                        type="button"
+                        className="rv-accordion-header"
                         onClick={() => toggleArticle(i)}
-                        style={{
-                          padding: "12px 14px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          cursor: "pointer",
-                          userSelect: "none",
-                        }}
+                        aria-expanded={isExpanded}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <span className="rv-badge rv-badge-neutral" style={{ fontSize: "10px" }}>
+                          <span className="rv-badge rv-badge-neutral rv-badge-sm">
                             {article.category}
                           </span>
-                          <strong style={{ fontSize: "13px", color: "var(--rv-text)" }}>
-                            {article.title}
-                          </strong>
+                          <span>{article.title}</span>
                         </div>
-                        <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          {isExpanded ? "▲" : "▼"}
-                        </span>
-                      </div>
+                        {isExpanded ? <ChevronUpIcon size={16} /> : <ChevronDownIcon size={16} />}
+                      </button>
 
                       {isExpanded && (
-                        <div style={{ padding: "0 14px 14px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6, borderTop: "1px solid #f1f2f3" }}>
+                        <div className="rv-accordion-body">
                           {article.body}
                         </div>
                       )}
@@ -290,26 +265,28 @@ export default function Support() {
           <div className="rv-card" style={{ margin: 0 }}>
             <div className="rv-card-header">
               <h3 className="rv-card-title">
-                <span>✉️</span> Submit a Support Ticket
+                <SparklesIcon size={18} style={{ color: "var(--rv-primary)" }} />
+                <span>Submit a Support Ticket</span>
               </h3>
             </div>
             <div className="rv-card-body">
               <fetcher.Form method="POST">
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Subject *</label>
+                  <label htmlFor="ticket-subject" className="rv-form-label">Subject *</label>
                   <input
+                    id="ticket-subject"
                     type="text"
                     name="subject"
                     required
-                    placeholder="Brief description of your issue"
+                    placeholder="Brief summary of your question or issue"
                     className="rv-input"
                   />
                 </div>
 
                 <div className="rv-form-grid" style={{ marginBottom: "14px" }}>
                   <div className="rv-form-field">
-                    <label className="rv-form-label">Category</label>
-                    <select name="category" className="rv-select">
+                    <label htmlFor="ticket-category" className="rv-form-label">Category</label>
+                    <select id="ticket-category" name="category" className="rv-select">
                       {CATEGORIES.map((c) => (
                         <option key={c} value={c}>{c}</option>
                       ))}
@@ -317,8 +294,9 @@ export default function Support() {
                   </div>
 
                   <div className="rv-form-field">
-                    <label className="rv-form-label">Reply-to Email</label>
+                    <label htmlFor="ticket-email" className="rv-form-label">Reply-to Email</label>
                     <input
+                      id="ticket-email"
                       type="email"
                       name="email"
                       placeholder="merchant@example.com"
@@ -328,11 +306,12 @@ export default function Support() {
                 </div>
 
                 <div className="rv-form-field">
-                  <label className="rv-form-label">Describe your issue in detail *</label>
+                  <label htmlFor="ticket-message" className="rv-form-label">Describe your issue in detail *</label>
                   <textarea
+                    id="ticket-message"
                     name="message"
                     required
-                    placeholder="Please include relevant product titles, what steps occurred, and what assistance you need..."
+                    placeholder="Include product titles, approximate time, and what assistance you need..."
                     className="rv-textarea"
                     style={{ minHeight: "110px" }}
                   />
@@ -341,10 +320,10 @@ export default function Support() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="rv-btn rv-btn-primary"
-                  style={{ width: "100%", padding: "10px", fontWeight: 600 }}
+                  className="rv-btn rv-btn-primary rv-btn-lg"
+                  style={{ width: "100%" }}
                 >
-                  {isSubmitting ? "Submitting Ticket..." : "Submit Support Request"}
+                  <span>{isSubmitting ? "Submitting Ticket..." : "Submit Support Request"}</span>
                 </button>
               </fetcher.Form>
             </div>
@@ -358,7 +337,7 @@ export default function Support() {
         <div className="rv-card">
           <div className="rv-card-header">
             <h3 className="rv-card-title">
-              <span>📋</span> Your Recent Support Inquiries
+              <span>Your Recent Support Inquiries</span>
             </h3>
           </div>
           <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
@@ -375,12 +354,12 @@ export default function Support() {
                 {tickets.map((t) => (
                   <tr key={t.id}>
                     <td style={{ fontWeight: 600 }}>{t.subject}</td>
-                    <td><span className="rv-badge rv-badge-neutral">{t.category}</span></td>
+                    <td><span className="rv-badge rv-badge-neutral rv-badge-sm">{t.category}</span></td>
                     <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px" }}>
                       {new Date(t.createdAt).toLocaleDateString()}
                     </td>
                     <td style={{ textAlign: "right" }}>
-                      <span className={`rv-badge ${t.status === "RESOLVED" ? "rv-badge-success" : "rv-badge-info"}`}>
+                      <span className={`rv-badge rv-badge-sm ${t.status === "RESOLVED" ? "rv-badge-success" : "rv-badge-info"}`}>
                         {t.status || "OPEN"}
                       </span>
                     </td>

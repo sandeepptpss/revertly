@@ -3,6 +3,15 @@ import { useLoaderData, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import {
+  HistoryIcon,
+  ClockIcon,
+  ArrowLeftIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  BoxIcon,
+} from "../components/Icons.jsx";
+import { EmptyState } from "../components/EmptyState.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -71,25 +80,37 @@ function JobCard({ job }) {
 
           <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
             <span>
-              <strong>{job.successCount}</strong> / {job.totalProducts} restored
+              <strong>{job.successCount}</strong> of {job.totalProducts} restored
             </span>
             {job.failedCount > 0 && (
-              <span className="rv-badge rv-badge-critical">{job.failedCount} failed</span>
+              <span className="rv-badge rv-badge-critical rv-badge-sm">{job.failedCount} failed</span>
             )}
-            <span>⏱️ {duration(job.createdAt, job.completedAt)}</span>
+            <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <ClockIcon size={13} />
+              <span>{duration(job.createdAt, job.completedAt)}</span>
+            </span>
           </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-          <span>🕒 Executed: {formatTime(job.createdAt)}</span>
+          <span>Executed: {formatTime(job.createdAt)}</span>
           {job.results.length > 0 && (
             <button
               type="button"
               onClick={() => setExpanded(!expanded)}
-              className="rv-btn rv-btn-subtle"
-              style={{ fontSize: "12px", padding: "4px 8px" }}
+              className="rv-btn rv-btn-subtle rv-btn-sm"
             >
-              {expanded ? "Hide Product Results ▲" : `View ${job.results.length} Product Results ▼`}
+              {expanded ? (
+                <>
+                  <span>Hide Details</span>
+                  <ChevronUpIcon size={14} />
+                </>
+              ) : (
+                <>
+                  <span>View {job.results.length} Product Results</span>
+                  <ChevronDownIcon size={14} />
+                </>
+              )}
             </button>
           )}
         </div>
@@ -101,21 +122,26 @@ function JobCard({ job }) {
               <thead>
                 <tr>
                   <th>Product Title</th>
-                  <th>Outcome</th>
+                  <th style={{ width: "120px" }}>Outcome</th>
                   <th>Error / Message</th>
                 </tr>
               </thead>
               <tbody>
                 {job.results.map((r) => (
                   <tr key={r.id}>
-                    <td style={{ fontWeight: 600 }}>{r.productTitle}</td>
+                    <td style={{ fontWeight: 600 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <BoxIcon size={15} style={{ color: "var(--rv-text-subdued)" }} />
+                        <span>{r.productTitle}</span>
+                      </div>
+                    </td>
                     <td>
-                      <span className={`rv-badge ${r.status === "SUCCESS" ? "rv-badge-success" : "rv-badge-critical"}`}>
+                      <span className={`rv-badge rv-badge-sm ${r.status === "SUCCESS" ? "rv-badge-success" : "rv-badge-critical"}`}>
                         {r.status}
                       </span>
                     </td>
-                    <td style={{ color: r.errorMessage ? "var(--rv-critical)" : "var(--rv-text-subdued)" }}>
-                      {r.errorMessage || "Field values successfully restored"}
+                    <td style={{ color: r.errorMessage ? "var(--rv-critical)" : "var(--rv-text-subdued)", fontSize: "12px" }}>
+                      {r.errorMessage || "All modified fields safely restored"}
                     </td>
                   </tr>
                 ))}
@@ -141,7 +167,7 @@ export default function RollbackHistory() {
       <div className="rv-hero-banner">
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-            <strong style={{ fontSize: "16px", color: "var(--rv-text)" }}>
+            <strong style={{ fontSize: "17px", color: "var(--rv-text)", fontWeight: 700 }}>
               Audit Trail of Reverted Catalogs
             </strong>
             <span className="rv-badge rv-badge-info">
@@ -149,27 +175,28 @@ export default function RollbackHistory() {
             </span>
           </div>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Every rollback action triggered from Incidents or Restore Points is logged here with execution duration and product-by-product results.
+            Every rollback action triggered from Incidents or Restore Points is permanently logged here with execution duration and product-by-product results.
           </p>
         </div>
 
-        <Link to="/app" className="rv-btn rv-btn-secondary" style={{ fontSize: "13px" }}>
-          ← Back to Dashboard
+        <Link to="/app" className="rv-btn rv-btn-secondary rv-btn-sm">
+          <ArrowLeftIcon size={14} />
+          <span>Back to Dashboard</span>
         </Link>
       </div>
 
       {/* ── Job List / Empty State ── */}
       {jobs.length === 0 ? (
-        <div className="rv-empty-state">
-          <div className="rv-empty-icon-circle">⏪</div>
-          <div className="rv-empty-title">No Rollbacks Executed Yet</div>
-          <div className="rv-empty-desc">
-            When you execute a 1-click rollback on an incident or restore from a saved restore point, complete execution records and timings will appear here.
-          </div>
-          <Link to="/app/incidents" className="rv-btn rv-btn-secondary">
-            View Open Incidents
-          </Link>
-        </div>
+        <EmptyState
+          icon={<HistoryIcon size={28} style={{ color: "var(--rv-info)" }} />}
+          title="No Rollbacks Executed Yet"
+          description="When you execute a 1-click rollback on an incident or restore from a saved restore point, complete audit records and execution timings will appear here."
+          action={
+            <Link to="/app/incidents" className="rv-btn rv-btn-secondary">
+              View Open Incidents
+            </Link>
+          }
+        />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
           {jobs.map((job) => (

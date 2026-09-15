@@ -14,6 +14,7 @@ import {
   getStorePlan,
   normalizePlanId,
 } from "../billing.server.js";
+import { Banner } from "../components/Banner.jsx";
 
 // ── Plan definitions ────────────────────────────────────────────────────────
 const PLANS = [
@@ -115,7 +116,6 @@ const PLANS = [
   },
 ];
 
-// ── Server ───────────────────────────────────────────────────────────────────
 export const loader = async ({ request }) => {
   const { session, billing } = await authenticate.admin(request);
   const shop = session.shop;
@@ -132,9 +132,6 @@ export const loader = async ({ request }) => {
     prisma.appSettings.findUnique({ where: { shop } }),
   ]);
 
-  // The product-limit-reached flag is only meaningful while the shop is
-  // still over its limit; once true capacity is available again (plan
-  // upgrade, or products removed), clear the stale alert.
   if (settings?.productLimitReachedAt && (limits.products === Infinity || productCount < limits.products)) {
     await prisma.appSettings.update({
       where: { shop },
@@ -162,7 +159,6 @@ export const action = async ({ request }) => {
   const targetPlanId = normalizePlanId(rawPlanId);
   const isTest = process.env.NODE_ENV !== "production";
 
-  // Check current store plan
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
   const currentPlan = normalizePlanId(settings?.planId);
 
@@ -174,10 +170,6 @@ export const action = async ({ request }) => {
   }
 
   if (targetPlanId === "free") {
-    // Downgrade to Free: cancel any active Shopify subscription first.
-    // Only write planId: "free" to our DB once every active subscription has
-    // actually been cancelled — otherwise the shop would show as "Free" here
-    // while Shopify keeps billing them on the old paid plan.
     let allCancelled = true;
 
     try {
@@ -210,7 +202,7 @@ export const action = async ({ request }) => {
     if (!allCancelled) {
       return {
         success: false,
-        message: "We couldn't cancel your active subscription with Shopify. Your plan has not been changed — please try again, or contact support if this keeps happening.",
+        message: "We couldn't cancel your active subscription with Shopify. Your plan has not been changed — please try again, or contact support.",
       };
     }
 
@@ -227,7 +219,6 @@ export const action = async ({ request }) => {
     };
   }
 
-  // Target is a paid plan
   let targetShopifyPlan = PLAN_STARTER;
   if (targetPlanId === "growth") targetShopifyPlan = PLAN_GROWTH;
   else if (targetPlanId === "business") targetShopifyPlan = PLAN_BUSINESS;
@@ -237,21 +228,18 @@ export const action = async ({ request }) => {
   const returnUrl = `${url.origin}/app/plan`;
 
   try {
-    // billing.request initiates Shopify subscription and throws an out-of-app redirect
     return await billing.request({
       plan: targetShopifyPlan,
       isTest,
       returnUrl,
     });
   } catch (err) {
-    // CRITICAL: If Shopify threw a Response (App Bridge 401 redirect or 302 exitIframe), rethrow it!
     if (err instanceof Response) {
       throw err;
     }
 
     console.error("[Revertly Billing Error] billing.request failed:", err);
 
-    // Extract detailed error messages from Shopify GraphQL response
     const errorList = Array.isArray(err?.errorData)
       ? err.errorData.map((e) => e?.message || (typeof e === "string" ? e : JSON.stringify(e))).filter(Boolean)
       : [];
@@ -261,8 +249,6 @@ export const action = async ({ request }) => {
       (err?.message && err.message.toLowerCase().includes("public distribution"));
 
     if (isDistributionError || isTest) {
-      // In development mode or when app has custom distribution in Shopify Partners,
-      // activate the plan in simulation mode so the merchant/developer is never blocked!
       const simSubId = `sim_${targetPlanId}_${Date.now()}`;
       const now = new Date();
       const trialEndsAt = settings?.trialEndsAt || new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
@@ -300,15 +286,14 @@ export const action = async ({ request }) => {
   }
 };
 
-// ── Component ────────────────────────────────────────────────────────────────
 export default function Plan() {
-  const { currentPlan, usage, limits, hasUsedTrial, trialEndsAt, productLimitReachedAt } = useLoaderData();
+  const { currentPlan, usage, limits, trialEndsAt, productLimitReachedAt } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activePlan = result?.planId || currentPlan;
   const isSubmitting = fetcher.state !== "idle";
 
-  const [confirmModal, setConfirmModal] = useState(null); // { planId, planName, isDowngrade }
+  const [confirmModal, setConfirmModal] = useState(null);
 
   const activeOrder = PLAN_TIERS[activePlan]?.order ?? 0;
   const trialStillActive = trialEndsAt && new Date(trialEndsAt) > new Date();
@@ -318,60 +303,38 @@ export default function Plan() {
     if (activePlan === plan.id && trialStillActive) {
       return `Trial active until ${new Date(trialEndsAt).toLocaleDateString()}`;
     }
-    if (hasUsedTrial) return "";
-    return plan.subtext; // "14-day free trial" — only shown before the shop's first paid activation
+    return plan.subtext;
   }
 
   return (
     <s-page heading="Plans & Billing" inlineSize="large">
 
-      {/* ── Success/Error Feedback Banner ── */}
+      {/* ── Action Result Banner ── */}
       {result?.message && (
-        <div
-          style={{
-            background: result.success ? "var(--rv-primary-surface)" : "var(--rv-critical-surface)",
-            border: `1px solid ${result.success ? "var(--rv-primary-border)" : "var(--rv-critical-border)"}`,
-            color: result.success ? "var(--rv-primary)" : "var(--rv-critical)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "14px",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
+        <Banner
+          tone={result.success ? "success" : "critical"}
+          title={result.success ? "Subscription Updated" : "Billing Notice"}
         >
-          <span>{result.success ? "✅" : "⚠️"}</span>
-          <span>{result.message}</span>
-        </div>
+          {result.message}
+        </Banner>
       )}
 
       {/* ── Product Limit Reached Alert ── */}
       {productLimitReachedAt && (
-        <div
-          style={{
-            background: "var(--rv-critical-surface)",
-            border: "1px solid var(--rv-critical-border)",
-            color: "var(--rv-critical)",
-            padding: "14px 18px",
-            borderRadius: "var(--rv-radius-md)",
-            marginBottom: "20px",
-            fontSize: "13px",
-            fontWeight: 500,
-          }}
+        <Banner
+          tone="critical"
+          title="Monitored Product Capacity Reached"
         >
-          ⚠️ You&apos;ve reached your plan&apos;s monitored product limit — newly added products are no longer being
-          tracked. Upgrade below to resume monitoring all of your products.
-        </div>
+          You&apos;ve reached your plan&apos;s monitored product limit — newly added products are no longer being tracked. Upgrade below to resume 24/7 protection across all products.
+        </Banner>
       )}
 
       {/* ── Current Plan Usage Summary Hero ── */}
       <div className="rv-hero-banner" style={{ marginBottom: "28px" }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
-              YOUR CURRENT SUBSCRIPTION
+            <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
+              CURRENT SUBSCRIPTION
             </span>
             <span className="rv-badge rv-badge-success">Active</span>
           </div>
@@ -379,11 +342,11 @@ export default function Plan() {
             {PLAN_TIERS[activePlan]?.name || activePlan} Plan
           </h2>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Automated monitoring, catalog drift defense, and multi-resource store backup.
+            Real-time catalog watchdog, instant price crash rollback, and multi-resource backup.
           </p>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "28px", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "24px", flexWrap: "wrap" }}>
           <div>
             <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Products Monitored</div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
@@ -411,7 +374,7 @@ export default function Plan() {
           <div>
             <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Change Retention</div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
-              {limits.retentionDays} Days ({usage.changeCount.toLocaleString()} recorded)
+              {limits.retentionDays} Days
             </strong>
           </div>
         </div>
@@ -423,7 +386,7 @@ export default function Plan() {
           Choose Your Store Protection Plan
         </h3>
         <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: 0 }}>
-          Scale your peace of mind as your catalog expands. All paid plans include a 14-day free trial. Upgrade, downgrade, or cancel anytime.
+          Scale your catalog guardrails as your store expands. All paid plans include a 14-day free trial. Upgrade, downgrade, or cancel anytime.
         </p>
       </div>
 
@@ -440,25 +403,25 @@ export default function Plan() {
           const isEnterprise = plan.id === "enterprise";
 
           let cardBorder = "1px solid var(--rv-border)";
-          let cardBg = "#ffffff";
+          let cardBg = "var(--rv-surface)";
           let boxShadow = "var(--rv-shadow-sm)";
           let tierBadge = null;
 
           if (isGrowth) {
-            tierBadge = <span className="rv-badge rv-badge-info">Most Popular</span>;
+            tierBadge = <span className="rv-badge rv-badge-info rv-badge-sm">Most Popular</span>;
           } else if (isBusiness) {
-            tierBadge = <span className="rv-badge rv-badge-warning">Store Shield</span>;
+            tierBadge = <span className="rv-badge rv-badge-warning rv-badge-sm">Store Shield</span>;
           } else if (isEnterprise) {
-            tierBadge = <span className="rv-badge rv-badge-neutral">Shopify Plus</span>;
+            tierBadge = <span className="rv-badge rv-badge-neutral rv-badge-sm">Shopify Plus</span>;
           }
 
           if (isCurrent) {
-            cardBorder = "2px solid #008060";
-            cardBg = "rgba(0, 128, 96, 0.02)";
-            boxShadow = "0 0 0 1px #008060, 0 4px 16px rgba(0, 128, 96, 0.12)";
+            cardBorder = "2px solid var(--rv-primary)";
+            cardBg = "var(--rv-primary-surface)";
+            boxShadow = "0 0 0 1px var(--rv-primary), 0 4px 16px rgba(0, 128, 96, 0.12)";
           } else if (isGrowth) {
-            cardBorder = "2px solid #005bd3";
-            boxShadow = "0 4px 12px rgba(0, 91, 211, 0.12)";
+            cardBorder = "2px solid var(--rv-info)";
+            boxShadow = "0 4px 14px rgba(0, 91, 211, 0.12)";
           } else if (isBusiness) {
             cardBorder = "2px solid #6366f1";
           } else if (isEnterprise) {
@@ -494,11 +457,11 @@ export default function Plan() {
               <div className="rv-card-body" style={{ display: "flex", flexDirection: "column", height: "100%", justifyContent: "space-between", padding: "20px" }}>
                 <div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-                    <span style={{ fontSize: "16px", fontWeight: 700, color: "var(--rv-text)" }}>
+                    <span style={{ fontSize: "17px", fontWeight: 700, color: "var(--rv-text)" }}>
                       {plan.name}
                     </span>
                     <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                      {isCurrent && <span className="rv-badge rv-badge-success">Current Plan</span>}
+                      {isCurrent && <span className="rv-badge rv-badge-success rv-badge-sm">Current</span>}
                       {tierBadge}
                     </div>
                   </div>
@@ -527,7 +490,7 @@ export default function Plan() {
                     </span>
                     {plan.features.map((feature, idx) => (
                       <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "12px", lineHeight: 1.4 }}>
-                        <span style={{ color: "#008060", fontWeight: "bold" }}>✓</span>
+                        <span style={{ color: "var(--rv-primary)", fontWeight: "bold" }}>✓</span>
                         <span style={{ color: "var(--rv-text)" }}>{feature}</span>
                       </div>
                     ))}
@@ -535,13 +498,13 @@ export default function Plan() {
                 </div>
 
                 {/* Bottom Action Button */}
-                <div style={{ borderTop: "1px solid #f1f2f3", paddingTop: "14px", marginTop: "auto" }}>
+                <div style={{ borderTop: "1px solid var(--rv-border-subtle)", paddingTop: "14px", marginTop: "auto" }}>
                   {isCurrent ? (
                     <button
                       type="button"
                       disabled
                       className="rv-btn"
-                      style={{ width: "100%", background: "#e4f8f0", color: "#008060", border: "1px solid #aee9d1", cursor: "default", fontWeight: 700 }}
+                      style={{ width: "100%", background: "var(--rv-primary-surface)", color: "var(--rv-primary-text)", border: "1px solid var(--rv-primary-border)", cursor: "default", fontWeight: 700 }}
                     >
                       ✓ Active Plan
                     </button>
@@ -561,12 +524,12 @@ export default function Plan() {
                       <button
                         type="submit"
                         disabled={isSubmitting}
-                        className={`rv-btn ${isGrowth ? "rv-btn-primary" : "rv-btn-primary"}`}
+                        className="rv-btn rv-btn-primary"
                         style={{
                           width: "100%",
                           fontWeight: 700,
-                          background: isEnterprise ? "#8b5cf6" : isBusiness ? "#6366f1" : isGrowth ? "var(--rv-primary)" : "#005bd3",
-                          borderColor: isEnterprise ? "#8b5cf6" : isBusiness ? "#6366f1" : isGrowth ? "var(--rv-primary)" : "#005bd3",
+                          background: isEnterprise ? "#7c3aed" : isBusiness ? "#4f46e5" : isGrowth ? "var(--rv-primary)" : "var(--rv-info)",
+                          borderColor: "transparent",
                           color: "#ffffff",
                         }}
                       >
@@ -575,7 +538,7 @@ export default function Plan() {
                     </fetcher.Form>
                   )}
 
-                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: isCurrent ? "var(--rv-primary)" : "var(--rv-text-subdued)", fontWeight: 500 }}>
+                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: isCurrent ? "var(--rv-primary-text)" : "var(--rv-text-subdued)", fontWeight: 500 }}>
                     {isCurrent ? (trialStillActive ? trialSubtext(plan) : "Active Plan • Included") : trialSubtext(plan)}
                   </div>
                 </div>
@@ -591,7 +554,7 @@ export default function Plan() {
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0, 0, 0, 0.4)",
+            background: "rgba(0, 0, 0, 0.45)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -606,7 +569,7 @@ export default function Plan() {
               maxWidth: "480px",
               width: "100%",
               padding: "24px",
-              boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
+              boxShadow: "var(--rv-shadow-lg)",
             }}
           >
             <h3 style={{ margin: "0 0 10px", fontSize: "18px", fontWeight: 700, color: "var(--rv-text)" }}>
@@ -617,17 +580,17 @@ export default function Plan() {
             </p>
             <div
               style={{
-                background: "#fff4f2",
-                border: "1px solid #fed2cd",
+                background: "var(--rv-critical-surface)",
+                border: "1px solid var(--rv-critical-border)",
                 borderRadius: "var(--rv-radius-sm)",
                 padding: "12px 14px",
-                fontSize: "12px",
-                color: "#d72c0d",
+                fontSize: "13px",
+                color: "var(--rv-critical-text)",
                 marginBottom: "20px",
                 lineHeight: 1.4,
               }}
             >
-              ⚠️ <strong>Note:</strong> Downgrading will lower your monitored product and restore point limits. Premium capabilities (such as Liquid Themes Backup, Data Vault sync, and Circuit Breaker) will be restricted to the new plan&apos;s allowance.
+              ⚠️ <strong>Note:</strong> Downgrading will lower your monitored product and restore point allowances. Premium capabilities (such as Liquid Theme Backups, Data Vault sync, and Circuit Breaker) will be restricted to the new plan&apos;s limits.
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
