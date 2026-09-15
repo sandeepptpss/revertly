@@ -22,6 +22,9 @@ export default function App() {
         <s-link href="/app/vault">Data Vault</s-link>
         <s-link href="/app/rollback-history">Rollback History</s-link>
         <s-link href="/app/rules">Rules</s-link>
+        <s-link href="/app/monitoring">Uptime</s-link>
+        <s-link href="/app/qa">Health Check</s-link>
+        <s-link href="/app/team">Team</s-link>
         <s-link href="/app/settings">Settings</s-link>
         <s-link href="/app/plan">Plans &amp; Billing</s-link>
         <s-link href="/app/support">Support</s-link>

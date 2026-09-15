@@ -201,6 +201,43 @@ export function compareSnapshots(oldSnapshot, newSnapshot) {
     }
   }
 
+  // Compare metafields
+  const oldMetafields = oldSnapshot.metafields || [];
+  const newMetafields = newSnapshot.metafields || [];
+  for (const newMf of newMetafields) {
+    if (!newMf.namespace || !newMf.key) continue;
+    const oldMf = oldMetafields.find((m) => m.namespace === newMf.namespace && m.key === newMf.key);
+    const oldVal = oldMf ? String(oldMf.value ?? "") : "";
+    const newVal = String(newMf.value ?? "");
+    if (oldMf && oldVal !== newVal) {
+      changes.push({
+        fieldName: `metafield.${newMf.namespace}.${newMf.key}`,
+        variantId: null,
+        oldValue: oldVal,
+        newValue: newVal,
+      });
+    } else if (!oldMf && newVal !== "") {
+      changes.push({
+        fieldName: `metafield.${newMf.namespace}.${newMf.key}`,
+        variantId: null,
+        oldValue: "",
+        newValue: newVal,
+      });
+    }
+  }
+  for (const oldMf of oldMetafields) {
+    if (!oldMf.namespace || !oldMf.key) continue;
+    const stillExists = newMetafields.some((m) => m.namespace === oldMf.namespace && m.key === oldMf.key);
+    if (!stillExists && oldMf.value) {
+      changes.push({
+        fieldName: `metafield.${oldMf.namespace}.${oldMf.key}`,
+        variantId: null,
+        oldValue: String(oldMf.value),
+        newValue: "(deleted)",
+      });
+    }
+  }
+
   return changes;
 }
 
@@ -621,15 +658,18 @@ export async function sendIncidentAlert(shop, incident, settings) {
     }
   }
 
-  // 2. Email alert via Resend
-  if (!settings?.alertEmail) return;
-
+  // 2. Email alert via Resend — delivered to the shop alert address plus every
+  // active team member who opted in, so multi-user stores are all notified.
   const severityEnabled = {
-    CRITICAL: settings.alertOnCritical,
-    HIGH: settings.alertOnHigh,
-    MEDIUM: settings.alertOnMedium,
+    CRITICAL: settings?.alertOnCritical,
+    HIGH: settings?.alertOnHigh,
+    MEDIUM: settings?.alertOnMedium,
   };
   if (!severityEnabled[incident.severity]) return;
+
+  const { getAlertRecipients } = await import("./team.server.js");
+  const recipients = await getAlertRecipients(shop, settings);
+  if (recipients.length === 0) return;
 
   const apiKey = process.env.RESEND_API_KEY;
   const fromEmail = process.env.RESEND_FROM_EMAIL;
@@ -649,7 +689,7 @@ export async function sendIncidentAlert(shop, incident, settings) {
       },
       body: JSON.stringify({
         from: fromEmail,
-        to: settings.alertEmail,
+        to: recipients,
         subject: `[Revertly] ${incident.severity} incident detected — ${incident.name}`,
         html: `
           <p><strong>${incident.name}</strong></p>

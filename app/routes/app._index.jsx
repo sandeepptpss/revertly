@@ -2,6 +2,8 @@ import { useLoaderData, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { calculateStoreStorageUsage } from "../backup.server.js";
+import { getPlanLimits } from "../billing.server.js";
 import {
   ShieldCheckIcon,
   BoxIcon,
@@ -64,6 +66,16 @@ export const loader = async ({ request }) => {
     prisma.appSettings.findUnique({ where: { shop } }),
   ]);
 
+  // Storage & retention posture. calculateStoreStorageUsage swallows its own
+  // errors and returns a safe shape, so this cannot break the dashboard.
+  const [storage, planLimitsInfo] = await Promise.all([
+    calculateStoreStorageUsage(shop),
+    Promise.resolve(getPlanLimits(settings?.planId)),
+  ]);
+
+  const retentionDays = planLimitsInfo.retentionDays || 7;
+  const oldestRetained = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+
   const schedule = settings?.autoBackupSchedule || "DAILY";
   const preferredTime = settings?.autoBackupTime || "02:00";
   const lastBackupAt = settings?.lastAutoBackupAt || latestRestorePoint?.createdAt || null;
@@ -101,6 +113,12 @@ export const loader = async ({ request }) => {
       nextBackupAt: nextBackupAt ? (nextBackupAt instanceof Date ? nextBackupAt.toISOString() : new Date(nextBackupAt).toISOString()) : null,
       cloudSync,
     },
+    storage,
+    retention: {
+      retentionDays,
+      isMaxRetention: retentionDays >= 365,
+      oldestRetainedAt: oldestRetained.toISOString(),
+    },
   };
 };
 
@@ -123,7 +141,8 @@ function fieldLabel(fn) {
 }
 
 export default function Dashboard() {
-  const { stats, recentChanges, recentIncidents, isInitialized, backupCadence } = useLoaderData();
+  const { stats, recentChanges, recentIncidents, isInitialized, backupCadence, storage, retention } =
+    useLoaderData();
 
   return (
     <s-page heading="Dashboard" inlineSize="large">
@@ -273,6 +292,84 @@ export default function Dashboard() {
               <span>Backup Schedule</span>
             </Link>
           </div>
+        </div>
+      </div>
+
+      {/* ── Storage & Retention ── */}
+      <div className="rv-card" style={{ marginBottom: "24px" }}>
+        <div className="rv-card-header">
+          <h3 className="rv-card-title">
+            <DatabaseIcon size={18} />
+            <span>Storage &amp; Backup History</span>
+          </h3>
+          <span className="rv-badge rv-badge-success">
+            {storage?.isUnlimited ? "Unlimited Storage" : "Metered"}
+          </span>
+        </div>
+        <div className="rv-card-body">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+              gap: "16px",
+            }}
+          >
+            <div>
+              <div style={{ fontSize: "22px", fontWeight: 700, color: "var(--rv-text)" }}>
+                {storage?.formattedSize || "0.0 MB"}
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                Archived across {storage?.totalRestorePoints ?? 0} restore point
+                {storage?.totalRestorePoints === 1 ? "" : "s"}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: "22px", fontWeight: 700, color: "var(--rv-text)" }}>
+                {storage?.totalVaultRecords ?? 0}
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                Vaulted order &amp; customer records
+              </div>
+            </div>
+
+            <div>
+              <div
+                style={{
+                  fontSize: "22px",
+                  fontWeight: 700,
+                  color: retention?.isMaxRetention ? "var(--rv-success)" : "var(--rv-text)",
+                }}
+              >
+                {retention?.retentionDays ?? 7} days
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                Backup history retained
+                {retention?.isMaxRetention ? " (full year)" : ""}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--rv-text)", marginTop: "6px" }}>
+                {retention?.oldestRetainedAt
+                  ? new Date(retention.oldestRetainedAt).toLocaleDateString()
+                  : "—"}
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                History kept back to this date
+              </div>
+            </div>
+          </div>
+
+          {!retention?.isMaxRetention && (
+            <p style={{ margin: "14px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+              Your plan retains {retention?.retentionDays} days of history.{" "}
+              <Link to="/app/plan" style={{ color: "var(--rv-info)", fontWeight: 600 }}>
+                Upgrade to Enterprise
+              </Link>{" "}
+              for the full 365-day backup history.
+            </p>
+          )}
         </div>
       </div>
 

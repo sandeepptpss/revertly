@@ -35,23 +35,14 @@ export async function fetchThemeBackup(admin) {
       return { themes: [], activeTheme: null, files: [] };
     }
 
-    // Attempt to read critical theme files (settings_data.json, theme.liquid, templates)
+    // Attempt to read comprehensive theme files (all templates, liquid files, config)
     let files = [];
     try {
-      const filesRes = await admin.graphql(
+      let filesRes = await admin.graphql(
         `#graphql
-        query getThemeFiles($themeId: ID!) {
+        query getAllThemeFiles($themeId: ID!) {
           theme(id: $themeId) {
-            files(first: 50, filenames: [
-              "config/settings_data.json",
-              "layout/theme.liquid",
-              "templates/index.json",
-              "templates/product.json",
-              "templates/collection.json",
-              "templates/cart.json",
-              "templates/page.json",
-              "templates/404.json"
-            ]) {
+            files(first: 250) {
               nodes {
                 filename
                 size
@@ -66,11 +57,50 @@ export async function fetchThemeBackup(admin) {
         }`,
         { variables: { themeId: mainTheme.id } }
       );
-      const filesJson = await filesRes.json();
-      const rawFiles = filesJson.data?.theme?.files?.nodes || [];
+      let filesJson = await filesRes.json();
+      let rawFiles = filesJson.data?.theme?.files?.nodes || [];
+
+      if (rawFiles.length === 0) {
+        filesRes = await admin.graphql(
+          `#graphql
+          query getThemeFiles($themeId: ID!) {
+            theme(id: $themeId) {
+              files(first: 100, filenames: [
+                "config/settings_data.json",
+                "layout/theme.liquid",
+                "templates/index.json",
+                "templates/product.json",
+                "templates/collection.json",
+                "templates/cart.json",
+                "templates/page.json",
+                "templates/blog.json",
+                "templates/article.json",
+                "templates/404.json",
+                "sections/header.liquid",
+                "sections/footer.liquid",
+                "sections/main-product.liquid"
+              ]) {
+                nodes {
+                  filename
+                  size
+                  body {
+                    ... on OnlineStoreThemeFileBodyText {
+                      content
+                    }
+                  }
+                }
+              }
+            }
+          }`,
+          { variables: { themeId: mainTheme.id } }
+        );
+        filesJson = await filesRes.json();
+        rawFiles = filesJson.data?.theme?.files?.nodes || [];
+      }
+
       files = rawFiles.map((f) => ({
         filename: f.filename,
-        size: f.size,
+        size: f.size || (f.body?.content ? f.body.content.length : 0),
         content: f.body?.content || "",
       }));
     } catch (fileErr) {
@@ -92,6 +122,136 @@ export async function fetchThemeBackup(admin) {
     console.error("fetchThemeBackup error:", err?.message || err);
     return null;
   }
+}
+
+/**
+ * Calculates store storage telemetry across all restore points, vault orders, and archives
+ */
+export async function calculateStoreStorageUsage(shop) {
+  try {
+    const [rps, ordersCount, customersCount] = await Promise.all([
+      prisma.restorePoint.findMany({
+        where: { shop },
+        select: {
+          id: true,
+          productCount: true,
+          themeCount: true,
+          snapshotData: true,
+          themeData: true,
+          collectionData: true,
+          pageData: true,
+          articleData: true,
+          menuData: true,
+          orderData: true,
+          customerData: true,
+        },
+      }),
+      prisma.orderArchive.count({ where: { shop } }),
+      prisma.customerArchive.count({ where: { shop } }),
+    ]);
+
+    // Count every payload column, not just a subset, or the reported figure
+    // understates real usage for full-store backups.
+    const PAYLOAD_FIELDS = [
+      "snapshotData",
+      "themeData",
+      "collectionData",
+      "pageData",
+      "articleData",
+      "menuData",
+      "orderData",
+      "customerData",
+    ];
+
+    let estimatedBytes = 0;
+    for (const rp of rps) {
+      for (const field of PAYLOAD_FIELDS) {
+        if (rp[field]) estimatedBytes += JSON.stringify(rp[field]).length;
+      }
+    }
+
+    // Add estimated 2KB per vaulted order and 1KB per customer
+    estimatedBytes += ordersCount * 2048;
+    estimatedBytes += customersCount * 1024;
+
+    const mb = estimatedBytes / (1024 * 1024);
+    const formattedSize = mb >= 1024
+      ? `${(mb / 1024).toFixed(2)} GB`
+      : `${Math.max(0.1, mb).toFixed(2)} MB`;
+
+    return {
+      totalBytes: estimatedBytes,
+      formattedSize,
+      totalRestorePoints: rps.length,
+      totalVaultRecords: ordersCount + customersCount,
+      isUnlimited: true,
+      storageTier: "Unlimited File Storage (Enterprise Encrypted)",
+    };
+  } catch (err) {
+    return {
+      totalBytes: 0,
+      formattedSize: "0.0 MB",
+      totalRestorePoints: 0,
+      totalVaultRecords: 0,
+      isUnlimited: true,
+      storageTier: "Unlimited File Storage",
+    };
+  }
+}
+
+/**
+ * Enforces backup retention policy based on plan limits.
+ * Prunes RestorePoints and ChangeEvents older than the plan's retention window.
+ * Enterprise = 365 days, Business = 180 days, Growth = 90 days, etc.
+ */
+export async function enforceBackupRetentionPolicy(shop) {
+  const { getPlanLimits } = await import("./billing.server.js");
+  const settings = await prisma.appSettings.findUnique({ where: { shop } });
+  const limits = getPlanLimits(settings?.planId);
+  const retentionDays = limits.retentionDays || 7;
+
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+
+  // Prune expired restore points (keep at least the latest 2 regardless)
+  const expiredRps = await prisma.restorePoint.findMany({
+    where: {
+      shop,
+      createdAt: { lt: cutoff },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+
+  const totalRps = await prisma.restorePoint.count({ where: { shop } });
+  const safeToDeleteCount = Math.max(0, totalRps - 2);
+  const rpIdsToDelete = expiredRps.slice(0, safeToDeleteCount).map((rp) => rp.id);
+
+  let deletedRps = 0;
+  if (rpIdsToDelete.length > 0) {
+    // Delete related rollback results and jobs first
+    await prisma.rollbackResult.deleteMany({
+      where: { rollbackJob: { restorePointId: { in: rpIdsToDelete } } },
+    });
+    await prisma.rollbackJob.deleteMany({
+      where: { restorePointId: { in: rpIdsToDelete } },
+    });
+    const del = await prisma.restorePoint.deleteMany({
+      where: { id: { in: rpIdsToDelete } },
+    });
+    deletedRps = del.count;
+  }
+
+  // Prune expired change events
+  const delEvents = await prisma.changeEvent.deleteMany({
+    where: { shop, changedAt: { lt: cutoff } },
+  });
+
+  return {
+    retentionDays,
+    cutoffDate: cutoff.toISOString(),
+    deletedRestorePoints: deletedRps,
+    deletedChangeEvents: delEvents.count,
+  };
 }
 
 /**

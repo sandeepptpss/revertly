@@ -52,9 +52,50 @@ export const action = async ({ request }) => {
       where: { shop_productId: { shop, productId: numericId } },
     });
 
+    let liveMetafields = Array.isArray(product.metafields)
+      ? product.metafields
+      : prevRecord?.snapshotData?.metafields || [];
+
+    if (admin) {
+      try {
+        const mfRes = await admin.graphql(
+          `#graphql
+          query getProductMetafields($id: ID!) {
+            product(id: $id) {
+              metafields(first: 50) {
+                edges {
+                  node {
+                    id
+                    namespace
+                    key
+                    value
+                    type
+                  }
+                }
+              }
+            }
+          }`,
+          { variables: { id: `gid://shopify/Product/${numericId}` } }
+        );
+        const mfJson = await mfRes.json();
+        const edges = mfJson.data?.product?.metafields?.edges || [];
+        if (edges.length > 0) {
+          liveMetafields = edges.map((e) => ({
+            id: e.node.id,
+            namespace: e.node.namespace,
+            key: e.node.key,
+            value: e.node.value,
+            type: e.node.type,
+          }));
+        }
+      } catch (mfErr) {
+        console.warn(`[Webhook] Real-time metafield fetch note for product ${numericId}:`, mfErr?.message);
+      }
+    }
+
     const newSnap = {
       ...buildSnapshotFromPayload(product),
-      metafields: prevRecord?.snapshotData?.metafields || [],
+      metafields: liveMetafields,
     };
 
     const upsertData = {

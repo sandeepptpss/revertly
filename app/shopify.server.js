@@ -18,8 +18,8 @@ export const PLAN_ENTERPRISE = "Enterprise";
 export const PLAN_PRO = PLAN_GROWTH;
 
 const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
+  apiKey: process.env.SHOPIFY_API_KEY || "1aa2f8043b53bd114b8814fc368663fd",
+  apiSecretKey: process.env.SHOPIFY_API_SECRET || "dummy_secret_key_for_testing",
   apiVersion: ApiVersion.July26,
   scopes: process.env.SCOPES?.split(",") || [
     "read_products",
@@ -32,7 +32,7 @@ const shopify = shopifyApp({
     "read_online_store_navigation",
     "write_online_store_navigation",
   ],
-  appUrl: process.env.SHOPIFY_APP_URL || "",
+  appUrl: process.env.SHOPIFY_APP_URL || "https://example.com",
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,

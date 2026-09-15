@@ -256,22 +256,129 @@ model AppSettings {
   cloudSyncConnected    Boolean  @default(false)
   cloudSyncFolder       String   @default("Revertly_Backups") @db.VarChar(255)
   cloudSyncAutoUpload   Boolean  @default(false)
+  cloudSyncAccessToken  String?  @db.Text
+  cloudSyncRefreshToken String?  @db.Text
+  cloudSyncTokenExpiry  DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
 
 // Support tickets submitted by merchants
 model SupportTicket {
-  id        Int      @id @default(autoincrement())
-  shop      String   @db.VarChar(255)
-  subject   String   @db.VarChar(500)
-  category  String   @db.VarChar(100) @default("General")
-  message   String   @db.LongText
-  email     String?  @db.VarChar(255)
-  status    String   @db.VarChar(50)  @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, CLOSED
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          Int      @id @default(autoincrement())
+  shop        String   @db.VarChar(255)
+  subject     String   @db.VarChar(500)
+  category    String   @db.VarChar(100) @default("General")
+  message     String   @db.LongText
+  email       String?  @db.VarChar(255)
+  status      String   @db.VarChar(50)  @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, CLOSED
+  priority    String   @default("NORMAL") @db.VarChar(50)  // NORMAL, HIGH, URGENT
+  planTier    String?  @db.VarChar(50)
+  isEmergency Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([shop])
   @@index([status])
 }
+
+// Multi-user team members with role-based access control (RBAC)
+model TeamMember {
+  id            Int       @id @default(autoincrement())
+  shop          String    @db.VarChar(255)
+  email         String    @db.VarChar(255)
+  name          String?   @db.VarChar(255)
+  role          String    @default("ADMIN") @db.VarChar(50) // OWNER, ADMIN, EDITOR, VIEWER
+  status        String    @default("ACTIVE") @db.VarChar(50) // ACTIVE, INVITED, SUSPENDED
+  alertsEnabled Boolean   @default(true)
+  lastActiveAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([shop, email])
+  @@index([shop])
+}
+
+// Multi-user and system security audit trail
+model AuditLog {
+  id           Int      @id @default(autoincrement())
+  shop         String   @db.VarChar(255)
+  userEmail    String?  @db.VarChar(255)
+  userName     String?  @db.VarChar(255)
+  action       String   @db.VarChar(100) // RESTORE_TRIGGERED, BACKUP_CREATED, SETTINGS_UPDATED, etc.
+  resourceType String?  @db.VarChar(100)
+  resourceId   String?  @db.VarChar(255)
+  details      Json?
+  ipAddress    String?  @db.VarChar(100)
+  createdAt    DateTime @default(now())
+
+  @@index([shop])
+  @@index([shop, action])
+  @@index([createdAt])
+}
+
+// Store & third-party app downtime monitoring services
+model MonitoredService {
+  id                    Int             @id @default(autoincrement())
+  shop                  String          @db.VarChar(255)
+  name                  String          @db.VarChar(255)
+  serviceType           String          @default("STOREFRONT") @db.VarChar(50) // STOREFRONT, SHOPIFY_API, APP, CUSTOM
+  url                   String          @db.VarChar(500)
+  status                String          @default("OPERATIONAL") @db.VarChar(50) // OPERATIONAL, DEGRADED, DOWN
+  uptimePercent         Float           @default(100.0)
+  lastResponseTimeMs    Int?
+  lastStatusCode        Int?
+  lastCheckAt           DateTime?
+  checkIntervalMinutes  Int             @default(5)
+  checks                DowntimeCheck[]
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  @@index([shop])
+  @@index([status])
+}
+
+// Individual periodic ping/check results for monitored services
+model DowntimeCheck {
+  id             Int              @id @default(autoincrement())
+  shop           String           @db.VarChar(255)
+  serviceId      Int
+  service        MonitoredService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  isUp           Boolean          @default(true)
+  statusCode     Int?
+  responseTimeMs Int?
+  errorMessage   String?          @db.Text
+  checkedAt      DateTime         @default(now())
+
+  @@index([shop])
+  @@index([serviceId])
+  @@index([checkedAt])
+}
+
+// In-app automated QA and backup integrity diagnostic runs
+model QaTestRun {
+  id          Int      @id @default(autoincrement())
+  shop        String   @db.VarChar(255)
+  healthScore Int      @default(100) // 0 - 100
+  status      String   @default("PASSED") @db.VarChar(50) // PASSED, WARNING, FAILED
+  summary     String?  @db.Text
+  testResults Json
+  testedAt    DateTime @default(now())
+
+  @@index([shop])
+  @@index([testedAt])
+}
+
+// Distributed lock so scheduled sweeps don't double-fire across server instances.
+// A lock is held until `expiresAt`; acquisition is an atomic conditional update on
+// that column, so a crashed holder self-heals once the TTL lapses.
+model JobLock {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(191)
+  owner     String?  @db.VarChar(191) // instance identifier, for diagnostics
+  lockedAt  DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+

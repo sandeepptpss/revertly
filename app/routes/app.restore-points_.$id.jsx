@@ -14,6 +14,8 @@ import {
   fetchThemeBackup,
 } from "../backup.server.js";
 import { checkFeatureAccess } from "../billing.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
+import { syncRestorePointToCloud } from "../cloudSync.server.js";
 import {
   FileCodeIcon,
   BoxIcon,
@@ -202,33 +204,28 @@ export const action = async ({ request, params }) => {
     const intent = formData.get("intent");
 
     if (intent === "syncToCloud") {
-      const rp = await prisma.restorePoint.findFirst({
-        where: { id: rpId, shop },
-      });
-      if (!rp) {
-        return { success: false, message: "Restore point not found." };
-      }
+      const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+      if (!perm.allowed) return { success: false, message: perm.message };
 
-      const settings = await prisma.appSettings.findUnique({ where: { shop } });
-      const provider = settings?.cloudSyncProvider && settings.cloudSyncProvider !== "NONE"
-        ? settings.cloudSyncProvider
-        : "GOOGLE_DRIVE";
-      const folder = settings?.cloudSyncFolder || "Revertly_Backups";
-
-      await prisma.restorePoint.update({
-        where: { id: rpId },
-        data: {
-          cloudSyncedAt: new Date(),
-          cloudSyncStatus: "SYNCED",
-          cloudProvider: provider,
-        },
+      // Performs a real upload and reports the real outcome.
+      const res = await syncRestorePointToCloud(shop, rpId);
+      await logAudit(shop, perm.actor, "BACKUP_CLOUD_SYNC", {
+        resourceType: "RestorePoint",
+        resourceId: rpId,
+        details: { success: res.success, provider: res.provider, error: res.error || null },
+        request,
       });
 
-      const providerLabel = provider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox";
-      return {
-        success: true,
-        message: `Restore Point "${rp.name}" successfully archived and synced to ${providerLabel} in folder "/${folder}"!`,
-      };
+      return res.success
+        ? { success: true, message: res.message }
+        : { success: false, message: res.error };
+    }
+
+    // Every remaining intent mutates live store data, so all of them require
+    // the restore permission before any work begins.
+    const restorePerm = await checkPermission(shop, session, PERMISSIONS.RESTORE);
+    if (!restorePerm.allowed) {
+      return { success: false, message: restorePerm.message };
     }
 
     if (intent === "restore_theme") {
@@ -304,16 +301,38 @@ export const action = async ({ request, params }) => {
       return res;
     }
 
-    if (intent !== "restore") return { success: false };
+    if (
+      intent !== "restore" &&
+      intent !== "restore_single_product" &&
+      intent !== "restore_selected_products"
+    ) {
+      return { success: false };
+    }
 
     const restorePoint = await prisma.restorePoint.findFirst({
       where: { id: rpId, shop },
     });
     if (!restorePoint) return { success: false, message: "Restore point not found." };
 
-    const savedProducts = Array.isArray(restorePoint.snapshotData)
+    const allSavedProducts = Array.isArray(restorePoint.snapshotData)
       ? restorePoint.snapshotData
       : [];
+
+    let targetProducts = allSavedProducts;
+    if (intent === "restore_single_product") {
+      const targetProductId = String(formData.get("productId") || "").trim();
+      targetProducts = allSavedProducts.filter((s) => String(s.productId) === targetProductId);
+      if (targetProducts.length === 0) {
+        return { success: false, message: `Product #${targetProductId} not found in restore point snapshot.` };
+      }
+    } else if (intent === "restore_selected_products") {
+      const selectedRaw = formData.get("selectedProductIds") || "";
+      const selectedIds = selectedRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      targetProducts = allSavedProducts.filter((s) => selectedIds.includes(String(s.productId)));
+      if (targetProducts.length === 0) {
+        return { success: false, message: "No matching products found for selection." };
+      }
+    }
 
     // Get current snapshots
     const currentSnapshots = await prisma.productSnapshot.findMany({
@@ -329,7 +348,7 @@ export const action = async ({ request, params }) => {
         shop,
         restorePointId: rpId,
         status: "RUNNING",
-        totalProducts: savedProducts.length,
+        totalProducts: targetProducts.length,
       },
     });
 
@@ -341,7 +360,7 @@ export const action = async ({ request, params }) => {
     let successCount = 0;
     let failedCount = 0;
 
-    for (const saved of savedProducts) {
+    for (const saved of targetProducts) {
       const productId = saved.productId;
       const savedSnap = saved.snapshotData || saved;
       const current = currentMap[productId];
@@ -451,9 +470,31 @@ export const action = async ({ request, params }) => {
       data: { status: "READY" },
     });
 
+    await logAudit(
+      shop,
+      restorePerm.actor,
+      intent === "restore_single_product" ? "PRODUCT_RESTORE_INDIVIDUAL" : "PRODUCT_RESTORE_BULK",
+      {
+        resourceType: "Product",
+        resourceId: rpId,
+        details: {
+          restorePointId: rpId,
+          mode: intent,
+          targetCount: targetProducts.length,
+          successCount,
+          failedCount,
+        },
+        request,
+      },
+    );
+
+    const successLabel = intent === "restore_single_product"
+      ? `Product successfully restored to snapshot state.`
+      : `Restored ${successCount} products successfully (${failedCount} failed).`;
+
     return {
       success: true,
-      message: `Restore ${finalStatus.toLowerCase()}: ${successCount} succeeded, ${failedCount} failed.`,
+      message: successLabel,
     };
   } catch (error) {
     console.error("Restore point detail action error:", error);
@@ -490,6 +531,7 @@ export default function RestorePointDetail() {
     () => filesList.map((f) => f.filename)
   );
   const [expandedFile, setExpandedFile] = useState(null);
+  const [selectedProductIds, setSelectedProductIds] = useState([]);
 
   const [activeTab, setActiveTab] = useState(() => {
     if (differences.length > 0) return "products";
@@ -934,16 +976,31 @@ export default function RestorePointDetail() {
                     These products were modified since this snapshot was taken. Rollback will safely restore only modified field values.
                   </p>
                 </div>
-                <fetcher.Form method="POST">
-                  <input type="hidden" name="intent" value="restore" />
-                  <button
-                    type="submit"
-                    disabled={isRestoring}
-                    className="rv-btn rv-btn-critical rv-btn-lg"
-                  >
-                    <span>{isRestoring ? "Restoring products..." : `Restore ${differences.length} Products to Snapshot`}</span>
-                  </button>
-                </fetcher.Form>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                  {selectedProductIds.length > 0 && (
+                    <fetcher.Form method="POST" style={{ margin: 0 }}>
+                      <input type="hidden" name="intent" value="restore_selected_products" />
+                      <input type="hidden" name="selectedProductIds" value={selectedProductIds.join(",")} />
+                      <button
+                        type="submit"
+                        disabled={isRestoring}
+                        className="rv-btn rv-btn-primary rv-btn-lg"
+                      >
+                        <span>{isRestoring ? "Restoring..." : `Restore Selected (${selectedProductIds.length})`}</span>
+                      </button>
+                    </fetcher.Form>
+                  )}
+                  <fetcher.Form method="POST" style={{ margin: 0 }}>
+                    <input type="hidden" name="intent" value="restore" />
+                    <button
+                      type="submit"
+                      disabled={isRestoring}
+                      className="rv-btn rv-btn-critical rv-btn-lg"
+                    >
+                      <span>{isRestoring ? "Restoring products..." : `Restore All (${differences.length}) Products`}</span>
+                    </button>
+                  </fetcher.Form>
+                </div>
               </div>
             </div>
           )}
@@ -956,16 +1013,66 @@ export default function RestorePointDetail() {
             />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 2px" }}>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: "pointer", fontWeight: 500 }}>
+                  <input
+                    type="checkbox"
+                    checked={differences.length > 0 && selectedProductIds.length === differences.length}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedProductIds(differences.map((d) => d.productId));
+                      } else {
+                        setSelectedProductIds([]);
+                      }
+                    }}
+                    style={{ width: "16px", height: "16px", cursor: "pointer" }}
+                  />
+                  <span>Select All Differing Products ({differences.length})</span>
+                </label>
+                {selectedProductIds.length > 0 && (
+                  <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                    {selectedProductIds.length} of {differences.length} selected
+                  </span>
+                )}
+              </div>
+
               {differences.map((d) => (
                 <div key={d.productId} className="rv-card" style={{ margin: 0 }}>
-                  <div className="rv-card-header">
-                    <h4 className="rv-card-title">
-                      <BoxIcon size={16} style={{ color: "var(--rv-info)" }} />
-                      <span>{d.title}</span>
-                    </h4>
-                    <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                      Product #{d.productId}
-                    </span>
+                  <div className="rv-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedProductIds.includes(d.productId)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedProductIds((prev) => [...prev, d.productId]);
+                          } else {
+                            setSelectedProductIds((prev) => prev.filter((id) => id !== d.productId));
+                          }
+                        }}
+                        style={{ width: "16px", height: "16px", cursor: "pointer" }}
+                      />
+                      <h4 className="rv-card-title" style={{ margin: 0 }}>
+                        <BoxIcon size={16} style={{ color: "var(--rv-info)" }} />
+                        <span>{d.title}</span>
+                      </h4>
+                      <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Product #{d.productId}
+                      </span>
+                    </div>
+
+                    <fetcher.Form method="POST" style={{ margin: 0 }}>
+                      <input type="hidden" name="intent" value="restore_single_product" />
+                      <input type="hidden" name="productId" value={d.productId} />
+                      <button
+                        type="submit"
+                        disabled={isRestoring}
+                        className="rv-btn rv-btn-secondary rv-btn-sm"
+                        title="Restore only this product to snapshot state"
+                      >
+                        <span>1-Click Restore Product</span>
+                      </button>
+                    </fetcher.Form>
                   </div>
                   <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
                     <table className="rv-table">

@@ -4,6 +4,10 @@ import { ServerRouter } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { initBackgroundScheduler } from "./scheduler.server.js";
+
+// Initialize in-process background backup scheduler (checks every 5 minutes)
+initBackgroundScheduler(5);
 
 export const streamTimeout = 5000;
 

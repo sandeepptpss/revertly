@@ -5,6 +5,8 @@ import prisma from "../db.server.js";
 import { getOrCreateSettings } from "../monitor.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { checkFeatureAccess } from "../billing.server.js";
+import { getCloudProviderStatus, listCloudBackups } from "../cloudSync.server.js";
+import { checkPermission, PERMISSIONS } from "../team.server.js";
 import {
   SettingsIcon,
   ShieldCheckIcon,
@@ -35,6 +37,24 @@ export const loader = async ({ request }) => {
     checkFeatureAccess(shop, "circuitBreaker"),
     checkFeatureAccess(shop, "slack"),
   ]);
+
+  // Drives an honest "needs configuration" state instead of a Connect button
+  // that could only fail. The missing-env detail is for operators only — the
+  // merchant-facing banner must not mention server configuration.
+  const cloudProviders = getCloudProviderStatus();
+  for (const p of cloudProviders) {
+    if (!p.configured) {
+      console.warn(
+        `[Cloud Sync] ${p.label} is unavailable to merchants — missing ${p.missingEnv.join(", ")}`,
+      );
+    }
+  }
+  const url = new URL(request.url);
+  const cloudNotice = {
+    error: url.searchParams.get("cloud_error"),
+    connected: url.searchParams.get("cloud_connected"),
+    warning: url.searchParams.get("cloud_warning"),
+  };
 
   let themeEmbedActive = false;
   let activeThemeName = "Dawn";
@@ -79,6 +99,8 @@ export const loader = async ({ request }) => {
     themeEmbedActive,
     activeThemeName,
     themeEditorUrl,
+    cloudProviders,
+    cloudNotice,
   };
 };
 
@@ -112,6 +134,12 @@ export const action = async ({ request }) => {
     const shop = session.shop;
     const formData = await request.formData();
     const intent = formData.get("intent");
+
+    // Every action on this page mutates shop configuration.
+    const settingsPerm = await checkPermission(shop, session, PERMISSIONS.SETTINGS_WRITE);
+    if (!settingsPerm.allowed) {
+      return { success: false, message: settingsPerm.message };
+    }
 
     if (intent === "testSlack") {
       const slackCheck = await checkFeatureAccess(shop, "slack");
@@ -153,33 +181,9 @@ export const action = async ({ request }) => {
       }
     }
 
-    if (intent === "connectCloud") {
-      const provider = formData.get("provider") || "GOOGLE_DRIVE";
-      const email = formData.get("email")?.trim() || `${shop.replace(".myshopify.com", "")}@gmail.com`;
-      const folder = formData.get("folder")?.trim() || "Revertly_Backups";
-      await prisma.appSettings.upsert({
-        where: { shop },
-        create: {
-          shop,
-          cloudSyncProvider: provider,
-          cloudSyncEmail: email,
-          cloudSyncFolder: folder,
-          cloudSyncConnected: true,
-          cloudSyncAutoUpload: true,
-        },
-        update: {
-          cloudSyncProvider: provider,
-          cloudSyncEmail: email,
-          cloudSyncFolder: folder,
-          cloudSyncConnected: true,
-          cloudSyncAutoUpload: true,
-        },
-      });
-      return {
-        success: true,
-        message: `Successfully connected ${provider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} (${email}) targeting folder "/${folder}". Automatic offsite upload enabled!`,
-      };
-    }
+    // Note: there is deliberately no "connectCloud" action. Connecting requires
+    // a real OAuth consent round-trip, which starts at /auth/cloud/:provider —
+    // a form post here could only ever fake a connection.
 
     if (intent === "disconnectCloud") {
       await prisma.appSettings.update({
@@ -189,20 +193,30 @@ export const action = async ({ request }) => {
           cloudSyncProvider: "NONE",
           cloudSyncEmail: null,
           cloudSyncAutoUpload: false,
+          // Drop the credentials too; leaving them behind would keep a usable
+          // token for an account the merchant believes they disconnected.
+          cloudSyncAccessToken: null,
+          cloudSyncRefreshToken: null,
+          cloudSyncTokenExpiry: null,
         },
       });
       return {
         success: true,
-        message: "Cloud storage link disconnected. Backups will be retained locally.",
+        message: "Cloud storage disconnected and stored credentials deleted. Backups are retained locally.",
       };
     }
 
     if (intent === "testCloudSync") {
+      // A real round-trip against the provider, so a failure is reported as one.
+      const res = await listCloudBackups(shop);
+      if (!res.success) {
+        return { success: false, message: `Connection test failed: ${res.error}` };
+      }
       const existing = await getOrCreateSettings(shop);
       const providerName = existing.cloudSyncProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox";
       return {
         success: true,
-        message: `Connection test passed! Read & write credentials verified for ${providerName} folder "/${existing.cloudSyncFolder}".`,
+        message: `Connection verified. ${res.files?.length ?? 0} backup file(s) found in ${providerName} folder "/${existing.cloudSyncFolder}".`,
       };
     }
 
@@ -318,6 +332,8 @@ export default function Settings() {
     themeEmbedActive = false,
     activeThemeName = "Dawn",
     themeEditorUrl = "",
+    cloudProviders = [],
+    cloudNotice = {},
   } = useLoaderData();
 
   const fetcher = useFetcher();
@@ -344,10 +360,15 @@ export default function Settings() {
   const [cloudSyncFolder, setCloudSyncFolder] = useState(settings?.cloudSyncFolder || "Revertly_Backups");
   const [cloudSyncAutoUpload, setCloudSyncAutoUpload] = useState(settings?.cloudSyncAutoUpload ?? true);
   const [connectProvider, setConnectProvider] = useState("GOOGLE_DRIVE");
-  const [connectEmail, setConnectEmail] = useState(settings?.cloudSyncEmail || "");
 
   const isCloudConnected = Boolean(settings?.cloudSyncConnected);
   const activeCloudProvider = settings?.cloudSyncProvider || "NONE";
+  const selectedProviderStatus = (cloudProviders || []).find((p) => p.id === connectProvider);
+  // If only one provider is enabled, point the merchant at the one that works
+  // rather than leaving them with a dead end.
+  const otherProviderAvailable = (cloudProviders || []).some(
+    (p) => p.configured && p.id !== connectProvider,
+  );
 
   const numThreshold = parseInt(String(threshold), 10) || 50;
   const sampleReducedPrice = Math.max(0, 100 * (1 - numThreshold / 100)).toFixed(0);
@@ -366,6 +387,25 @@ export default function Settings() {
   return (
     <s-page heading="Settings" inlineSize="full">
       <div className="rv-settings-wrapper">
+
+        {/* Cloud OAuth round-trip result (redirected back from the provider) */}
+        {cloudNotice?.error && (
+          <Banner tone="critical" title="Cloud connection failed" className="rv-fade-in">
+            {cloudNotice.error}
+          </Banner>
+        )}
+        {cloudNotice?.connected && (
+          <Banner tone="success" title="Cloud storage connected" className="rv-fade-in">
+            {cloudNotice.connected === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} is now linked to this store.
+            {cloudNotice.warning === "no_refresh_token" && (
+              <strong>
+                {" "}
+                The provider did not return a refresh token, so this connection will stop working when
+                the access token expires. Disconnect and reconnect to fix it.
+              </strong>
+            )}
+          </Banner>
+        )}
 
         {/* Action Result Banner */}
         {result?.message && (
@@ -834,7 +874,8 @@ export default function Settings() {
                           </div>
                         </div>
 
-                        {/* Connection Credentials Form */}
+                        {/* Real OAuth handoff. Connecting requires provider
+                            consent, so this is a link out, not a form post. */}
                         <div
                           style={{
                             padding: "16px",
@@ -846,50 +887,64 @@ export default function Settings() {
                             gap: "12px",
                           }}
                         >
-                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px" }}>
-                            <div className="rv-form-group" style={{ margin: 0 }}>
-                              <label className="rv-label" htmlFor="connectEmail">
-                                Account Email ({connectProvider === "GOOGLE_DRIVE" ? "Google" : "Dropbox"})
-                              </label>
-                              <input
-                                id="connectEmail"
-                                type="email"
-                                name="email"
-                                className="rv-input"
-                                placeholder="merchant@yourcompany.com"
-                                value={connectEmail}
-                                onChange={(e) => setConnectEmail(e.target.value)}
-                              />
-                            </div>
-
-                            <div className="rv-form-group" style={{ margin: 0 }}>
-                              <label className="rv-label" htmlFor="connectFolder">
-                                Backup Folder Name
-                              </label>
-                              <input
-                                id="connectFolder"
-                                type="text"
-                                name="folder"
-                                className="rv-input"
-                                placeholder="Revertly_Backups"
-                                value={cloudSyncFolder}
-                                onChange={(e) => setCloudSyncFolder(e.target.value)}
-                              />
-                            </div>
-                          </div>
-
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px" }}>
-                            <input type="hidden" name="provider" value={connectProvider} />
-                            <button
-                              type="submit"
-                              name="intent"
-                              value="connectCloud"
-                              className="rv-btn rv-btn-primary"
+                          {selectedProviderStatus?.configured ? (
+                            <>
+                              <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.5 }}>
+                                You will be sent to {selectedProviderStatus.label} to approve access. Revertly
+                                only requests permission for the files it creates, and your account
+                                email is read from the provider after you approve — nothing is stored
+                                until then.
+                              </p>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px" }}>
+                                {/* target="_top" is required: the app runs inside
+                                    Shopify Admin's iframe, and Google/Dropbox both
+                                    refuse to render their consent screen in a frame
+                                    (X-Frame-Options). Without this the click stays
+                                    inside the iframe and the OAuth page loads blank. */}
+                                <a
+                                  href={`/auth/cloud/${connectProvider.toLowerCase()}`}
+                                  target="_top"
+                                  rel="noopener"
+                                  className="rv-btn rv-btn-primary"
+                                >
+                                  <CloudUploadIcon size={14} />
+                                  <span>Connect {selectedProviderStatus.label}</span>
+                                </a>
+                              </div>
+                            </>
+                          ) : (
+                            /* Merchant-facing copy: a merchant has no server and
+                               no environment file, so this must not tell them to
+                               set env vars. This is also NOT a per-store toggle —
+                               it is one app-wide setup step the app operator does
+                               once for every merchant — so the copy must not
+                               imply support can switch it on for one store. The
+                               operator detail is logged server-side instead. */
+                            <Banner
+                              tone="warning"
+                              title={`${selectedProviderStatus?.label || "This provider"} isn't available yet`}
                             >
-                              <CloudUploadIcon size={14} />
-                              <span>Connect {connectProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"}</span>
-                            </button>
-                          </div>
+                              <p style={{ margin: "0 0 6px" }}>
+                                Offsite sync to {selectedProviderStatus?.label} is being set up for Revertly and
+                                isn&apos;t ready yet. Your backups are still being captured and stored safely —
+                                this only affects keeping an extra copy in your own cloud storage.
+                              </p>
+                              <p style={{ margin: 0, fontSize: "12px" }}>
+                                {otherProviderAvailable ? (
+                                  <>
+                                    You can connect{" "}
+                                    <strong>
+                                      {(cloudProviders || []).find((p) => p.configured && p.id !== connectProvider)?.label}
+                                    </strong>{" "}
+                                    now instead. We&apos;ll let you know when {selectedProviderStatus?.label} support
+                                    is available.
+                                  </>
+                                ) : (
+                                  <>We&apos;ll let you know as soon as this is available.</>
+                                )}
+                              </p>
+                            </Banner>
+                          )}
                         </div>
                       </div>
                     )}

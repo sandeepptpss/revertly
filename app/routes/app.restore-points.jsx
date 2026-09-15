@@ -5,6 +5,8 @@ import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { createMultiResourceRestorePoint } from "../backup.server.js";
 import { checkRestorePointLimit, checkFeatureAccess } from "../billing.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
+import { syncRestorePointToCloud } from "../cloudSync.server.js";
 import {
   SaveIcon,
   BoxIcon,
@@ -56,6 +58,9 @@ export const action = async ({ request }) => {
     const intent = formData.get("intent");
 
     if (intent === "create") {
+      const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+      if (!perm.allowed) return { success: false, message: perm.message };
+
       const limitCheck = await checkRestorePointLimit(shop);
       if (!limitCheck.allowed) {
         return {
@@ -110,48 +115,58 @@ export const action = async ({ request }) => {
     }
 
     if (intent === "delete") {
-      const rpId = parseInt(formData.get("rpId"), 10);
-      if (!rpId || isNaN(rpId)) {
-        return { success: false, message: "Invalid restore point ID." };
-      }
-      const rp = await prisma.restorePoint.findUnique({ where: { id: rpId } });
-      if (rp && rp.shop === shop) {
-        await prisma.restorePoint.delete({ where: { id: rpId } });
-        return { success: true, message: "Restore point deleted." };
-      }
-      return { success: false, message: "Restore point not found or access denied." };
-    }
+      const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_DELETE);
+      if (!perm.allowed) return { success: false, message: perm.message };
 
-    if (intent === "syncToCloud") {
       const rpId = parseInt(formData.get("rpId"), 10);
       if (!rpId || isNaN(rpId)) {
         return { success: false, message: "Invalid restore point ID." };
       }
-      const rp = await prisma.restorePoint.findUnique({ where: { id: rpId } });
-      if (!rp || rp.shop !== shop) {
+      const rp = await prisma.restorePoint.findFirst({ where: { id: rpId, shop } });
+      if (!rp) {
         return { success: false, message: "Restore point not found or access denied." };
       }
 
-      const settings = await prisma.appSettings.findUnique({ where: { shop } });
-      const provider = settings?.cloudSyncProvider && settings.cloudSyncProvider !== "NONE"
-        ? settings.cloudSyncProvider
-        : "GOOGLE_DRIVE";
-      const folder = settings?.cloudSyncFolder || "Revertly_Backups";
+      // Rollback jobs reference the restore point, so clear them first or the
+      // FK constraint rejects the delete.
+      await prisma.rollbackResult.deleteMany({
+        where: { rollbackJob: { restorePointId: rpId } },
+      });
+      await prisma.rollbackJob.deleteMany({ where: { restorePointId: rpId } });
+      await prisma.restorePoint.delete({ where: { id: rpId } });
 
-      await prisma.restorePoint.update({
-        where: { id: rpId },
-        data: {
-          cloudSyncedAt: new Date(),
-          cloudSyncStatus: "SYNCED",
-          cloudProvider: provider,
-        },
+      await logAudit(shop, perm.actor, "BACKUP_DELETED", {
+        resourceType: "RestorePoint",
+        resourceId: rpId,
+        details: { name: rp.name },
+        request,
       });
 
-      const providerLabel = provider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox";
-      return {
-        success: true,
-        message: `Snapshot "${rp.name}" successfully exported and synced to ${providerLabel} in folder "/${folder}"!`,
-      };
+      return { success: true, message: "Restore point deleted." };
+    }
+
+    if (intent === "syncToCloud") {
+      const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+      if (!perm.allowed) return { success: false, message: perm.message };
+
+      const rpId = parseInt(formData.get("rpId"), 10);
+      if (!rpId || isNaN(rpId)) {
+        return { success: false, message: "Invalid restore point ID." };
+      }
+
+      // syncRestorePointToCloud performs the real upload and is itself
+      // shop-scoped, so it will refuse another shop's restore point.
+      const res = await syncRestorePointToCloud(shop, rpId);
+      await logAudit(shop, perm.actor, "BACKUP_CLOUD_SYNC", {
+        resourceType: "RestorePoint",
+        resourceId: rpId,
+        details: { success: res.success, provider: res.provider, error: res.error || null },
+        request,
+      });
+
+      return res.success
+        ? { success: true, message: res.message }
+        : { success: false, message: res.error };
     }
 
     return { success: false, message: "Unknown action." };
