@@ -25,6 +25,7 @@ import {
   DropboxIcon,
   DatabaseIcon,
   RefreshCwIcon,
+  HistoryIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 
@@ -385,7 +386,7 @@ export default function Settings() {
   ];
 
   return (
-    <s-page heading="Settings" inlineSize="full">
+    <s-page heading="Settings" inlineSize="large">
       <div className="rv-settings-wrapper">
 
         {/* Cloud OAuth round-trip result (redirected back from the provider) */}
@@ -420,6 +421,13 @@ export default function Settings() {
 
         <fetcher.Form method="POST">
           <input type="hidden" name="intent" value="save" />
+          {/* Explicit boolean fallbacks so unchecking never loses state on POST */}
+          <input type="hidden" name="monitoringEnabled" value={monitoringEnabled ? "true" : "false"} />
+          <input type="hidden" name="circuitBreakerEnabled" value={circuitBreakerEnabled ? "true" : "false"} />
+          <input type="hidden" name="cloudSyncAutoUpload" value={cloudSyncAutoUpload ? "true" : "false"} />
+          <input type="hidden" name="alertOnCritical" value={alertCritical ? "true" : "false"} />
+          <input type="hidden" name="alertOnHigh" value={alertHigh ? "true" : "false"} />
+          <input type="hidden" name="alertOnMedium" value={alertMedium ? "true" : "false"} />
 
           {/* Top Hero Banner */}
           <div
@@ -429,46 +437,95 @@ export default function Settings() {
               alignItems: "center",
               justifyContent: "space-between",
               flexWrap: "wrap",
-              gap: "16px",
+              gap: "18px",
               marginBottom: "24px",
+              padding: "20px 24px",
+              borderRadius: "var(--rv-radius-md)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "16px", minWidth: "280px", flex: 1 }}>
               <div
                 className="rv-card-icon-badge success"
-                style={{ width: "42px", height: "42px", borderRadius: "var(--rv-radius-md)" }}
+                style={{ width: "46px", height: "46px", borderRadius: "var(--rv-radius-md)", flexShrink: 0 }}
               >
-                <SettingsIcon size={22} />
+                <SettingsIcon size={24} />
               </div>
               <div>
-                <h1 style={{ fontSize: "18px", fontWeight: 800, color: "var(--rv-text)", margin: "0 0 3px" }}>
-                  Store Protection &amp; Alert Engine
-                </h1>
-                <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "4px" }}>
+                  <h1 style={{ fontSize: "19px", fontWeight: 800, color: "var(--rv-text)", margin: 0, letterSpacing: "-0.2px" }}>
+                    Store Protection &amp; Alert Engine
+                  </h1>
+                  <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 600 }}>
+                    Active Protection
+                  </span>
+                </div>
+                <p style={{ margin: "0 0 8px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.4 }}>
                   Automate catalog change defense, price crash circuit breakers, and operations alerting.
                 </p>
+
+                {/* Quick Status Chips */}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ fontSize: "11px", padding: "2px 8px" }}>
+                    <span className={`rv-status-dot ${monitoringEnabled ? "success" : "neutral"}`} />
+                    Monitoring: {monitoringEnabled ? "Active" : "Paused"}
+                  </span>
+                  <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ fontSize: "11px", padding: "2px 8px" }}>
+                    <span className={`rv-status-dot ${autoBackupSchedule !== "OFF" ? "success" : "neutral"}`} />
+                    Cadence: {autoBackupSchedule}
+                  </span>
+                  <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ fontSize: "11px", padding: "2px 8px" }}>
+                    <span className={`rv-status-dot ${isCloudConnected ? "success" : "warning"}`} />
+                    Cloud: {isCloudConnected ? (activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox") : "Local Only"}
+                  </span>
+                  <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ fontSize: "11px", padding: "2px 8px" }}>
+                    <span className={`rv-status-dot ${circuitBreakerEnabled ? "warning" : "neutral"}`} />
+                    Circuit Breaker: {circuitBreakerEnabled ? `Armed (${threshold}%)` : "Disarmed"}
+                  </span>
+                </div>
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="rv-btn rv-btn-primary rv-btn-lg"
-              style={{ minWidth: "160px" }}
-            >
-              <SaveIcon size={16} />
-              <span>{isSaving ? "Saving Settings..." : "Save All Settings"}</span>
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <button
+                type="submit"
+                disabled={isSaving}
+                className="rv-btn rv-btn-primary rv-btn-lg"
+                style={{ minWidth: "160px", boxShadow: "0 2px 8px rgba(0, 128, 96, 0.25)" }}
+              >
+                <SaveIcon size={16} />
+                <span>{isSaving ? "Saving Settings..." : "Save Settings"}</span>
+              </button>
+            </div>
           </div>
 
-          {/* 2-Column Responsive Layout */}
+          {/* Mobile & Tablet Pill Navigation Bar */}
+          <div className="rv-settings-pills">
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`rv-settings-pill-btn ${activeTab === item.id ? "active" : ""}`}
+                onClick={() => setActiveTab(item.id)}
+              >
+                <span>{item.label}</span>
+                {item.statusBadge && (
+                  <span className="rv-badge rv-badge-sm" style={{ fontSize: "10px", padding: "1px 6px" }}>
+                    {item.statusBadge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* 2-Column Full-Width Responsive Layout */}
           <div className="rv-settings-grid">
 
             {/* Left Sidebar: Navigation & Protection Health Card */}
             <aside className="rv-settings-sidebar">
               <nav className="rv-settings-nav" aria-label="Settings Categories">
-                <div style={{ padding: "6px 10px 4px", fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--rv-text-subdued)" }}>
-                  Settings Menu
+                <div className="rv-settings-nav-header">
+                  <span>Settings Menu</span>
+                  <span style={{ fontSize: "10px", color: "var(--rv-text-subdued)" }}>{navItems.length - 1} sections</span>
                 </div>
                 {navItems.map((item) => {
                   const Icon = item.icon;
@@ -484,10 +541,10 @@ export default function Settings() {
                         <span className="rv-settings-nav-icon">
                           <Icon size={16} />
                         </span>
-                        <span>{item.label}</span>
+                        <span className="rv-settings-nav-label">{item.label}</span>
                       </div>
                       {item.statusBadge && (
-                        <span className={`rv-badge rv-badge-${item.statusTone} rv-badge-sm`} style={{ fontSize: "10px", padding: "1px 6px" }}>
+                        <span className={`rv-badge rv-badge-${item.statusTone} rv-badge-sm`} style={{ fontSize: "10px", padding: "1px 6px", flexShrink: 0 }}>
                           {item.statusBadge}
                         </span>
                       )}
@@ -506,15 +563,21 @@ export default function Settings() {
                   border: "1px solid var(--rv-border)",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                  <ShieldCheckIcon size={18} style={{ color: "var(--rv-primary)" }} />
-                  <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--rv-text)" }}>
-                    Protection Status
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <ShieldCheckIcon size={18} style={{ color: "var(--rv-primary)" }} />
+                    <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--rv-text)" }}>
+                      Protection Health
+                    </span>
+                  </div>
+                  <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontSize: "10px" }}>
+                    Active
                   </span>
                 </div>
                 <p style={{ margin: "0 0 12px", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-                  Webhooks are active and syncing changes in real time.
+                  Real-time webhook listeners &amp; automated rollback guards are operating normally.
                 </p>
+
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "12px", borderTop: "1px solid var(--rv-border-subtle)", paddingTop: "10px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ color: "var(--rv-text-subdued)" }}>Active Plan:</span>
@@ -525,25 +588,36 @@ export default function Settings() {
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ color: "var(--rv-text-subdued)" }}>Monitoring:</span>
                     <span style={{ fontWeight: 600, color: monitoringEnabled ? "var(--rv-primary)" : "var(--rv-text-subdued)" }}>
+                      <span className={`rv-status-dot ${monitoringEnabled ? "success" : "neutral"}`} />
                       {monitoringEnabled ? "Enabled" : "Paused"}
                     </span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ color: "var(--rv-text-subdued)" }}>Circuit Breaker:</span>
                     <span style={{ fontWeight: 600, color: circuitBreakerEnabled ? "var(--rv-warning)" : "var(--rv-text-subdued)" }}>
+                      <span className={`rv-status-dot ${circuitBreakerEnabled ? "warning" : "neutral"}`} />
                       {circuitBreakerEnabled ? "Armed" : "Inactive"}
                     </span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ color: "var(--rv-text-subdued)" }}>Auto Schedule:</span>
                     <span style={{ fontWeight: 600, color: autoBackupSchedule !== "OFF" ? "var(--rv-primary)" : "var(--rv-text-subdued)" }}>
+                      <span className={`rv-status-dot ${autoBackupSchedule !== "OFF" ? "success" : "neutral"}`} />
                       {autoBackupSchedule}
                     </span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ color: "var(--rv-text-subdued)" }}>Cloud Sync:</span>
                     <span style={{ fontWeight: 600, color: isCloudConnected ? "var(--rv-primary)" : "var(--rv-text-subdued)" }}>
+                      <span className={`rv-status-dot ${isCloudConnected ? "success" : "neutral"}`} />
                       {isCloudConnected ? (activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox") : "Disabled"}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ color: "var(--rv-text-subdued)" }}>Storefront Embed:</span>
+                    <span style={{ fontWeight: 600, color: themeEmbedActive ? "var(--rv-primary)" : "var(--rv-warning)" }}>
+                      <span className={`rv-status-dot ${themeEmbedActive ? "success" : "warning"}`} />
+                      {themeEmbedActive ? "Active" : "Action Needed"}
                     </span>
                   </div>
                 </div>
@@ -551,80 +625,88 @@ export default function Settings() {
             </aside>
 
             {/* Right Column: Settings Cards */}
-            <main style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+            <main style={{ display: "flex", flexDirection: "column", gap: "20px", minWidth: 0 }}>
 
               {/* ── 0. Scheduled Backups Card ── */}
-              {(activeTab === "all" || activeTab === "schedules") && (
-                <div className="rv-card" style={{ margin: 0 }}>
-                  <div className="rv-card-header">
-                    <div className="rv-card-icon-title">
-                      <div className="rv-card-icon-badge info">
-                        <ClockIcon size={18} />
+              <div
+                className="rv-card"
+                style={{
+                  margin: 0,
+                  display: activeTab === "all" || activeTab === "schedules" ? "block" : "none",
+                }}
+              >
+                <div className="rv-card-header">
+                  <div className="rv-card-icon-title">
+                    <div className="rv-card-icon-badge info">
+                      <ClockIcon size={20} />
+                    </div>
+                    <div>
+                      <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                        Automated Scheduled Backups
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Set automatic background snapshots for products, theme code, collections, and vault logs.
+                      </p>
+                    </div>
+                  </div>
+                  <span className={`rv-badge ${autoBackupSchedule !== "OFF" ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                    {autoBackupSchedule !== "OFF" ? `Cadence: ${autoBackupSchedule}` : "Manual Only"}
+                  </span>
+                </div>
+
+                <div className="rv-card-body">
+                  {/* Live Schedule Status Indicator */}
+                  <div
+                    style={{
+                      padding: "16px 18px",
+                      background: "linear-gradient(135deg, rgba(0, 128, 96, 0.06) 0%, rgba(37, 99, 235, 0.06) 100%)",
+                      borderRadius: "var(--rv-radius-sm)",
+                      border: "1px solid rgba(0, 128, 96, 0.2)",
+                      marginBottom: "20px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: "14px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+                      <div
+                        style={{
+                          width: "40px",
+                          height: "40px",
+                          borderRadius: "50%",
+                          background: "var(--rv-primary)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "#fff",
+                          flexShrink: 0,
+                          boxShadow: "0 2px 6px rgba(0, 128, 96, 0.3)",
+                        }}
+                      >
+                        <ClockIcon size={20} />
                       </div>
                       <div>
-                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
-                          Automated Scheduled Backups
-                        </h3>
-                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          Set automatic background snapshots for products, theme code, collections, and vault logs.
-                        </p>
+                        <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block", marginBottom: "2px" }}>
+                          {autoBackupSchedule !== "OFF"
+                            ? `Active Cadence: ${autoBackupSchedule === "DAILY" ? "Daily at " + autoBackupTime + " UTC" : autoBackupSchedule === "TWICE_DAILY" ? "Every 12 Hours" : "Weekly"}`
+                            : "Automated Cadence is Disabled"}
+                        </strong>
+                        <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
+                          Last backup: {settings?.lastAutoBackupAt ? new Date(settings.lastAutoBackupAt).toLocaleString() : "Never (Pending first scheduled run)"} &bull; Next scheduled: {settings?.nextAutoBackupAt ? new Date(settings.nextAutoBackupAt).toLocaleString() : "Calculated on save"}
+                        </span>
                       </div>
                     </div>
-                    <span className={`rv-badge ${autoBackupSchedule !== "OFF" ? "rv-badge-success" : "rv-badge-neutral"}`}>
-                      {autoBackupSchedule !== "OFF" ? `Cadence: ${autoBackupSchedule}` : "Manual Only"}
-                    </span>
+                    <Link to="/app/restore-points" className="rv-btn rv-btn-secondary rv-btn-sm">
+                      <HistoryIcon size={14} />
+                      <span>View Restore Points</span>
+                    </Link>
                   </div>
 
-                  <div className="rv-card-body">
-                    {/* Live Schedule Status Indicator */}
-                    <div
-                      style={{
-                        padding: "14px 16px",
-                        background: "linear-gradient(135deg, rgba(0, 128, 96, 0.06) 0%, rgba(37, 99, 235, 0.06) 100%)",
-                        borderRadius: "var(--rv-radius-sm)",
-                        border: "1px solid rgba(0, 128, 96, 0.2)",
-                        marginBottom: "18px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        flexWrap: "wrap",
-                        gap: "12px",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                        <div
-                          style={{
-                            width: "36px",
-                            height: "36px",
-                            borderRadius: "50%",
-                            background: "var(--rv-primary)",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: "#fff",
-                            flexShrink: 0,
-                          }}
-                        >
-                          <ClockIcon size={18} />
-                        </div>
-                        <div>
-                          <strong style={{ fontSize: "13px", color: "var(--rv-text)", display: "block" }}>
-                            {autoBackupSchedule !== "OFF"
-                              ? `Active Cadence: ${autoBackupSchedule === "DAILY" ? "Daily at " + autoBackupTime + " UTC" : autoBackupSchedule === "TWICE_DAILY" ? "Every 12 Hours" : "Weekly"}`
-                              : "Automated Cadence is Disabled"}
-                          </strong>
-                          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                            Last backup: {settings?.lastAutoBackupAt ? new Date(settings.lastAutoBackupAt).toLocaleString() : "Never (Pending first scheduled run)"} &bull; Next scheduled: {settings?.nextAutoBackupAt ? new Date(settings.nextAutoBackupAt).toLocaleString() : "Calculated on save"}
-                          </span>
-                        </div>
-                      </div>
-                      <Link to="/app/restore-points" className="rv-btn rv-btn-secondary rv-btn-sm">
-                        View Restore Points
-                      </Link>
-                    </div>
-
-                    {/* Cadence Selector */}
-                    <div className="rv-form-group" style={{ marginBottom: "16px" }}>
+                  {/* 2-Column Responsive Selector Grid */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px" }}>
+                    <div className="rv-form-group" style={{ margin: 0 }}>
                       <label className="rv-label" htmlFor="autoBackupSchedule">
                         Backup Cadence Frequency
                       </label>
@@ -645,9 +727,8 @@ export default function Settings() {
                       </span>
                     </div>
 
-                    {/* Target Time */}
                     {autoBackupSchedule !== "OFF" && (
-                      <div className="rv-form-group" style={{ marginBottom: "12px" }}>
+                      <div className="rv-form-group" style={{ margin: 0 }}>
                         <label className="rv-label" htmlFor="autoBackupTime">
                           Preferred Backup Window (UTC)
                         </label>
@@ -673,515 +754,513 @@ export default function Settings() {
                     )}
                   </div>
                 </div>
-              )}
+              </div>
 
-              {/* ── 0.1 Cloud Storage Sync Card ── */}
-              {(activeTab === "all" || activeTab === "cloud") && (
-                <div className="rv-card" style={{ margin: 0 }}>
-                  <div className="rv-card-header">
-                    <div className="rv-card-icon-title">
-                      <div className="rv-card-icon-badge" style={{ background: "rgba(37, 99, 235, 0.1)", color: "#2563eb" }}>
-                        <CloudUploadIcon size={18} />
-                      </div>
-                      <div>
-                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
-                          Offsite Cloud Storage Sync (Google Drive &amp; Dropbox)
-                        </h3>
-                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          Keep independent disaster recovery archives in your personal or company cloud storage.
-                        </p>
-                      </div>
+              {/* ── 1. Cloud Storage Sync Card ── */}
+              <div
+                className="rv-card"
+                style={{
+                  margin: 0,
+                  display: activeTab === "all" || activeTab === "cloud" ? "block" : "none",
+                }}
+              >
+                <div className="rv-card-header">
+                  <div className="rv-card-icon-title">
+                    <div className="rv-card-icon-badge" style={{ background: "rgba(37, 99, 235, 0.1)", color: "#2563eb" }}>
+                      <CloudUploadIcon size={20} />
                     </div>
-                    <span className={`rv-badge ${isCloudConnected ? "rv-badge-success" : "rv-badge-warning"}`}>
-                      {isCloudConnected ? `${activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} Linked` : "Not Linked"}
-                    </span>
-                  </div>
-
-                  <div className="rv-card-body">
-                    {isCloudConnected ? (
-                      <div>
-                        {/* Connected State Box */}
-                        <div
-                          style={{
-                            padding: "16px",
-                            background: "var(--rv-surface-subdued)",
-                            borderRadius: "var(--rv-radius-sm)",
-                            border: "1px solid var(--rv-border-subtle)",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            flexWrap: "wrap",
-                            gap: "14px",
-                            marginBottom: "16px",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                            <div
-                              style={{
-                                width: "42px",
-                                height: "42px",
-                                borderRadius: "8px",
-                                background: activeCloudProvider === "GOOGLE_DRIVE" ? "rgba(234, 67, 53, 0.1)" : "rgba(0, 97, 254, 0.1)",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                color: activeCloudProvider === "GOOGLE_DRIVE" ? "#ea4335" : "#0061fe",
-                                flexShrink: 0,
-                              }}
-                            >
-                              {activeCloudProvider === "GOOGLE_DRIVE" ? <GoogleDriveIcon size={22} /> : <DropboxIcon size={22} />}
-                            </div>
-                            <div>
-                              <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>
-                                {activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive Connected" : "Dropbox Connected"}
-                              </strong>
-                              <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                                Account: <strong>{settings?.cloudSyncEmail || "Active Account"}</strong> &bull; Remote Target: <code>/{cloudSyncFolder}</code>
-                              </span>
-                            </div>
-                          </div>
-
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                            <button
-                              type="submit"
-                              name="intent"
-                              value="testCloudSync"
-                              className="rv-btn rv-btn-secondary rv-btn-sm"
-                            >
-                              <RefreshCwIcon size={13} />
-                              <span>Test Sync</span>
-                            </button>
-                            <button
-                              type="submit"
-                              name="intent"
-                              value="disconnectCloud"
-                              className="rv-btn rv-btn-danger rv-btn-sm"
-                              onClick={(e) => {
-                                if (!confirm("Disconnect cloud storage? Backups will remain stored in Revertly database.")) {
-                                  e.preventDefault();
-                                }
-                              }}
-                            >
-                              Disconnect
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Cloud Folder & Auto Upload Settings */}
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px", marginBottom: "16px" }}>
-                          <div className="rv-form-group" style={{ margin: 0 }}>
-                            <label className="rv-label" htmlFor="cloudSyncFolder">
-                              Target Cloud Directory / Folder
-                            </label>
-                            <input
-                              id="cloudSyncFolder"
-                              type="text"
-                              name="cloudSyncFolder"
-                              className="rv-input"
-                              value={cloudSyncFolder}
-                              onChange={(e) => setCloudSyncFolder(e.target.value)}
-                              placeholder="Revertly_Backups"
-                            />
-                            <span className="rv-helper-text">
-                              Subfolder inside your Drive/Dropbox where JSON and zip archives will be saved.
-                            </span>
-                          </div>
-
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              gap: "12px",
-                              padding: "12px 14px",
-                              background: "#ffffff",
-                              borderRadius: "var(--rv-radius-sm)",
-                              border: "1px solid var(--rv-border-subtle)",
-                            }}
-                          >
-                            <div>
-                              <strong style={{ fontSize: "13px", color: "var(--rv-text)", display: "block" }}>
-                                Auto-Push New Snapshots
-                              </strong>
-                              <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>
-                                Automatically push every new restore point to cloud storage.
-                              </span>
-                            </div>
-                            <div className="rv-switch">
-                              <input
-                                id="set-cloud-autoupload"
-                                type="checkbox"
-                                name="cloudSyncAutoUpload"
-                                value="true"
-                                checked={cloudSyncAutoUpload}
-                                onChange={(e) => setCloudSyncAutoUpload(e.target.checked)}
-                              />
-                              <label htmlFor="set-cloud-autoupload" className="rv-switch-slider">
-                                <span className="rv-sr-only">Toggle Cloud Auto-Upload</span>
-                              </label>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      /* Not Connected: Choose Provider */
-                      <div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px", marginBottom: "16px" }}>
-                          <div
-                            onClick={() => setConnectProvider("GOOGLE_DRIVE")}
-                            style={{
-                              padding: "16px",
-                              borderRadius: "var(--rv-radius-sm)",
-                              border: `2px solid ${connectProvider === "GOOGLE_DRIVE" ? "var(--rv-primary)" : "var(--rv-border-subtle)"}`,
-                              background: connectProvider === "GOOGLE_DRIVE" ? "rgba(0, 128, 96, 0.04)" : "#ffffff",
-                              cursor: "pointer",
-                              transition: "all 0.15s ease",
-                            }}
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-                              <GoogleDriveIcon size={24} style={{ color: "#ea4335" }} />
-                              <div>
-                                <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>Google Drive</strong>
-                                <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Personal or Google Workspace</span>
-                              </div>
-                            </div>
-                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.4 }}>
-                              Export catalog snapshots directly to Google Drive folder for offsite data safety.
-                            </p>
-                          </div>
-
-                          <div
-                            onClick={() => setConnectProvider("DROPBOX")}
-                            style={{
-                              padding: "16px",
-                              borderRadius: "var(--rv-radius-sm)",
-                              border: `2px solid ${connectProvider === "DROPBOX" ? "var(--rv-primary)" : "var(--rv-border-subtle)"}`,
-                              background: connectProvider === "DROPBOX" ? "rgba(0, 128, 96, 0.04)" : "#ffffff",
-                              cursor: "pointer",
-                              transition: "all 0.15s ease",
-                            }}
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-                              <DropboxIcon size={24} style={{ color: "#0061fe" }} />
-                              <div>
-                                <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>Dropbox</strong>
-                                <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>Dropbox Business or Basic</span>
-                              </div>
-                            </div>
-                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.4 }}>
-                              Sync versioned restore points to Dropbox with automated historical retention.
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* Real OAuth handoff. Connecting requires provider
-                            consent, so this is a link out, not a form post. */}
-                        <div
-                          style={{
-                            padding: "16px",
-                            background: "var(--rv-surface-subdued)",
-                            borderRadius: "var(--rv-radius-sm)",
-                            border: "1px solid var(--rv-border-subtle)",
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: "12px",
-                          }}
-                        >
-                          {selectedProviderStatus?.configured ? (
-                            <>
-                              <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.5 }}>
-                                You will be sent to {selectedProviderStatus.label} to approve access. Revertly
-                                only requests permission for the files it creates, and your account
-                                email is read from the provider after you approve — nothing is stored
-                                until then.
-                              </p>
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "10px" }}>
-                                {/* target="_top" is required: the app runs inside
-                                    Shopify Admin's iframe, and Google/Dropbox both
-                                    refuse to render their consent screen in a frame
-                                    (X-Frame-Options). Without this the click stays
-                                    inside the iframe and the OAuth page loads blank. */}
-                                <a
-                                  href={`/auth/cloud/${connectProvider.toLowerCase()}`}
-                                  target="_top"
-                                  rel="noopener"
-                                  className="rv-btn rv-btn-primary"
-                                >
-                                  <CloudUploadIcon size={14} />
-                                  <span>Connect {selectedProviderStatus.label}</span>
-                                </a>
-                              </div>
-                            </>
-                          ) : (
-                            /* Merchant-facing copy: a merchant has no server and
-                               no environment file, so this must not tell them to
-                               set env vars. This is also NOT a per-store toggle —
-                               it is one app-wide setup step the app operator does
-                               once for every merchant — so the copy must not
-                               imply support can switch it on for one store. The
-                               operator detail is logged server-side instead. */
-                            <Banner
-                              tone="warning"
-                              title={`${selectedProviderStatus?.label || "This provider"} isn't available yet`}
-                            >
-                              <p style={{ margin: "0 0 6px" }}>
-                                Offsite sync to {selectedProviderStatus?.label} is being set up for Revertly and
-                                isn&apos;t ready yet. Your backups are still being captured and stored safely —
-                                this only affects keeping an extra copy in your own cloud storage.
-                              </p>
-                              <p style={{ margin: 0, fontSize: "12px" }}>
-                                {otherProviderAvailable ? (
-                                  <>
-                                    You can connect{" "}
-                                    <strong>
-                                      {(cloudProviders || []).find((p) => p.configured && p.id !== connectProvider)?.label}
-                                    </strong>{" "}
-                                    now instead. We&apos;ll let you know when {selectedProviderStatus?.label} support
-                                    is available.
-                                  </>
-                                ) : (
-                                  <>We&apos;ll let you know as soon as this is available.</>
-                                )}
-                              </p>
-                            </Banner>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* ── 1. Catalog Monitoring Card ── */}
-              {(activeTab === "all" || activeTab === "monitoring") && (
-                <div className="rv-card" style={{ margin: 0 }}>
-                  <div className="rv-card-header">
-                    <div className="rv-card-icon-title">
-                      <div className="rv-card-icon-badge info">
-                        <ClockIcon size={18} />
-                      </div>
-                      <div>
-                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
-                          Real-Time Catalog Monitoring
-                        </h3>
-                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          Background event listener for price drops, title changes, and inventory spikes.
-                        </p>
-                      </div>
-                    </div>
-                    <span className={`rv-badge ${monitoringEnabled ? "rv-badge-success" : "rv-badge-neutral"}`}>
-                      {monitoringEnabled ? "Actively Protecting" : "Paused"}
-                    </span>
-                  </div>
-
-                  <div className="rv-card-body">
-                    {/* Modern Switch Row */}
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: "16px",
-                        padding: "16px 18px",
-                        background: "var(--rv-surface-subdued)",
-                        borderRadius: "var(--rv-radius-sm)",
-                        border: "1px solid var(--rv-border-subtle)",
-                        marginBottom: "16px",
-                      }}
-                    >
-                      <div>
-                        <label
-                          htmlFor="set-monitoring"
-                          style={{ fontSize: "14px", fontWeight: 600, color: "var(--rv-text)", display: "block", cursor: "pointer", marginBottom: "2px" }}
-                        >
-                          Enable Real-Time Catalog Monitoring
-                        </label>
-                        <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5, display: "block" }}>
-                          Capture instant Shopify webhooks for product edits and inventory events to maintain drift history.
-                        </span>
-                      </div>
-                      <div className="rv-switch">
-                        <input
-                          id="set-monitoring"
-                          type="checkbox"
-                          name="monitoringEnabled"
-                          value="true"
-                          checked={monitoringEnabled}
-                          onChange={(e) => setMonitoringEnabled(e.target.checked)}
-                        />
-                        <label htmlFor="set-monitoring" className="rv-switch-slider">
-                          <span className="rv-sr-only">Toggle Real-Time Catalog Monitoring</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    {/* Monitored Webhook Events Grid */}
                     <div>
-                      <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--rv-text-subdued)", display: "block", marginBottom: "8px" }}>
-                        Active Monitored Webhook Channels:
-                      </span>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "8px" }}>
-                        {[
-                          { title: "Price Adjustments", desc: "Variants & Compare-at prices" },
-                          { title: "Product Deletions", desc: "Deleted item recovery guard" },
-                          { title: "Inventory Depletions", desc: "Out-of-stock anomaly watch" },
-                          { title: "Metafield Updates", desc: "Custom fields & SEO tags" },
-                        ].map((evt, idx) => (
-                          <div
-                            key={idx}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "8px",
-                              padding: "8px 12px",
-                              background: "#ffffff",
-                              border: "1px solid var(--rv-border-subtle)",
-                              borderRadius: "var(--rv-radius-sm)",
-                              fontSize: "12px",
-                            }}
-                          >
-                            <CheckCircleIcon size={14} style={{ color: "var(--rv-primary)", flexShrink: 0 }} />
-                            <div>
-                              <strong style={{ display: "block", color: "var(--rv-text)" }}>{evt.title}</strong>
-                              <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>{evt.desc}</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                      <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                        Offsite Cloud Storage Sync (Google Drive &amp; Dropbox)
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Keep independent disaster recovery archives in your personal or company cloud storage.
+                      </p>
                     </div>
                   </div>
+                  <span className={`rv-badge ${isCloudConnected ? "rv-badge-success" : "rv-badge-warning"}`}>
+                    {isCloudConnected ? `${activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} Linked` : "Not Linked"}
+                  </span>
                 </div>
-              )}
 
-              {/* ── 2. Price Crash Circuit Breaker Card ── */}
-              {(activeTab === "all" || activeTab === "circuit") && (
-                <div className="rv-card" style={{ margin: 0, opacity: hasCircuitBreakerAccess ? 1 : 0.9 }}>
-                  <div className="rv-card-header">
-                    <div className="rv-card-icon-title">
-                      <div className="rv-card-icon-badge warning">
-                        <ZapIcon size={18} />
-                      </div>
-                      <div>
-                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
-                          Emergency Circuit Breaker (Price Crash Guard)
-                        </h3>
-                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          Automatic emergency defensive action when sudden price drops threaten merchant revenue.
-                        </p>
-                      </div>
-                    </div>
-                    {hasCircuitBreakerAccess ? (
-                      <span className="rv-badge rv-badge-warning">
-                        {circuitBreakerEnabled ? "Armed & Protecting" : "Disarmed"}
-                      </span>
-                    ) : (
-                      <span className="rv-badge rv-badge-neutral">Requires Business Plan</span>
-                    )}
-                  </div>
-
-                  <div className="rv-card-body">
-                    {!hasCircuitBreakerAccess && (
+                <div className="rv-card-body">
+                  {isCloudConnected ? (
+                    <div>
+                      {/* Connected State Box */}
                       <div
                         style={{
-                          background: "var(--rv-warning-surface)",
-                          border: "1px solid var(--rv-warning-border)",
+                          padding: "16px 20px",
+                          background: "var(--rv-surface-subdued)",
                           borderRadius: "var(--rv-radius-sm)",
-                          padding: "12px 16px",
-                          fontSize: "13px",
-                          color: "var(--rv-text)",
-                          marginBottom: "16px",
+                          border: "1px solid var(--rv-border-subtle)",
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "space-between",
-                          gap: "12px",
                           flexWrap: "wrap",
+                          gap: "16px",
+                          marginBottom: "20px",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <AlertTriangleIcon size={16} style={{ color: "var(--rv-warning)", flexShrink: 0 }} />
-                          <span>Emergency Circuit Breaker is an automated revenue guard available on <strong>Business</strong> and <strong>Enterprise</strong> tiers.</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+                          <div
+                            style={{
+                              width: "44px",
+                              height: "44px",
+                              borderRadius: "10px",
+                              background: activeCloudProvider === "GOOGLE_DRIVE" ? "rgba(234, 67, 53, 0.1)" : "rgba(0, 97, 254, 0.1)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              color: activeCloudProvider === "GOOGLE_DRIVE" ? "#ea4335" : "#0061fe",
+                              flexShrink: 0,
+                            }}
+                          >
+                            {activeCloudProvider === "GOOGLE_DRIVE" ? <GoogleDriveIcon size={24} /> : <DropboxIcon size={24} />}
+                          </div>
+                          <div>
+                            <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block" }}>
+                              {activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive Connected" : "Dropbox Connected"}
+                            </strong>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                              Account: <strong>{settings?.cloudSyncEmail || "Active Account"}</strong> &bull; Remote Target: <code>/{cloudSyncFolder}</code>
+                            </span>
+                          </div>
                         </div>
-                        <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
-                          Upgrade to Business ($49/mo)
-                        </Link>
-                      </div>
-                    )}
 
-                    {/* Switch Row */}
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <button
+                            type="submit"
+                            name="intent"
+                            value="testCloudSync"
+                            className="rv-btn rv-btn-secondary rv-btn-sm"
+                          >
+                            <RefreshCwIcon size={14} />
+                            <span>Test Sync</span>
+                          </button>
+                          <button
+                            type="submit"
+                            name="intent"
+                            value="disconnectCloud"
+                            className="rv-btn rv-btn-danger rv-btn-sm"
+                            onClick={(e) => {
+                              if (!confirm("Disconnect cloud storage? Backups will remain stored in Revertly database.")) {
+                                e.preventDefault();
+                              }
+                            }}
+                          >
+                            Disconnect
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Cloud Folder & Auto Upload Settings */}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px" }}>
+                        <div className="rv-form-group" style={{ margin: 0 }}>
+                          <label className="rv-label" htmlFor="cloudSyncFolder">
+                            Target Cloud Directory / Folder
+                          </label>
+                          <input
+                            id="cloudSyncFolder"
+                            type="text"
+                            name="cloudSyncFolder"
+                            className="rv-input"
+                            value={cloudSyncFolder}
+                            onChange={(e) => setCloudSyncFolder(e.target.value)}
+                            placeholder="Revertly_Backups"
+                          />
+                          <span className="rv-helper-text">
+                            Subfolder inside your Drive/Dropbox where JSON and zip archives will be saved.
+                          </span>
+                        </div>
+
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: "14px",
+                            padding: "16px 18px",
+                            background: "#ffffff",
+                            borderRadius: "var(--rv-radius-sm)",
+                            border: "1px solid var(--rv-border-subtle)",
+                            alignSelf: "start",
+                          }}
+                        >
+                          <div>
+                            <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>
+                              Auto-Push New Snapshots
+                            </strong>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                              Automatically push every new restore point to cloud storage.
+                            </span>
+                          </div>
+                          <div className="rv-switch">
+                            <input
+                              id="set-cloud-autoupload"
+                              type="checkbox"
+                              checked={cloudSyncAutoUpload}
+                              onChange={(e) => setCloudSyncAutoUpload(e.target.checked)}
+                            />
+                            <label htmlFor="set-cloud-autoupload" className="rv-switch-slider">
+                              <span className="rv-sr-only">Toggle Cloud Auto-Upload</span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Not Connected: Choose Provider in Side-by-Side Cards */
+                    <div>
+                      <div className="rv-cloud-grid">
+                        <div
+                          onClick={() => setConnectProvider("GOOGLE_DRIVE")}
+                          className={`rv-cloud-provider-card ${connectProvider === "GOOGLE_DRIVE" ? "active" : ""}`}
+                        >
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <GoogleDriveIcon size={26} style={{ color: "#ea4335" }} />
+                                <div>
+                                  <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block" }}>Google Drive</strong>
+                                  <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>Personal or Google Workspace</span>
+                                </div>
+                              </div>
+                              <span className={`rv-badge ${connectProvider === "GOOGLE_DRIVE" ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                                {connectProvider === "GOOGLE_DRIVE" ? "Selected" : "Select"}
+                              </span>
+                            </div>
+                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.5 }}>
+                              Export catalog snapshots directly to Google Drive folder for offsite disaster recovery and team archiving.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div
+                          onClick={() => setConnectProvider("DROPBOX")}
+                          className={`rv-cloud-provider-card ${connectProvider === "DROPBOX" ? "active" : ""}`}
+                        >
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <DropboxIcon size={26} style={{ color: "#0061fe" }} />
+                                <div>
+                                  <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "block" }}>Dropbox</strong>
+                                  <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>Dropbox Business or Basic</span>
+                                </div>
+                              </div>
+                              <span className={`rv-badge ${connectProvider === "DROPBOX" ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                                {connectProvider === "DROPBOX" ? "Selected" : "Select"}
+                              </span>
+                            </div>
+                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.5 }}>
+                              Sync versioned restore points to Dropbox with automated historical retention and folder management.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Real OAuth handoff */}
+                      <div
+                        style={{
+                          padding: "16px 20px",
+                          background: "var(--rv-surface-subdued)",
+                          borderRadius: "var(--rv-radius-sm)",
+                          border: "1px solid var(--rv-border-subtle)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          flexWrap: "wrap",
+                          gap: "14px",
+                        }}
+                      >
+                        {selectedProviderStatus?.configured ? (
+                          <>
+                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.5, flex: 1, minWidth: "260px" }}>
+                              You will be sent to {selectedProviderStatus.label} to approve access. Revertly
+                              only requests permission for the backup files it creates — your account
+                              data remains fully private.
+                            </p>
+                            <a
+                              href={`/auth/cloud/${connectProvider.toLowerCase()}`}
+                              target="_top"
+                              rel="noopener"
+                              className="rv-btn rv-btn-primary"
+                              style={{ flexShrink: 0 }}
+                            >
+                              <CloudUploadIcon size={14} />
+                              <span>Connect {selectedProviderStatus.label}</span>
+                            </a>
+                          </>
+                        ) : (
+                          <Banner
+                            tone="warning"
+                            title={`${selectedProviderStatus?.label || "This provider"} isn't available yet`}
+                          >
+                            <p style={{ margin: "0 0 6px" }}>
+                              Offsite sync to {selectedProviderStatus?.label} is being set up for Revertly. Backups are safely stored in your local Revertly database.
+                            </p>
+                            <p style={{ margin: 0, fontSize: "12px" }}>
+                              {otherProviderAvailable ? (
+                                <>
+                                  You can connect{" "}
+                                  <strong>
+                                    {(cloudProviders || []).find((p) => p.configured && p.id !== connectProvider)?.label}
+                                  </strong>{" "}
+                                  now instead.
+                                </>
+                              ) : (
+                                <>We will notify you as soon as this provider is activated.</>
+                              )}
+                            </p>
+                          </Banner>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ── 2. Catalog Monitoring Card ── */}
+              <div
+                className="rv-card"
+                style={{
+                  margin: 0,
+                  display: activeTab === "all" || activeTab === "monitoring" ? "block" : "none",
+                }}
+              >
+                <div className="rv-card-header">
+                  <div className="rv-card-icon-title">
+                    <div className="rv-card-icon-badge info">
+                      <ClockIcon size={20} />
+                    </div>
+                    <div>
+                      <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                        Real-Time Catalog Monitoring
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Background event listener for price drops, title changes, and inventory spikes.
+                      </p>
+                    </div>
+                  </div>
+                  <span className={`rv-badge ${monitoringEnabled ? "rv-badge-success" : "rv-badge-neutral"}`}>
+                    {monitoringEnabled ? "Actively Protecting" : "Paused"}
+                  </span>
+                </div>
+
+                <div className="rv-card-body">
+                  {/* Master Switch Row */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "16px",
+                      padding: "16px 20px",
+                      background: "var(--rv-surface-subdued)",
+                      borderRadius: "var(--rv-radius-sm)",
+                      border: "1px solid var(--rv-border-subtle)",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    <div>
+                      <label
+                        htmlFor="set-monitoring"
+                        style={{ fontSize: "14px", fontWeight: 600, color: "var(--rv-text)", display: "block", cursor: "pointer", marginBottom: "3px" }}
+                      >
+                        Enable Real-Time Catalog Monitoring
+                      </label>
+                      <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5, display: "block" }}>
+                        Capture instant Shopify webhooks for product edits and inventory events to maintain drift history.
+                      </span>
+                    </div>
+                    <div className="rv-switch">
+                      <input
+                        id="set-monitoring"
+                        type="checkbox"
+                        checked={monitoringEnabled}
+                        onChange={(e) => setMonitoringEnabled(e.target.checked)}
+                      />
+                      <label htmlFor="set-monitoring" className="rv-switch-slider">
+                        <span className="rv-sr-only">Toggle Real-Time Catalog Monitoring</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Monitored Webhook Channels 4-Column Responsive Grid */}
+                  <div>
+                    <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--rv-text-subdued)", display: "block", marginBottom: "10px" }}>
+                      Active Monitored Webhook Channels:
+                    </span>
+                    <div className="rv-channels-grid">
+                      {[
+                        { title: "Price Adjustments", desc: "Variants & Compare-at prices" },
+                        { title: "Product Deletions", desc: "Deleted item recovery guard" },
+                        { title: "Inventory Depletions", desc: "Out-of-stock anomaly watch" },
+                        { title: "Metafield Updates", desc: "Custom fields & SEO tags" },
+                      ].map((evt, idx) => (
+                        <div key={idx} className="rv-channel-card">
+                          <CheckCircleIcon size={16} style={{ color: "var(--rv-primary)", flexShrink: 0, marginTop: "2px" }} />
+                          <div>
+                            <strong style={{ display: "block", color: "var(--rv-text)", fontSize: "13px" }}>{evt.title}</strong>
+                            <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", lineHeight: 1.3 }}>{evt.desc}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── 3. Price Crash Circuit Breaker Card ── */}
+              <div
+                className="rv-card"
+                style={{
+                  margin: 0,
+                  opacity: hasCircuitBreakerAccess ? 1 : 0.9,
+                  display: activeTab === "all" || activeTab === "circuit" ? "block" : "none",
+                }}
+              >
+                <div className="rv-card-header">
+                  <div className="rv-card-icon-title">
+                    <div className="rv-card-icon-badge warning">
+                      <ZapIcon size={20} />
+                    </div>
+                    <div>
+                      <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                        Emergency Circuit Breaker (Price Crash Guard)
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Automatic emergency defensive action when sudden price drops threaten merchant revenue.
+                      </p>
+                    </div>
+                  </div>
+                  {hasCircuitBreakerAccess ? (
+                    <span className={`rv-badge ${circuitBreakerEnabled ? "rv-badge-warning" : "rv-badge-neutral"}`}>
+                      {circuitBreakerEnabled ? "Armed & Protecting" : "Disarmed"}
+                    </span>
+                  ) : (
+                    <span className="rv-badge rv-badge-neutral">Requires Business Plan</span>
+                  )}
+                </div>
+
+                <div className="rv-card-body">
+                  {!hasCircuitBreakerAccess && (
                     <div
                       style={{
+                        background: "var(--rv-warning-surface)",
+                        border: "1px solid var(--rv-warning-border)",
+                        borderRadius: "var(--rv-radius-sm)",
+                        padding: "14px 18px",
+                        fontSize: "13px",
+                        color: "var(--rv-text)",
+                        marginBottom: "20px",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "space-between",
-                        gap: "16px",
-                        padding: "16px 18px",
-                        background: "var(--rv-surface-subdued)",
-                        borderRadius: "var(--rv-radius-sm)",
-                        border: "1px solid var(--rv-border-subtle)",
-                        marginBottom: "18px",
+                        gap: "14px",
+                        flexWrap: "wrap",
                       }}
                     >
-                      <div>
-                        <label
-                          htmlFor="set-circuit-breaker"
-                          style={{
-                            fontSize: "14px",
-                            fontWeight: 600,
-                            color: "var(--rv-text)",
-                            display: "block",
-                            cursor: hasCircuitBreakerAccess ? "pointer" : "not-allowed",
-                            marginBottom: "2px",
-                          }}
-                        >
-                          Activate Price Crash Circuit Breaker
-                        </label>
-                        <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5, display: "block" }}>
-                          Intervene instantly if an unauthorized CSV upload or rogue app drops prices past safety margins.
-                        </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <AlertTriangleIcon size={18} style={{ color: "var(--rv-warning)", flexShrink: 0 }} />
+                        <span>Emergency Circuit Breaker is an automated revenue guard available on <strong>Business</strong> and <strong>Enterprise</strong> tiers.</span>
                       </div>
-                      <div className={`rv-switch ${!hasCircuitBreakerAccess ? "disabled" : ""}`}>
-                        <input
-                          id="set-circuit-breaker"
-                          type="checkbox"
-                          name="circuitBreakerEnabled"
-                          value="true"
-                          disabled={!hasCircuitBreakerAccess}
-                          checked={circuitBreakerEnabled}
-                          onChange={(e) => setCircuitBreakerEnabled(e.target.checked)}
-                        />
-                        <label htmlFor="set-circuit-breaker" className="rv-switch-slider">
-                          <span className="rv-sr-only">Toggle Price Crash Circuit Breaker</span>
-                        </label>
-                      </div>
+                      <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+                        Upgrade to Business ($49/mo)
+                      </Link>
                     </div>
+                  )}
 
-                    {/* Interactive Live Formula / Simulation Box */}
-                    <div
-                      style={{
-                        background: "linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.02) 100%)",
-                        border: "1px solid var(--rv-warning-border)",
-                        borderRadius: "var(--rv-radius-sm)",
-                        padding: "14px 16px",
-                        marginBottom: "18px",
-                        fontSize: "13px",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, color: "var(--rv-warning)", marginBottom: "4px" }}>
-                        <ZapIcon size={14} />
-                        <span>Live Protection Formula:</span>
-                      </div>
-                      <p style={{ margin: 0, color: "var(--rv-text)", lineHeight: 1.5 }}>
-                        If a product priced at <strong>$100.00</strong> suddenly drops by <strong>{numThreshold}%</strong> or more (to <strong>${sampleReducedPrice}</strong> or less), Revertly will automatically <strong>{actionChoice === "DRAFT" ? "switch it to DRAFT to instantly hide it from customers" : "auto-revert the price to its baseline"}</strong>.
-                      </p>
+                  {/* Switch Row */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "16px",
+                      padding: "16px 20px",
+                      background: "var(--rv-surface-subdued)",
+                      borderRadius: "var(--rv-radius-sm)",
+                      border: "1px solid var(--rv-border-subtle)",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    <div>
+                      <label
+                        htmlFor="set-circuit-breaker"
+                        style={{
+                          fontSize: "14px",
+                          fontWeight: 600,
+                          color: "var(--rv-text)",
+                          display: "block",
+                          cursor: hasCircuitBreakerAccess ? "pointer" : "not-allowed",
+                          marginBottom: "3px",
+                        }}
+                      >
+                        Activate Price Crash Circuit Breaker
+                      </label>
+                      <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5, display: "block" }}>
+                        Intervene instantly if an unauthorized CSV upload or rogue app drops prices past safety margins.
+                      </span>
                     </div>
+                    <div className={`rv-switch ${!hasCircuitBreakerAccess ? "disabled" : ""}`}>
+                      <input
+                        id="set-circuit-breaker"
+                        type="checkbox"
+                        disabled={!hasCircuitBreakerAccess}
+                        checked={circuitBreakerEnabled}
+                        onChange={(e) => setCircuitBreakerEnabled(e.target.checked)}
+                      />
+                      <label htmlFor="set-circuit-breaker" className="rv-switch-slider">
+                        <span className="rv-sr-only">Toggle Price Crash Circuit Breaker</span>
+                      </label>
+                    </div>
+                  </div>
 
-                    {/* Inputs */}
-                    <div className="rv-form-grid" style={{ opacity: hasCircuitBreakerAccess && circuitBreakerEnabled ? 1 : 0.65 }}>
-                      <div className="rv-form-field">
-                        <label htmlFor="circuit-breaker-threshold" className="rv-form-label">
+                  {/* Interactive Live Formula / Simulation Box */}
+                  <div
+                    style={{
+                      background: "linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.02) 100%)",
+                      border: "1px solid var(--rv-warning-border)",
+                      borderRadius: "var(--rv-radius-sm)",
+                      padding: "16px 18px",
+                      marginBottom: "20px",
+                      fontSize: "13px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, color: "var(--rv-warning)", marginBottom: "6px" }}>
+                      <ZapIcon size={16} />
+                      <span>Live Protection Simulation:</span>
+                    </div>
+                    <p style={{ margin: 0, color: "var(--rv-text)", lineHeight: 1.5 }}>
+                      If a product priced at <strong>$100.00</strong> suddenly drops by <strong>{numThreshold}%</strong> or more (to <strong>${sampleReducedPrice}</strong> or less), Revertly will automatically <strong>{actionChoice === "DRAFT" ? "switch it to DRAFT to instantly hide it from customers" : "auto-revert the price to its baseline"}</strong>.
+                    </p>
+                  </div>
+
+                  {/* 2-Column Responsive Form Controls */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px", opacity: hasCircuitBreakerAccess && circuitBreakerEnabled ? 1 : 0.65 }}>
+                    <div className="rv-form-field">
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                        <label htmlFor="circuit-breaker-threshold" className="rv-form-label" style={{ margin: 0 }}>
                           Crash Trigger Threshold (%)
                         </label>
-                        <div className="rv-input-group">
+                        <span style={{ fontSize: "12px", fontWeight: 700, color: "var(--rv-primary)" }}>
+                          {threshold}% drop
+                        </span>
+                      </div>
+                      <div className="rv-slider-wrapper">
+                        <input
+                          type="range"
+                          min="5"
+                          max="95"
+                          step="1"
+                          disabled={!hasCircuitBreakerAccess}
+                          value={threshold}
+                          onChange={(e) => setThreshold(e.target.value)}
+                          className="rv-range-slider"
+                          aria-label="Crash Trigger Threshold Slider"
+                        />
+                        <div className="rv-input-group" style={{ width: "120px", flexShrink: 0 }}>
                           <input
                             id="circuit-breaker-threshold"
                             type="number"
@@ -1193,128 +1272,139 @@ export default function Settings() {
                             onChange={(e) => setThreshold(e.target.value)}
                             className="rv-input"
                           />
-                          <span className="rv-input-suffix">% price drop</span>
+                          <span className="rv-input-suffix">%</span>
                         </div>
-                        <span className="rv-form-help">Trigger when variant price drops by this percentage or more.</span>
                       </div>
+                      <span className="rv-form-help">Trigger defensive intervention when variant price drops by this percentage or more.</span>
+                    </div>
 
-                      <div className="rv-form-field">
-                        <label htmlFor="circuit-breaker-action" className="rv-form-label">
-                          Emergency Defensive Action
-                        </label>
-                        <select
-                          id="circuit-breaker-action"
-                          name="circuitBreakerAction"
-                          disabled={!hasCircuitBreakerAccess}
-                          value={actionChoice}
-                          onChange={(e) => setActionChoice(e.target.value)}
-                          className="rv-select"
-                        >
-                          <option value="DRAFT">Set Product to DRAFT (Hide from storefront instantly)</option>
-                          <option value="AUTO_REVERT">Auto-Revert Price (Restore previous baseline price)</option>
-                        </select>
-                        <span className="rv-form-help">Action taken automatically within seconds of webhook detection.</span>
-                      </div>
+                    <div className="rv-form-field">
+                      <label htmlFor="circuit-breaker-action" className="rv-form-label">
+                        Emergency Defensive Action
+                      </label>
+                      <select
+                        id="circuit-breaker-action"
+                        name="circuitBreakerAction"
+                        disabled={!hasCircuitBreakerAccess}
+                        value={actionChoice}
+                        onChange={(e) => setActionChoice(e.target.value)}
+                        className="rv-select"
+                      >
+                        <option value="DRAFT">Set Product to DRAFT (Hide from storefront instantly)</option>
+                        <option value="AUTO_REVERT">Auto-Revert Price (Restore previous baseline price)</option>
+                      </select>
+                      <span className="rv-form-help">Action taken automatically within seconds of webhook detection.</span>
                     </div>
                   </div>
                 </div>
-              )}
+              </div>
 
-              {/* ── 3. Bulk Change Anomaly Detection Card ── */}
-              {(activeTab === "all" || activeTab === "bulk") && (
-                <div className="rv-card" style={{ margin: 0 }}>
-                  <div className="rv-card-header">
-                    <div className="rv-card-icon-title">
-                      <div className="rv-card-icon-badge info">
-                        <BoxIcon size={18} />
-                      </div>
-                      <div>
-                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
-                          Bulk Change Anomaly Detection
-                        </h3>
-                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          Detect and quarantine rogue bulk syncs, CSV import mistakes, or third-party app crashes.
-                        </p>
-                      </div>
+              {/* ── 4. Bulk Change Anomaly Detection Card ── */}
+              <div
+                className="rv-card"
+                style={{
+                  margin: 0,
+                  display: activeTab === "all" || activeTab === "bulk" ? "block" : "none",
+                }}
+              >
+                <div className="rv-card-header">
+                  <div className="rv-card-icon-title">
+                    <div className="rv-card-icon-badge info">
+                      <BoxIcon size={20} />
                     </div>
-                    <span className="rv-badge rv-badge-neutral">Burst Guard</span>
+                    <div>
+                      <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                        Bulk Change Anomaly Detection
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Detect and quarantine rogue bulk syncs, CSV import mistakes, or third-party app crashes.
+                      </p>
+                    </div>
                   </div>
+                  <span className="rv-badge rv-badge-neutral">Burst Guard</span>
+                </div>
 
-                  <div className="rv-card-body">
-                    <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 16px", lineHeight: 1.5 }}>
-                      When products are modified in sudden bursts exceeding your threshold, Revertly registers a high-priority incident and alerts your team immediately.
-                    </p>
+                <div className="rv-card-body">
+                  <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: "0 0 18px", lineHeight: 1.5 }}>
+                    When products are modified in sudden bursts exceeding your threshold, Revertly registers a high-priority incident and alerts your team immediately.
+                  </p>
 
-                    <div className="rv-form-grid">
-                      <div className="rv-form-field">
-                        <label htmlFor="bulk-threshold" className="rv-form-label">
-                          Bulk Product Threshold
-                        </label>
-                        <div className="rv-input-group">
-                          <input
-                            id="bulk-threshold"
-                            type="number"
-                            min="1"
-                            max="1000"
-                            name="bulkThreshold"
-                            defaultValue={String(settings?.bulkThreshold ?? 20)}
-                            className="rv-input"
-                          />
-                          <span className="rv-input-suffix">products</span>
-                        </div>
-                        <span className="rv-form-help">Trigger incident if this many products change...</span>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px" }}>
+                    <div className="rv-form-field">
+                      <label htmlFor="bulk-threshold" className="rv-form-label">
+                        Bulk Product Threshold
+                      </label>
+                      <div className="rv-input-group">
+                        <input
+                          id="bulk-threshold"
+                          type="number"
+                          min="1"
+                          max="1000"
+                          name="bulkThreshold"
+                          defaultValue={String(settings?.bulkThreshold ?? 20)}
+                          className="rv-input"
+                        />
+                        <span className="rv-input-suffix">products</span>
                       </div>
+                      <span className="rv-form-help">Trigger incident if this many products change...</span>
+                    </div>
 
-                      <div className="rv-form-field">
-                        <label htmlFor="bulk-window-minutes" className="rv-form-label">
-                          Burst Time Window
-                        </label>
-                        <div className="rv-input-group">
-                          <input
-                            id="bulk-window-minutes"
-                            type="number"
-                            min="1"
-                            max="120"
-                            name="bulkWindowMinutes"
-                            defaultValue={String(settings?.bulkWindowMinutes ?? 10)}
-                            className="rv-input"
-                          />
-                          <span className="rv-input-suffix">minutes</span>
-                        </div>
-                        <span className="rv-form-help">...within this sliding time window.</span>
+                    <div className="rv-form-field">
+                      <label htmlFor="bulk-window-minutes" className="rv-form-label">
+                        Burst Time Window
+                      </label>
+                      <div className="rv-input-group">
+                        <input
+                          id="bulk-window-minutes"
+                          type="number"
+                          min="1"
+                          max="120"
+                          name="bulkWindowMinutes"
+                          defaultValue={String(settings?.bulkWindowMinutes ?? 10)}
+                          className="rv-input"
+                        />
+                        <span className="rv-input-suffix">minutes</span>
                       </div>
+                      <span className="rv-form-help">...within this sliding time window.</span>
                     </div>
                   </div>
                 </div>
-              )}
+              </div>
 
-              {/* ── 4. Alert Channels & Notifications Card ── */}
-              {(activeTab === "all" || activeTab === "alerts") && (
-                <div className="rv-card" style={{ margin: 0 }}>
-                  <div className="rv-card-header">
-                    <div className="rv-card-icon-title">
-                      <div className="rv-card-icon-badge neutral">
-                        <BellIcon size={18} />
-                      </div>
-                      <div>
-                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
-                          Alert Channels &amp; Notifications
-                        </h3>
-                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          Deliver instant warnings to your operations team via Email and Slack webhooks.
-                        </p>
-                      </div>
+              {/* ── 5. Alert Channels & Notifications Card ── */}
+              <div
+                className="rv-card"
+                style={{
+                  margin: 0,
+                  display: activeTab === "all" || activeTab === "alerts" ? "block" : "none",
+                }}
+              >
+                <div className="rv-card-header">
+                  <div className="rv-card-icon-title">
+                    <div className="rv-card-icon-badge neutral">
+                      <BellIcon size={20} />
                     </div>
-                    <span className="rv-badge rv-badge-neutral">Instant Delivery</span>
+                    <div>
+                      <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                        Alert Channels &amp; Notifications
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Deliver instant warnings to your operations team via Email and Slack webhooks.
+                      </p>
+                    </div>
                   </div>
+                  <span className="rv-badge rv-badge-neutral">Instant Delivery</span>
+                </div>
 
-                  <div className="rv-card-body">
+                <div className="rv-card-body">
+                  {/* Email & Slack Row */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px", marginBottom: "24px" }}>
                     {/* Email Input */}
-                    <div className="rv-form-field" style={{ marginBottom: "22px" }}>
+                    <div className="rv-form-field">
                       <label htmlFor="alert-email" className="rv-form-label">
                         Primary Alert Email Address
                       </label>
-                      <div className="rv-search-wrapper" style={{ width: "100%", maxWidth: "460px" }}>
+                      <div className="rv-search-wrapper" style={{ width: "100%" }}>
                         <span className="rv-search-icon">
                           <MailIcon size={16} />
                         </span>
@@ -1332,14 +1422,14 @@ export default function Settings() {
                     </div>
 
                     {/* Slack Webhook */}
-                    <div className="rv-form-field" style={{ marginBottom: "24px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                    <div className="rv-form-field">
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
                         <label htmlFor="slack-webhook-url" className="rv-form-label" style={{ margin: 0 }}>
                           Slack Incoming Webhook URL
                         </label>
                         {!hasSlackAccess && (
                           <span className="rv-badge rv-badge-neutral rv-badge-sm">
-                            Requires Business Plan ($49/mo)
+                            Requires Business Plan
                           </span>
                         )}
                       </div>
@@ -1350,34 +1440,33 @@ export default function Settings() {
                             background: "var(--rv-surface-subdued)",
                             border: "1px dashed var(--rv-border)",
                             borderRadius: "var(--rv-radius-sm)",
-                            padding: "14px 18px",
-                            fontSize: "13px",
+                            padding: "12px 16px",
+                            fontSize: "12px",
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "space-between",
-                            gap: "12px",
-                            flexWrap: "wrap",
+                            gap: "10px",
                           }}
                         >
                           <span style={{ color: "var(--rv-text-subdued)" }}>
-                            Real-time Slack Webhook notifications require the <strong>Business</strong> or <strong>Enterprise</strong> plan.
+                            Slack Webhook alerts require <strong>Business</strong> plan.
                           </span>
                           <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
-                            Upgrade to Business
+                            Upgrade
                           </Link>
                         </div>
                       ) : (
                         <div>
-                          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", maxWidth: "640px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                             <input
                               id="slack-webhook-url"
                               type="url"
                               name="slackWebhookUrl"
                               value={slackUrl}
                               onChange={(e) => setSlackUrl(e.target.value)}
-                              placeholder="https://hooks.slack.com/services/T.../B.../..."
+                              placeholder="https://hooks.slack.com/services/..."
                               className="rv-input"
-                              style={{ flex: 1, minWidth: "260px" }}
+                              style={{ flex: 1 }}
                             />
                             <button
                               type="button"
@@ -1388,168 +1477,180 @@ export default function Settings() {
                                   { method: "POST" }
                                 );
                               }}
-                              className="rv-btn rv-btn-secondary"
+                              className="rv-btn rv-btn-secondary rv-btn-sm"
+                              style={{ flexShrink: 0 }}
                             >
                               <BellIcon size={14} />
-                              <span>{isTestingSlack ? "Delivering Test..." : "Send Test Alert"}</span>
+                              <span>{isTestingSlack ? "Testing..." : "Test"}</span>
                             </button>
                           </div>
                           <span className="rv-form-help">Post automated incident cards into your team&apos;s Slack channel.</span>
                         </div>
                       )}
                     </div>
+                  </div>
 
-                    {/* Interactive Severity Selection Cards */}
-                    <div>
-                      <div className="rv-form-label" style={{ marginBottom: "10px", display: "block" }}>
-                        Notify on Incidents of Severity:
+                  {/* Interactive Severity Selection Cards in Clean 3-Column Grid */}
+                  <div>
+                    <div className="rv-form-label" style={{ marginBottom: "12px", display: "block" }}>
+                      Notify on Incidents of Severity:
+                    </div>
+                    <div className="rv-severity-grid">
+
+                      {/* Critical Card */}
+                      <div
+                        className={`rv-severity-card critical ${alertCritical ? "selected" : ""}`}
+                        onClick={() => setAlertCritical(!alertCritical)}
+                      >
+                        <input
+                          id="alert-critical"
+                          type="checkbox"
+                          checked={alertCritical}
+                          onChange={(e) => setAlertCritical(e.target.checked)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ marginTop: "3px", cursor: "pointer" }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                            <span className="rv-badge rv-badge-critical rv-badge-sm">CRITICAL</span>
+                          </div>
+                          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
+                            Price crashes, mass product deletions, and circuit breaker activations.
+                          </span>
+                        </div>
                       </div>
-                      <div className="rv-severity-grid">
 
-                        {/* Critical Card */}
-                        <div className={`rv-severity-card critical ${alertCritical ? "selected" : ""}`}>
-                          <input
-                            id="alert-critical"
-                            type="checkbox"
-                            name="alertOnCritical"
-                            value="true"
-                            checked={alertCritical}
-                            onChange={(e) => setAlertCritical(e.target.checked)}
-                            style={{ marginTop: "3px", cursor: "pointer" }}
-                          />
-                          <label htmlFor="alert-critical" style={{ cursor: "pointer", flex: 1 }}>
-                            <span style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                              <span className="rv-badge rv-badge-critical rv-badge-sm">CRITICAL</span>
-                            </span>
-                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
-                              Price crashes, mass deletions, and circuit breaker activations.
-                            </span>
-                          </label>
+                      {/* High Card */}
+                      <div
+                        className={`rv-severity-card warning ${alertHigh ? "selected" : ""}`}
+                        onClick={() => setAlertHigh(!alertHigh)}
+                      >
+                        <input
+                          id="alert-high"
+                          type="checkbox"
+                          checked={alertHigh}
+                          onChange={(e) => setAlertHigh(e.target.checked)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ marginTop: "3px", cursor: "pointer" }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                            <span className="rv-badge rv-badge-warning rv-badge-sm">HIGH</span>
+                          </div>
+                          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
+                            Bulk discount anomalies and sudden unexpected variant updates.
+                          </span>
                         </div>
-
-                        {/* High Card */}
-                        <div className={`rv-severity-card warning ${alertHigh ? "selected" : ""}`}>
-                          <input
-                            id="alert-high"
-                            type="checkbox"
-                            name="alertOnHigh"
-                            value="true"
-                            checked={alertHigh}
-                            onChange={(e) => setAlertHigh(e.target.checked)}
-                            style={{ marginTop: "3px", cursor: "pointer" }}
-                          />
-                          <label htmlFor="alert-high" style={{ cursor: "pointer", flex: 1 }}>
-                            <span style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                              <span className="rv-badge rv-badge-warning rv-badge-sm">HIGH</span>
-                            </span>
-                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
-                              Bulk discount anomalies and sudden variant updates.
-                            </span>
-                          </label>
-                        </div>
-
-                        {/* Medium Card */}
-                        <div className={`rv-severity-card info ${alertMedium ? "selected" : ""}`}>
-                          <input
-                            id="alert-medium"
-                            type="checkbox"
-                            name="alertOnMedium"
-                            value="true"
-                            checked={alertMedium}
-                            onChange={(e) => setAlertMedium(e.target.checked)}
-                            style={{ marginTop: "3px", cursor: "pointer" }}
-                          />
-                          <label htmlFor="alert-medium" style={{ cursor: "pointer", flex: 1 }}>
-                            <span style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                              <span className="rv-badge rv-badge-info rv-badge-sm">MEDIUM</span>
-                            </span>
-                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
-                              Moderate catalog modifications exceeding detection rules.
-                            </span>
-                          </label>
-                        </div>
-
                       </div>
+
+                      {/* Medium Card */}
+                      <div
+                        className={`rv-severity-card info ${alertMedium ? "selected" : ""}`}
+                        onClick={() => setAlertMedium(!alertMedium)}
+                      >
+                        <input
+                          id="alert-medium"
+                          type="checkbox"
+                          checked={alertMedium}
+                          onChange={(e) => setAlertMedium(e.target.checked)}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{ marginTop: "3px", cursor: "pointer" }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                            <span className="rv-badge rv-badge-info rv-badge-sm">MEDIUM</span>
+                          </div>
+                          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.4, display: "block" }}>
+                            Moderate catalog modifications exceeding configured detection rules.
+                          </span>
+                        </div>
+                      </div>
+
                     </div>
                   </div>
                 </div>
-              )}
+              </div>
 
-              {/* ── 5. Theme App Embed Card ── */}
-              {(activeTab === "all" || activeTab === "embed") && (
-                <div className="rv-card" style={{ margin: 0 }}>
-                  <div className="rv-card-header">
-                    <div className="rv-card-icon-title">
-                      <div className="rv-card-icon-badge success">
-                        <ShieldCheckIcon size={18} />
-                      </div>
-                      <div>
-                        <h3 className="rv-card-title" style={{ margin: 0, fontSize: "15px" }}>
-                          Theme App Embed (Storefront Protection)
-                        </h3>
-                        <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                          Injects baseline checkpoints into your active theme for frontend drift detection.
+              {/* ── 6. Theme App Embed Card ── */}
+              <div
+                className="rv-card"
+                style={{
+                  margin: 0,
+                  display: activeTab === "all" || activeTab === "embed" ? "block" : "none",
+                }}
+              >
+                <div className="rv-card-header">
+                  <div className="rv-card-icon-title">
+                    <div className="rv-card-icon-badge success">
+                      <ShieldCheckIcon size={20} />
+                    </div>
+                    <div>
+                      <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                        Theme App Embed (Storefront Protection)
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        Injects baseline checkpoints into your active theme for frontend drift detection.
+                      </p>
+                    </div>
+                  </div>
+                  {themeEmbedActive ? (
+                    <span className="rv-badge rv-badge-success">Active on {activeThemeName}</span>
+                  ) : (
+                    <span className="rv-badge rv-badge-warning">Action Required</span>
+                  )}
+                </div>
+
+                <div className="rv-card-body">
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "14px",
+                      background: themeEmbedActive ? "var(--rv-primary-surface)" : "var(--rv-warning-surface)",
+                      border: `1px solid ${themeEmbedActive ? "var(--rv-primary-border)" : "var(--rv-warning-border)"}`,
+                      borderRadius: "var(--rv-radius-md)",
+                      padding: "20px 24px",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "18px", flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, minWidth: "280px" }}>
+                        <h4 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "var(--rv-text)" }}>
+                          {themeEmbedActive ? "Revertly Protection App Embed is Enabled" : "Theme Embed is Not Yet Activated"}
+                        </h4>
+                        <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                          {themeEmbedActive
+                            ? `Your active theme (${activeThemeName}) has Revertly Protection enabled. Storefront activity monitoring and rollback checkpoints are active.`
+                            : "To enable storefront change monitoring and instant checkpoint verification, please enable Revertly in your Shopify Theme Editor under App Embeds."}
                         </p>
                       </div>
+                      <a
+                        href={themeEditorUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rv-btn rv-btn-primary"
+                        style={{ flexShrink: 0 }}
+                      >
+                        <span>{themeEmbedActive ? "Configure in Theme Editor" : "Enable in Theme Editor"}</span>
+                        <ExternalLinkIcon size={14} />
+                      </a>
                     </div>
-                    {themeEmbedActive ? (
-                      <span className="rv-badge rv-badge-success">Active on {activeThemeName}</span>
-                    ) : (
-                      <span className="rv-badge rv-badge-warning">Action Required</span>
+
+                    {!themeEmbedActive && (
+                      <div style={{ borderTop: "1px dashed rgba(245, 158, 11, 0.4)", paddingTop: "14px", marginTop: "6px" }}>
+                        <strong style={{ fontSize: "12px", color: "var(--rv-text)", display: "block", marginBottom: "8px" }}>
+                          Quick 4-Step Setup:
+                        </strong>
+                        <ol style={{ margin: 0, paddingLeft: "20px", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.7 }}>
+                          <li>Click <strong>Enable in Theme Editor</strong> above to open your store theme customizer.</li>
+                          <li>In the left sidebar, locate <strong>Revertly Protection</strong> under <em>App embeds</em>.</li>
+                          <li>Toggle the switch <strong>ON</strong>.</li>
+                          <li>Click <strong>Save</strong> in the top right corner.</li>
+                        </ol>
+                      </div>
                     )}
                   </div>
-
-                  <div className="rv-card-body">
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "14px",
-                        background: themeEmbedActive ? "var(--rv-primary-surface)" : "var(--rv-warning-surface)",
-                        border: `1px solid ${themeEmbedActive ? "var(--rv-primary-border)" : "var(--rv-warning-border)"}`,
-                        borderRadius: "var(--rv-radius-md)",
-                        padding: "18px 20px",
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
-                        <div>
-                          <h4 style={{ margin: "0 0 4px", fontSize: "15px", fontWeight: 700, color: "var(--rv-text)" }}>
-                            {themeEmbedActive ? "Revertly Protection App Embed is Enabled" : "Theme Embed is Not Yet Activated"}
-                          </h4>
-                          <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-                            {themeEmbedActive
-                              ? `Your active theme (${activeThemeName}) has Revertly Protection enabled. Storefront activity monitoring and rollback checkpoints are active.`
-                              : "To enable storefront change monitoring and instant checkpoint verification, please enable Revertly in your Shopify Theme Editor under App Embeds."}
-                          </p>
-                        </div>
-                        <a
-                          href={themeEditorUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="rv-btn rv-btn-primary rv-btn-sm"
-                        >
-                          <span>{themeEmbedActive ? "Configure in Theme Editor" : "Enable in Theme Editor"}</span>
-                          <ExternalLinkIcon size={13} />
-                        </a>
-                      </div>
-
-                      {!themeEmbedActive && (
-                        <div style={{ borderTop: "1px dashed rgba(245, 158, 11, 0.4)", paddingTop: "14px", marginTop: "4px" }}>
-                          <strong style={{ fontSize: "12px", color: "var(--rv-text)", display: "block", marginBottom: "6px" }}>
-                            Quick 4-Step Setup:
-                          </strong>
-                          <ol style={{ margin: 0, paddingLeft: "18px", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.6 }}>
-                            <li>Click <strong>Enable in Theme Editor</strong> above to open your store theme customizer.</li>
-                            <li>In the left sidebar, locate <strong>Revertly Protection</strong> under <em>App embeds</em>.</li>
-                            <li>Toggle the switch <strong>ON</strong>.</li>
-                            <li>Click <strong>Save</strong> in the top right corner.</li>
-                          </ol>
-                        </div>
-                      )}
-                    </div>
-                  </div>
                 </div>
-              )}
+              </div>
 
               {/* ── Sticky Bottom Action Bar ── */}
               <div className="rv-sticky-save-bar">
@@ -1572,6 +1673,7 @@ export default function Settings() {
                     type="submit"
                     disabled={isSaving}
                     className="rv-btn rv-btn-primary rv-btn-lg"
+                    style={{ minWidth: "150px" }}
                   >
                     <SaveIcon size={16} />
                     <span>{isSaving ? "Saving..." : "Save Settings"}</span>
