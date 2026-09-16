@@ -4,6 +4,7 @@ import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { sendSupportTicketAdminEmail } from "../supportEmail.server.js";
+import { getEffectivePlanId } from "../billing.server.js";
 import {
   HelpCircleIcon,
   SearchIcon,
@@ -77,7 +78,7 @@ export const loader = async ({ request }) => {
       select: { alertEmail: true, planId: true },
     });
     if (settings?.alertEmail) defaultEmail = settings.alertEmail;
-    if (settings?.planId) planTier = settings.planId;
+    planTier = await getEffectivePlanId(shop, settings);
   } catch (err) {
     console.error("[Support] Error fetching appSettings in loader:", err);
   }
@@ -137,7 +138,7 @@ export const action = async ({ request }) => {
       where: { shop },
       select: { planId: true },
     });
-    if (settings?.planId) planTier = settings.planId;
+    planTier = await getEffectivePlanId(shop, settings);
   } catch {
     // Graceful fallback
   }

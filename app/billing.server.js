@@ -5,6 +5,12 @@ import {
   PLAN_GROWTH,
   PLAN_BUSINESS,
   PLAN_ENTERPRISE,
+  PLAN_STARTER_ANNUAL,
+  PLAN_GROWTH_ANNUAL,
+  PLAN_BUSINESS_ANNUAL,
+  PLAN_ENTERPRISE_ANNUAL,
+  INTERVAL_MONTHLY,
+  INTERVAL_ANNUAL,
   PLAN_PRO,
   PLAN_TIERS,
 } from "./billing.constants.js";
@@ -14,6 +20,12 @@ export {
   PLAN_GROWTH,
   PLAN_BUSINESS,
   PLAN_ENTERPRISE,
+  PLAN_STARTER_ANNUAL,
+  PLAN_GROWTH_ANNUAL,
+  PLAN_BUSINESS_ANNUAL,
+  PLAN_ENTERPRISE_ANNUAL,
+  INTERVAL_MONTHLY,
+  INTERVAL_ANNUAL,
   PLAN_PRO,
   PLAN_TIERS,
 };
@@ -111,7 +123,7 @@ export async function getEffectivePlanId(shop, settings) {
   const { getActiveFreeGrowthGrant } = await import("./freeGrowth.server.js");
   const grant = await getActiveFreeGrowthGrant(shop);
 
-  return grant && planRank(paidPlan) < planRank("growth") ? "growth" : paidPlan;
+  return grant && planRank(paidPlan) <= planRank("growth") ? "growth" : paidPlan;
 }
 
 /** Plan limits for `getEffectivePlanId`. */
@@ -124,12 +136,22 @@ export async function getEffectiveLimits(shop, settings) {
  */
 export async function getStorePlan(shop, billing = null, isTest = true) {
   let activeShopifyPlan = null;
+  let activeShopifyInterval = null;
   let subscriptionDiscountPercent = null;
 
   if (billing) {
     try {
       const billingCheck = await billing.check({
-        plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
+        plans: [
+          PLAN_STARTER,
+          PLAN_GROWTH,
+          PLAN_BUSINESS,
+          PLAN_ENTERPRISE,
+          PLAN_STARTER_ANNUAL,
+          PLAN_GROWTH_ANNUAL,
+          PLAN_BUSINESS_ANNUAL,
+          PLAN_ENTERPRISE_ANNUAL,
+        ],
         isTest,
       });
 
@@ -140,10 +162,36 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
         ) || billingCheck.appSubscriptions[0];
 
         const subName = activeSub?.name;
-        if (subName === PLAN_STARTER) activeShopifyPlan = "starter";
-        else if (subName === PLAN_GROWTH || subName === PLAN_PRO) activeShopifyPlan = "growth";
-        else if (subName === PLAN_BUSINESS) activeShopifyPlan = "business";
-        else if (subName === PLAN_ENTERPRISE) activeShopifyPlan = "enterprise";
+        if (subName === PLAN_STARTER) {
+          activeShopifyPlan = "starter";
+          activeShopifyInterval = INTERVAL_MONTHLY;
+        } else if (subName === PLAN_STARTER_ANNUAL) {
+          activeShopifyPlan = "starter";
+          activeShopifyInterval = INTERVAL_ANNUAL;
+        } else if (subName === PLAN_GROWTH || subName === PLAN_PRO) {
+          activeShopifyPlan = "growth";
+          activeShopifyInterval = INTERVAL_MONTHLY;
+        } else if (subName === PLAN_GROWTH_ANNUAL) {
+          activeShopifyPlan = "growth";
+          activeShopifyInterval = INTERVAL_ANNUAL;
+        } else if (subName === PLAN_BUSINESS) {
+          activeShopifyPlan = "business";
+          activeShopifyInterval = INTERVAL_MONTHLY;
+        } else if (subName === PLAN_BUSINESS_ANNUAL) {
+          activeShopifyPlan = "business";
+          activeShopifyInterval = INTERVAL_ANNUAL;
+        } else if (subName === PLAN_ENTERPRISE) {
+          activeShopifyPlan = "enterprise";
+          activeShopifyInterval = INTERVAL_MONTHLY;
+        } else if (subName === PLAN_ENTERPRISE_ANNUAL) {
+          activeShopifyPlan = "enterprise";
+          activeShopifyInterval = INTERVAL_ANNUAL;
+        }
+
+        if (!activeShopifyInterval && activeSub?.lineItems?.[0]?.plan?.pricingDetails?.interval) {
+          const intVal = activeSub.lineItems[0].plan.pricingDetails.interval;
+          activeShopifyInterval = intVal === "ANNUAL" ? INTERVAL_ANNUAL : INTERVAL_MONTHLY;
+        }
 
         subscriptionDiscountPercent = readSubscriptionDiscountPercent(activeSub);
       }
@@ -161,41 +209,75 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
 
   // If Shopify returned a definitive check, synchronize database (unless plan was activated in test/simulation mode)
   if (billing && !isSimulated) {
-    if (activeShopifyPlan && settings && settings.planId !== activeShopifyPlan) {
+    if (activeShopifyPlan && settings && (settings.planId !== activeShopifyPlan || (activeShopifyInterval && settings.billingInterval !== activeShopifyInterval))) {
       await prisma.appSettings.update({
         where: { shop },
-        data: { planId: activeShopifyPlan },
+        data: {
+          planId: activeShopifyPlan,
+          billingInterval: activeShopifyInterval || INTERVAL_MONTHLY,
+        },
       });
       currentPlan = activeShopifyPlan;
     } else if (!activeShopifyPlan && settings && settings.planId !== "free") {
       // Shopify has no active payment, but DB still says paid plan -> downgrade to free
       await prisma.appSettings.update({
         where: { shop },
-        data: { planId: "free", subscriptionId: null },
+        data: { planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY },
       });
       currentPlan = "free";
     }
   }
 
   // A promotional free-Growth seat grants Growth entitlements with no
-  // subscription behind them, so it is applied to the *effective* plan only
-  // and never written back to AppSettings. It can only ever promote: a
-  // merchant already paying for Business keeps Business.
+  // subscription behind them. If a store holds an active grant and does not
+  // have a higher-tier paid Shopify subscription (Business or Enterprise):
+  // - its effective entitlement plan is Growth;
+  // - its billed plan is Free (no Shopify charge);
+  // - freeGrowth details are returned with isActive: true.
   const { getActiveFreeGrowthGrant } = await import("./freeGrowth.server.js");
   const freeGrowthGrant = await getActiveFreeGrowthGrant(shop);
-  const promotedByFreeGrowth =
-    Boolean(freeGrowthGrant) && planRank(currentPlan) < planRank("growth");
-  const effectivePlan = promotedByFreeGrowth ? "growth" : currentPlan;
+
+  let effectivePlan = currentPlan;
+  let paidPlan = currentPlan;
+  let freeGrowthInfo = null;
+
+  if (freeGrowthGrant) {
+    const hasHigherPaidPlan = planRank(currentPlan) > planRank("growth");
+    if (!hasHigherPaidPlan) {
+      effectivePlan = "growth";
+      paidPlan = "free";
+
+      // If a simulated subscription or stale growth planId was saved in AppSettings, clean it up
+      // so it never conflicts with the promotional free status.
+      if (settings && (settings.subscriptionId?.startsWith("sim_") || settings.planId !== "free")) {
+        await prisma.appSettings.update({
+          where: { shop },
+          data: { planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY },
+        }).catch((err) => {
+          console.warn("[Revertly Billing] Could not reset stale subscription for free growth:", err?.message);
+        });
+      }
+    }
+    freeGrowthInfo = {
+      expiresAt: freeGrowthGrant.expiresAt,
+      isActive: !hasHigherPaidPlan,
+      supersededByPaidPlan: hasHigherPaidPlan,
+    };
+  }
+
+  const resolvedInterval =
+    activeShopifyInterval ||
+    settings?.billingInterval ||
+    (settings?.subscriptionId?.includes("annual") ? INTERVAL_ANNUAL : INTERVAL_MONTHLY);
 
   return {
     currentPlan: effectivePlan,
     // What the merchant actually pays for, ignoring the promotion.
-    paidPlan: currentPlan,
+    paidPlan,
     limits: getPlanLimits(effectivePlan),
     subscriptionDiscountPercent,
-    freeGrowth: freeGrowthGrant
-      ? { expiresAt: freeGrowthGrant.expiresAt, promoted: promotedByFreeGrowth }
-      : null,
+    freeGrowth: freeGrowthInfo,
+    billingInterval: resolvedInterval,
   };
 }
 

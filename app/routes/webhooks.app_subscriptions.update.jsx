@@ -5,19 +5,27 @@ import {
   PLAN_GROWTH,
   PLAN_BUSINESS,
   PLAN_ENTERPRISE,
+  PLAN_STARTER_ANNUAL,
+  PLAN_GROWTH_ANNUAL,
+  PLAN_BUSINESS_ANNUAL,
+  PLAN_ENTERPRISE_ANNUAL,
+  INTERVAL_MONTHLY,
+  INTERVAL_ANNUAL,
   PLAN_PRO,
 } from "../billing.server.js";
 
-// Exact (case-insensitive) map from a Shopify subscription's name to our internal plan id.
-const NAME_TO_PLAN = new Map(
-  [
-    [PLAN_STARTER, "starter"],
-    [PLAN_GROWTH, "growth"],
-    [PLAN_PRO, "growth"],
-    [PLAN_BUSINESS, "business"],
-    [PLAN_ENTERPRISE, "enterprise"],
-  ].map(([name, planId]) => [name.toLowerCase(), planId])
-);
+// Exact (case-insensitive) map from a Shopify subscription's name to our internal plan id and interval.
+const NAME_TO_PLAN_INFO = new Map([
+  [PLAN_STARTER.toLowerCase(), { planId: "starter", interval: INTERVAL_MONTHLY }],
+  [PLAN_STARTER_ANNUAL.toLowerCase(), { planId: "starter", interval: INTERVAL_ANNUAL }],
+  [PLAN_GROWTH.toLowerCase(), { planId: "growth", interval: INTERVAL_MONTHLY }],
+  [PLAN_GROWTH_ANNUAL.toLowerCase(), { planId: "growth", interval: INTERVAL_ANNUAL }],
+  [PLAN_PRO.toLowerCase(), { planId: "growth", interval: INTERVAL_MONTHLY }],
+  [PLAN_BUSINESS.toLowerCase(), { planId: "business", interval: INTERVAL_MONTHLY }],
+  [PLAN_BUSINESS_ANNUAL.toLowerCase(), { planId: "business", interval: INTERVAL_ANNUAL }],
+  [PLAN_ENTERPRISE.toLowerCase(), { planId: "enterprise", interval: INTERVAL_MONTHLY }],
+  [PLAN_ENTERPRISE_ANNUAL.toLowerCase(), { planId: "enterprise", interval: INTERVAL_ANNUAL }],
+]);
 
 // Statuses that mean the subscription is permanently gone and the shop should
 // fall back to Free. Transient states (PENDING approval, a temporary FROZEN
@@ -44,7 +52,14 @@ export const action = async ({ request }) => {
     console.log(`[Revertly Webhook] Subscription "${name}" status changed to ${status} for ${shop}`);
 
     if (status === "ACTIVE") {
-      const targetPlan = NAME_TO_PLAN.get(name.toLowerCase()) || "free";
+      const planInfo = NAME_TO_PLAN_INFO.get(name.toLowerCase());
+      const targetPlan = planInfo?.planId || "free";
+
+      let targetInterval = planInfo?.interval || INTERVAL_MONTHLY;
+      const lineItemInterval = subscription?.line_items?.[0]?.plan?.pricing_details?.interval;
+      if (lineItemInterval === "ANNUAL" || name.toLowerCase().includes("annual")) {
+        targetInterval = INTERVAL_ANNUAL;
+      }
 
       const existing = await prisma.appSettings.findUnique({ where: { shop } });
       const alreadyUsedTrial = Boolean(existing?.hasUsedTrial);
@@ -55,12 +70,14 @@ export const action = async ({ request }) => {
           shop,
           planId: targetPlan,
           subscriptionId,
+          billingInterval: targetInterval,
           hasUsedTrial: true,
           trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
         },
         update: {
           planId: targetPlan,
           subscriptionId,
+          billingInterval: targetInterval,
           hasUsedTrial: true,
           // Only (re)start the trial-end estimate the first time this shop
           // ever activates a paid plan; later activations aren't a new trial.
@@ -68,7 +85,7 @@ export const action = async ({ request }) => {
         },
       });
 
-      console.log(`[Revertly Webhook] Updated shop ${shop} plan to "${targetPlan}"`);
+      console.log(`[Revertly Webhook] Updated shop ${shop} plan to "${targetPlan}" (${targetInterval})`);
     } else if (TERMINAL_STATUSES.has(status)) {
       // Disarm paid protections at the moment of downgrade. Leaving
       // circuitBreakerEnabled=true would keep the Settings page reporting
@@ -77,10 +94,11 @@ export const action = async ({ request }) => {
       // between a free shop and automated catalog mutations.
       await prisma.appSettings.upsert({
         where: { shop },
-        create: { shop, planId: "free", subscriptionId: null },
+        create: { shop, planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY },
         update: {
           planId: "free",
           subscriptionId: null,
+          billingInterval: INTERVAL_MONTHLY,
           circuitBreakerEnabled: false,
         },
       });

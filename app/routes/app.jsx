@@ -4,6 +4,7 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { isPlatformAdmin } from "../platformAdmin.server.js";
+import { getEffectivePlanId } from "../billing.server.js";
 import { GlobalSupportWidget } from "../components/GlobalSupportWidget.jsx";
 
 export const loader = async ({ request }) => {
@@ -19,7 +20,7 @@ export const loader = async ({ request }) => {
       select: { alertEmail: true, planId: true },
     });
     if (settings?.alertEmail) defaultEmail = settings.alertEmail;
-    if (settings?.planId) planTier = settings.planId;
+    planTier = await getEffectivePlanId(shop, settings);
   } catch {
     // Graceful fallback
   }

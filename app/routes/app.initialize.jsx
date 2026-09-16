@@ -117,7 +117,10 @@ export const action = async ({ request }) => {
     }
 
     let initialRpCreated = false;
-    const existingRp = await prisma.restorePoint.findFirst({ where: { shop } });
+    const existingRp = await prisma.restorePoint.findFirst({
+      where: { shop },
+      select: { id: true },
+    });
     if (!existingRp) {
       try {
         await createMultiResourceRestorePoint({

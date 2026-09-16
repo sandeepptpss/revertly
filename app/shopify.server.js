@@ -14,6 +14,11 @@ export const PLAN_GROWTH = "Growth";
 export const PLAN_BUSINESS = "Business";
 export const PLAN_ENTERPRISE = "Enterprise";
 
+export const PLAN_STARTER_ANNUAL = "Starter (Annual)";
+export const PLAN_GROWTH_ANNUAL = "Growth (Annual)";
+export const PLAN_BUSINESS_ANNUAL = "Business (Annual)";
+export const PLAN_ENTERPRISE_ANNUAL = "Enterprise (Annual)";
+
 // Aliases for backwards compatibility
 export const PLAN_PRO = PLAN_GROWTH;
 
@@ -51,6 +56,17 @@ const shopify = shopifyApp({
         },
       ],
     },
+    [PLAN_STARTER_ANNUAL]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
+      lineItems: [
+        {
+          amount: 90,
+          currencyCode: "USD",
+          interval: BillingInterval.Annual,
+        },
+      ],
+    },
     [PLAN_GROWTH]: {
       trialDays: 14,
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
@@ -59,6 +75,17 @@ const shopify = shopifyApp({
           amount: 24,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
+        },
+      ],
+    },
+    [PLAN_GROWTH_ANNUAL]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
+      lineItems: [
+        {
+          amount: 240,
+          currencyCode: "USD",
+          interval: BillingInterval.Annual,
         },
       ],
     },
@@ -73,6 +100,17 @@ const shopify = shopifyApp({
         },
       ],
     },
+    [PLAN_BUSINESS_ANNUAL]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
+      lineItems: [
+        {
+          amount: 490,
+          currencyCode: "USD",
+          interval: BillingInterval.Annual,
+        },
+      ],
+    },
     [PLAN_ENTERPRISE]: {
       trialDays: 14,
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
@@ -81,6 +119,17 @@ const shopify = shopifyApp({
           amount: 79,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
+        },
+      ],
+    },
+    [PLAN_ENTERPRISE_ANNUAL]: {
+      trialDays: 14,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
+      lineItems: [
+        {
+          amount: 790,
+          currencyCode: "USD",
+          interval: BillingInterval.Annual,
         },
       ],
     },

@@ -6,11 +6,15 @@ import {
   PLAN_GROWTH,
   PLAN_BUSINESS,
   PLAN_ENTERPRISE,
+  PLAN_STARTER_ANNUAL,
+  PLAN_GROWTH_ANNUAL,
+  PLAN_BUSINESS_ANNUAL,
+  PLAN_ENTERPRISE_ANNUAL,
 } from "../shopify.server.js";
 import { BillingInterval } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { PLAN_TIERS } from "../billing.constants.js";
+import { PLAN_TIERS, INTERVAL_MONTHLY, INTERVAL_ANNUAL } from "../billing.constants.js";
 import {
   getStorePlan,
   normalizePlanId,
@@ -25,6 +29,12 @@ import { SparklesIcon, ShieldCheckIcon } from "../components/Icons.jsx";
 function formatPrice(amount) {
   const rounded = Math.round(amount * 100) / 100;
   return Number.isInteger(rounded) ? `$${rounded}` : `$${rounded.toFixed(2)}`;
+}
+
+/** Formats date as YYYY-MM-DD to match the Platform Admin status badges. */
+function formatDate(d) {
+  if (!d) return "—";
+  return new Date(d).toISOString().slice(0, 10);
 }
 
 // ── Plan definitions ────────────────────────────────────────────────────────
@@ -132,7 +142,7 @@ export const loader = async ({ request }) => {
   const shop = session.shop;
   const isTest = process.env.NODE_ENV !== "production";
 
-  const { currentPlan, paidPlan, limits, subscriptionDiscountPercent, freeGrowth } = await getStorePlan(
+  const { currentPlan, paidPlan, limits, subscriptionDiscountPercent, freeGrowth, billingInterval } = await getStorePlan(
     shop,
     billing,
     isTest,
@@ -171,6 +181,7 @@ export const loader = async ({ request }) => {
     // upgrade or a downgrade — and which one Shopify would cancel — follows
     // what is really being paid for.
     paidPlan,
+    billingInterval: billingInterval || INTERVAL_MONTHLY,
     limits,
     usage: { productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount },
     shop,
@@ -178,7 +189,7 @@ export const loader = async ({ request }) => {
     trialEndsAt: settings?.trialEndsAt || null,
     productLimitReachedAt: settings?.productLimitReachedAt || null,
     // A promotional Growth seat: full Growth features, no subscription, no charge.
-    freeGrowth: freeGrowth?.promoted ? { expiresAt: freeGrowth.expiresAt } : null,
+    freeGrowth: freeGrowth?.isActive ? { expiresAt: freeGrowth.expiresAt } : null,
     // An unclaimed VIP offer. Nothing is discounted while this is showing.
     vipOffer: vipOffer ? { percent: vipOffer.discountPercent, note: vipOffer.note } : null,
     // An unclaimed free Growth seat. Only worth offering if Growth would
@@ -187,21 +198,21 @@ export const loader = async ({ request }) => {
       freeGrowthOffer && PLAN_TIERS[paidPlan]?.order < PLAN_TIERS.growth.order ? freeGrowthOffer : null,
     discount: bestDiscount
       ? {
-          percent: bestDiscount.percent,
-          source: bestDiscount.source,
-          label: bestDiscount.label,
-          note: bestDiscount.note,
-          expiresAt: bestDiscount.expiresAt,
-          // A discount only reduces a real charge once it is attached to a
-          // subscription. Granting one to a merchant who is already paying
-          // leaves their existing subscription untouched, so offer them a way
-          // to move onto a discounted one. A promotional Growth seat has no
-          // subscription to re-issue, and nor does a simulated one.
-          needsApply:
-            paidPlan !== "free" &&
-            subscriptionDiscountPercent !== bestDiscount.percent &&
-            !isSimulatedSubscription(settings?.subscriptionId),
-        }
+        percent: bestDiscount.percent,
+        source: bestDiscount.source,
+        label: bestDiscount.label,
+        note: bestDiscount.note,
+        expiresAt: bestDiscount.expiresAt,
+        // A discount only reduces a real charge once it is attached to a
+        // subscription. Granting one to a merchant who is already paying
+        // leaves their existing subscription untouched, so offer them a way
+        // to move onto a discounted one. A promotional Growth seat has no
+        // subscription to re-issue, and nor does a simulated one.
+        needsApply:
+          paidPlan !== "free" &&
+          subscriptionDiscountPercent !== bestDiscount.percent &&
+          !isSimulatedSubscription(settings?.subscriptionId),
+      }
       : null,
   };
 };
@@ -239,7 +250,14 @@ export const action = async ({ request }) => {
           details: { expiresAt: grant.expiresAt, durationMonths: DISCOUNT_DURATION_MONTHS },
         },
       })
-      .catch(() => {});
+      .catch(() => { });
+
+    // When claiming Free Growth, clean up any simulated or stale subscription on the store.
+    await prisma.appSettings.upsert({
+      where: { shop },
+      create: { shop, planId: "free", subscriptionId: null },
+      update: { planId: "free", subscriptionId: null },
+    }).catch(() => { });
 
     return {
       success: true,
@@ -247,7 +265,8 @@ export const action = async ({ request }) => {
       // An entitlement, not a subscription — so this result must not be read as
       // a change to what the store is billed for.
       promotional: true,
-      message: `Growth plan activated free of charge through ${new Date(grant.expiresAt).toLocaleDateString()}. There is no subscription and nothing to pay.`,
+      freeGrowth: { expiresAt: grant.expiresAt },
+      message: `Free Growth promotion activated! Full Growth features are unlocked free of charge through ${formatDate(grant.expiresAt)}. There is no subscription and nothing to pay.`,
     };
   }
 
@@ -277,7 +296,7 @@ export const action = async ({ request }) => {
           },
         },
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return {
       success: true,
@@ -298,22 +317,30 @@ export const action = async ({ request }) => {
     };
   }
 
+  const rawInterval = String(formData.get("interval") ?? "monthly").toLowerCase();
+  const isAnnual = rawInterval === "annual" || rawInterval === "yearly";
+  const targetInterval = isAnnual ? INTERVAL_ANNUAL : INTERVAL_MONTHLY;
+
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
   const currentPlan = normalizePlanId(settings?.planId);
+  const currentInterval = settings?.billingInterval || (settings?.subscriptionId?.includes("annual") ? INTERVAL_ANNUAL : INTERVAL_MONTHLY);
 
   // The single best discount this store qualifies for, applied to the real
   // Shopify charge — not just the price shown on this page — for the same
   // number of billing cycles the discount is valid for.
   const activeDiscount = await resolveBestDiscount(shop);
 
-  if (targetPlanId === currentPlan) {
+  const isSamePlan = targetPlanId === currentPlan;
+  const isSameInterval = targetInterval === currentInterval;
+
+  if (isSamePlan && isSameInterval) {
     // Re-requesting the current plan is normally a no-op, but it is the only
     // way to move an existing subscriber onto a discounted subscription.
     const canReissueForDiscount = Boolean(activeDiscount) && targetPlanId !== "free";
     if (!canReissueForDiscount) {
       return {
         success: false,
-        message: `Your store is already subscribed to the ${PLAN_TIERS[currentPlan]?.name || currentPlan} plan.`,
+        message: `Your store is already subscribed to the ${PLAN_TIERS[currentPlan]?.name || currentPlan} plan (${isAnnual ? "Yearly" : "Monthly"}).`,
       };
     }
   }
@@ -325,7 +352,16 @@ export const action = async ({ request }) => {
     if (!isSimulated) {
       try {
         const billingCheck = await billing.check({
-          plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
+          plans: [
+            PLAN_STARTER,
+            PLAN_GROWTH,
+            PLAN_BUSINESS,
+            PLAN_ENTERPRISE,
+            PLAN_STARTER_ANNUAL,
+            PLAN_GROWTH_ANNUAL,
+            PLAN_BUSINESS_ANNUAL,
+            PLAN_ENTERPRISE_ANNUAL,
+          ],
           isTest,
         });
 
@@ -362,44 +398,48 @@ export const action = async ({ request }) => {
 
     await prisma.appSettings.upsert({
       where: { shop },
-      create: { shop, planId: "free", subscriptionId: null },
+      create: { shop, planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY },
       // Disarm paid protections at the moment of downgrade, exactly as the
       // app_subscriptions/update webhook does for a Shopify-side cancellation.
       // Without this, a downgrade made here (and every simulated one, which
       // fires no webhook at all) leaves Settings reporting the Circuit Breaker
       // as "Armed" for a plan that no longer includes it.
-      update: { planId: "free", subscriptionId: null, circuitBreakerEnabled: false },
+      update: { planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY, circuitBreakerEnabled: false },
     });
 
     return {
       success: true,
       planId: "free",
+      billingInterval: INTERVAL_MONTHLY,
       message: "Successfully downgraded to the Free plan. Paid features will be deactivated.",
     };
   }
 
-  let targetShopifyPlan = PLAN_STARTER;
-  if (targetPlanId === "growth") targetShopifyPlan = PLAN_GROWTH;
-  else if (targetPlanId === "business") targetShopifyPlan = PLAN_BUSINESS;
-  else if (targetPlanId === "enterprise") targetShopifyPlan = PLAN_ENTERPRISE;
+  let targetShopifyPlan = isAnnual ? PLAN_STARTER_ANNUAL : PLAN_STARTER;
+  if (targetPlanId === "growth") targetShopifyPlan = isAnnual ? PLAN_GROWTH_ANNUAL : PLAN_GROWTH;
+  else if (targetPlanId === "business") targetShopifyPlan = isAnnual ? PLAN_BUSINESS_ANNUAL : PLAN_BUSINESS;
+  else if (targetPlanId === "enterprise") targetShopifyPlan = isAnnual ? PLAN_ENTERPRISE_ANNUAL : PLAN_ENTERPRISE;
 
   const url = new URL(request.url);
   const returnUrl = `${url.origin}/app/plan`;
 
+  const targetTier = PLAN_TIERS[targetPlanId];
+  const targetPrice = isAnnual ? targetTier?.yearlyPrice : targetTier?.price;
+
   const lineItemOverrides = activeDiscount
     ? {
-        lineItems: [
-          {
-            amount: PLAN_TIERS[targetPlanId]?.price,
-            currencyCode: "USD",
-            interval: BillingInterval.Every30Days,
-            discount: {
-              durationLimitInIntervals: DISCOUNT_DURATION_MONTHS,
-              value: { percentage: activeDiscount.percent / 100 },
-            },
+      lineItems: [
+        {
+          amount: targetPrice,
+          currencyCode: "USD",
+          interval: isAnnual ? BillingInterval.Annual : BillingInterval.Every30Days,
+          discount: {
+            durationLimitInIntervals: isAnnual ? 1 : DISCOUNT_DURATION_MONTHS,
+            value: { percentage: activeDiscount.percent / 100 },
           },
-        ],
-      }
+        },
+      ],
+    }
     : {};
 
   // The 14-day trial in shopify.server.js is per *plan*, so without this a
@@ -433,7 +473,7 @@ export const action = async ({ request }) => {
       (err?.message && err.message.toLowerCase().includes("public distribution"));
 
     if (isDistributionError || isTest) {
-      const simSubId = `sim_${targetPlanId}_${Date.now()}`;
+      const simSubId = `sim_${targetPlanId}_${isAnnual ? "annual_" : ""}${Date.now()}`;
       const now = new Date();
       const trialEndsAt = settings?.trialEndsAt || new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
@@ -443,12 +483,14 @@ export const action = async ({ request }) => {
           shop,
           planId: targetPlanId,
           subscriptionId: simSubId,
+          billingInterval: targetInterval,
           hasUsedTrial: true,
           trialEndsAt,
         },
         update: {
           planId: targetPlanId,
           subscriptionId: simSubId,
+          billingInterval: targetInterval,
           hasUsedTrial: true,
           trialEndsAt,
         },
@@ -457,16 +499,20 @@ export const action = async ({ request }) => {
       const currentOrder = PLAN_TIERS[currentPlan]?.order ?? 0;
       const targetOrder = PLAN_TIERS[targetPlanId]?.order ?? 0;
       const isDowngrade = targetOrder < currentOrder;
+      const cycleLabel = isAnnual ? "Yearly" : "Monthly";
 
       let successMessage = isDistributionError
-        ? `Switched to ${PLAN_TIERS[targetPlanId]?.name} plan in Test Mode. (Partner Note: To test live Shopify billing screens, select 'Public distribution' in Partner Dashboard > Apps > Distribution).`
+        ? `Switched to ${targetTier?.name} plan (${cycleLabel}) in Test Mode. (Partner Note: To test live Shopify billing screens, select 'Public distribution' in Partner Dashboard > Apps > Distribution).`
         : isDowngrade
-          ? `Successfully downgraded to ${PLAN_TIERS[targetPlanId]?.name} plan.`
-          : `Successfully upgraded to ${PLAN_TIERS[targetPlanId]?.name} (14-day trial active).`;
+          ? `Successfully switched to ${targetTier?.name} plan (${cycleLabel}).`
+          : isSamePlan
+            ? `Successfully updated billing cycle to ${cycleLabel} for ${targetTier?.name} plan.`
+            : `Successfully upgraded to ${targetTier?.name} (${cycleLabel}, 14-day trial active).`;
 
       return {
         success: true,
         planId: targetPlanId,
+        billingInterval: targetInterval,
         message: successMessage,
       };
     }
@@ -479,12 +525,30 @@ export const action = async ({ request }) => {
 };
 
 export default function Plan() {
-  const { currentPlan, paidPlan, usage, limits, hasUsedTrial, trialEndsAt, productLimitReachedAt, discount, freeGrowth, vipOffer, freeGrowthOffer } = useLoaderData();
+  const {
+    currentPlan,
+    paidPlan,
+    billingInterval,
+    usage,
+    limits,
+    hasUsedTrial,
+    trialEndsAt,
+    productLimitReachedAt,
+    discount,
+    freeGrowth,
+    vipOffer,
+    freeGrowthOffer,
+  } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activePlan = result?.planId || currentPlan;
+  const activeInterval = result?.billingInterval || billingInterval || "EVERY_30_DAYS";
+  const activeFreeGrowth = result?.freeGrowth || freeGrowth;
   const isSubmitting = fetcher.state !== "idle";
 
+  const [billingCycle, setBillingCycle] = useState(
+    activeInterval === "ANNUAL" ? "annual" : "monthly"
+  );
   const [confirmModal, setConfirmModal] = useState(null);
 
   // Auto-close confirmation modal once an action result returns
@@ -622,11 +686,11 @@ export default function Plan() {
       )}
 
       {/* ── Free Growth Promotion Banner ──
-          A founding-member seat: Growth features at no charge, no subscription. */}
-      {freeGrowth && (
-        <Banner tone="success" title="🎉 Growth plan, free — founding member" className="rv-fade-in">
-          You were one of the first stores to install Revertly, so every Growth feature is unlocked on your
-          account at no charge until {new Date(freeGrowth.expiresAt).toLocaleDateString()}. There is no
+          A promotional seat: Growth features at no charge, no subscription. */}
+      {activeFreeGrowth && (
+        <Banner tone="success" title="🎉 Free Growth Promotion Active" className="rv-fade-in">
+          You claimed the Free Growth promotion from the first 20 stores offer. Every Growth feature is unlocked on your
+          account at no charge until {formatDate(activeFreeGrowth.expiresAt)}. There is no
           subscription and nothing to pay. You can still upgrade to Business or Enterprise at any time.
         </Banner>
       )}
@@ -670,23 +734,32 @@ export default function Plan() {
             <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
               CURRENT SUBSCRIPTION
             </span>
-            {/* "Active" must mean a real Shopify subscription. A Free store
-                has none, and a promotional Growth seat deliberately has none
-                either — badging both as an active subscription misreports the
-                billing state on the page whose job is to report it. */}
-            {billedPlan !== "free" ? (
-              <span className="rv-badge rv-badge-success">Active</span>
-            ) : freeGrowth ? (
-              <span className="rv-badge rv-badge-success">Promotional · no charge</span>
+            {activeFreeGrowth ? (
+              <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
+                Free Growth · to {formatDate(activeFreeGrowth.expiresAt)}
+              </span>
+            ) : billedPlan !== "free" ? (
+              <span className="rv-badge rv-badge-success">
+                Active · {activeInterval === "ANNUAL" ? "Billed Annually" : "Billed Monthly"}
+              </span>
             ) : (
               <span className="rv-badge rv-badge-neutral">No subscription</span>
             )}
           </div>
           <h2 style={{ margin: "0 0 6px", fontSize: "22px", fontWeight: 800, color: "var(--rv-text)" }}>
-            {PLAN_TIERS[activePlan]?.name || activePlan} Plan
+            {activeFreeGrowth ? "Free Growth" : `${PLAN_TIERS[activePlan]?.name || activePlan} Plan`}
           </h2>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Real-time catalog watchdog, instant price crash rollback, and multi-resource backup.
+            {activeFreeGrowth ? (
+              <>
+                Real-time catalog watchdog, instant price crash rollback, and multi-resource backup.{" "}
+                <span style={{ color: "var(--rv-primary)", fontWeight: 600 }}>
+                  Free Growth promotion active until {formatDate(activeFreeGrowth.expiresAt)}.
+                </span>
+              </>
+            ) : (
+              "Real-time catalog watchdog, instant price crash rollback, and multi-resource backup."
+            )}
           </p>
         </div>
 
@@ -725,7 +798,7 @@ export default function Plan() {
       </div>
 
       {/* ── Heading ── */}
-      <div style={{ marginBottom: "20px" }}>
+      <div style={{ marginBottom: "16px" }}>
         <h3 style={{ fontSize: "18px", fontWeight: 700, margin: "0 0 4px", color: "var(--rv-text)" }}>
           Choose Your Store Protection Plan
         </h3>
@@ -734,21 +807,97 @@ export default function Plan() {
         </p>
       </div>
 
+      {/* ── Monthly / Yearly Billing Toggle ── */}
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", marginBottom: "28px" }}>
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            background: "var(--rv-surface-subdued, #f1f2f4)",
+            padding: "4px",
+            borderRadius: "32px",
+            border: "1px solid var(--rv-border, #e1e3e5)",
+            boxShadow: "inset 0 1px 2px rgba(0,0,0,0.04)",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setBillingCycle("monthly")}
+            style={{
+              border: "none",
+              cursor: "pointer",
+              padding: "8px 20px",
+              borderRadius: "24px",
+              fontSize: "13px",
+              fontWeight: billingCycle === "monthly" ? 700 : 500,
+              background: billingCycle === "monthly" ? "#ffffff" : "transparent",
+              color: billingCycle === "monthly" ? "var(--rv-text, #202223)" : "var(--rv-text-subdued, #6d7175)",
+              boxShadow: billingCycle === "monthly" ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+              transition: "all 0.2s ease",
+            }}
+          >
+            Monthly Billing
+          </button>
+          <button
+            type="button"
+            onClick={() => setBillingCycle("annual")}
+            style={{
+              border: "none",
+              cursor: "pointer",
+              padding: "8px 16px",
+              borderRadius: "24px",
+              fontSize: "13px",
+              fontWeight: billingCycle === "annual" ? 700 : 500,
+              background: billingCycle === "annual" ? "#ffffff" : "transparent",
+              color: billingCycle === "annual" ? "var(--rv-primary, #008060)" : "var(--rv-text-subdued, #6d7175)",
+              boxShadow: billingCycle === "annual" ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+              transition: "all 0.2s ease",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
+            <span>Yearly Billing</span>
+            <span
+              style={{
+                background: "linear-gradient(135deg, #10b981, #059669)",
+                color: "#ffffff",
+                fontSize: "11px",
+                fontWeight: 800,
+                padding: "2px 8px",
+                borderRadius: "12px",
+                letterSpacing: "0.3px",
+                boxShadow: "0 1px 3px rgba(16,185,129,0.3)",
+              }}
+            >
+              SAVE 17% · 2 MONTHS FREE
+            </span>
+          </button>
+        </div>
+      </div>
+
       {/* ── 5 Cards Responsive Grid ── */}
       <div className="rv-plan-grid">
         {PLANS.map((plan) => {
-          const isCurrent = activePlan === plan.id;
+          const tier = PLAN_TIERS[plan.id];
+          const isAnnualSelected = billingCycle === "annual";
+          const isCurrentPlanId = activePlan === plan.id;
+          const isCurrentInterval = activeInterval === (isAnnualSelected ? "ANNUAL" : "EVERY_30_DAYS");
+          const isExactCurrent = isCurrentPlanId && (plan.id === "free" || isCurrentInterval);
+          const isSameTierDifferentCycle = isCurrentPlanId && !isCurrentInterval && plan.id !== "free";
+
           // True only for the plan the store is actually billed for. For a
           // promotional Growth store that is the Free card, which must not
           // offer a "downgrade" to the plan it is already on.
-          const isBilledPlan = billedPlan === plan.id && !isCurrent;
-          const planOrder = PLAN_TIERS[plan.id]?.order ?? 0;
+          const isBilledPlan = billedPlan === plan.id && !isCurrentPlanId;
+          const planOrder = tier?.order ?? 0;
           const isUpgrade = planOrder > billedOrder;
           const isDowngrade = planOrder < billedOrder;
 
           const isGrowth = plan.id === "growth";
           const isBusiness = plan.id === "business";
           const isEnterprise = plan.id === "enterprise";
+          const isFreeGrowthCard = Boolean(activeFreeGrowth) && isGrowth;
 
           let cardBorder = "1px solid var(--rv-border)";
           let cardBg = "var(--rv-surface)";
@@ -763,10 +912,13 @@ export default function Plan() {
             tierBadge = <span className="rv-badge rv-badge-neutral rv-badge-sm">Shopify Plus</span>;
           }
 
-          if (isCurrent) {
+          if (isExactCurrent) {
             cardBorder = "2px solid var(--rv-primary)";
             cardBg = "var(--rv-primary-surface)";
             boxShadow = "0 0 0 1px var(--rv-primary), 0 4px 16px rgba(0, 128, 96, 0.12)";
+          } else if (isSameTierDifferentCycle) {
+            cardBorder = "2px dashed var(--rv-primary)";
+            cardBg = "var(--rv-surface)";
           } else if (isGrowth) {
             cardBorder = "2px solid var(--rv-info)";
             boxShadow = "0 4px 14px rgba(0, 91, 211, 0.12)";
@@ -777,14 +929,16 @@ export default function Plan() {
           }
 
           let buttonLabel = `Choose ${plan.name}`;
-          if (isCurrent) {
-            buttonLabel = "✓ Active Plan";
+          if (isExactCurrent) {
+            buttonLabel = isFreeGrowthCard ? "✓ Free Growth Active" : "✓ Active Plan";
+          } else if (isSameTierDifferentCycle) {
+            buttonLabel = isAnnualSelected ? "Switch to Yearly (Save 17%)" : "Switch to Monthly";
           } else if (isBilledPlan) {
-            buttonLabel = "✓ Your billed plan";
+            buttonLabel = activeFreeGrowth ? "Standard Free (Included)" : "✓ Your billed plan";
           } else if (plan.id === "free") {
             buttonLabel = "Downgrade to Free";
           } else if (isUpgrade) {
-            buttonLabel = `Upgrade to ${plan.name}`;
+            buttonLabel = isAnnualSelected ? `Upgrade to Yearly ${plan.name}` : `Upgrade to ${plan.name}`;
           } else if (isDowngrade) {
             buttonLabel = `Downgrade to ${plan.name}`;
           }
@@ -808,42 +962,123 @@ export default function Plan() {
                 <div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
                     <span style={{ fontSize: "17px", fontWeight: 700, color: "var(--rv-text)" }}>
-                      {plan.name}
+                      {isFreeGrowthCard ? "Free Growth" : plan.name}
                     </span>
                     <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                      {isCurrent && <span className="rv-badge rv-badge-success rv-badge-sm">Current</span>}
+                      {isExactCurrent && (
+                        <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
+                          {isFreeGrowthCard ? "Free Growth Active" : "Current"}
+                        </span>
+                      )}
                       {tierBadge}
                     </div>
                   </div>
 
                   {(() => {
-                    const basePrice = PLAN_TIERS[plan.id]?.price ?? 0;
-                    // A promotional seat makes Growth free outright, which
-                    // beats any percentage discount on that card.
-                    const isFreeGrowthCard = Boolean(freeGrowth) && plan.id === "growth";
-                    const hasDiscount = !isFreeGrowthCard && discount && basePrice > 0;
-                    const discountedPrice = hasDiscount ? basePrice * (1 - discount.percent / 100) : basePrice;
-                    return (
-                      <div style={{ marginBottom: "4px" }}>
-                        {(hasDiscount || isFreeGrowthCard) && (
+                    if (plan.id === "free") {
+                      return (
+                        <div style={{ marginBottom: "4px" }}>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
+                            <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>$0</span>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>forever</span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                            Basic protection for new stores
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (isFreeGrowthCard) {
+                      return (
+                        <div style={{ marginBottom: "4px" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
                             <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
-                              {plan.price}
+                              {isAnnualSelected ? `$${tier?.yearlyPrice}/yr` : `$${tier?.monthlyPrice}/mo`}
                             </span>
                             <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                              <SparklesIcon size={10} /> {isFreeGrowthCard ? "FOUNDING MEMBER" : `${discount.percent}% OFF`}
+                              <SparklesIcon size={10} /> FREE PROMOTION
+                            </span>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
+                            <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>$0</span>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                              {isAnnualSelected ? "/ year" : "/ month"}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--rv-primary)", fontWeight: 600, marginTop: "2px" }}>
+                            Free Growth promotion active
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    const baseMonthly = tier?.monthlyPrice ?? 0;
+                    const baseYearly = tier?.yearlyPrice ?? 0;
+                    const yearlyMonthlyEq = tier?.yearlyMonthlyEquivalent ?? 0;
+                    const yearlySavings = (baseMonthly * 12) - baseYearly;
+
+                    const hasAdminDiscount = Boolean(discount && discount.percent > 0);
+                    const discountMultiplier = hasAdminDiscount ? (1 - discount.percent / 100) : 1;
+
+                    if (isAnnualSelected) {
+                      const finalYearly = baseYearly * discountMultiplier;
+                      const finalMonthlyEq = yearlyMonthlyEq * discountMultiplier;
+
+                      return (
+                        <div style={{ marginBottom: "4px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", flexWrap: "wrap" }}>
+                            <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
+                              ${baseMonthly}/mo
+                            </span>
+                            <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
+                              SAVE ${yearlySavings}/YR
+                            </span>
+                            {hasAdminDiscount && (
+                              <span className="rv-badge rv-badge-warning rv-badge-sm" style={{ fontWeight: 700 }}>
+                                +{discount.percent}% OFF
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
+                            <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
+                              {formatPrice(finalMonthlyEq)}
+                            </span>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                              / month
+                            </span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                            Billed annually ({formatPrice(finalYearly)}/yr) · <strong>2 months free</strong>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Monthly billing selected
+                    const finalMonthly = baseMonthly * discountMultiplier;
+                    return (
+                      <div style={{ marginBottom: "4px" }}>
+                        {hasAdminDiscount && (
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
+                            <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
+                              ${baseMonthly}/mo
+                            </span>
+                            <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
+                              {discount.percent}% OFF
                             </span>
                           </div>
                         )}
                         <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
                           <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
-                            {isFreeGrowthCard ? "$0" : hasDiscount ? formatPrice(discountedPrice) : plan.price}
+                            {formatPrice(finalMonthly)}
                           </span>
-                          {plan.period && !isFreeGrowthCard && (
-                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                              {plan.period}
-                            </span>
-                          )}
+                          <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                            / month
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                          Billed monthly · 14-day trial
                         </div>
                       </div>
                     );
@@ -871,9 +1106,10 @@ export default function Plan() {
 
                 {/* Bottom Action Button */}
                 <div style={{ borderTop: "1px solid var(--rv-border-subtle)", paddingTop: "14px", marginTop: "auto" }}>
-                  {isCurrent && discount?.needsApply && plan.id !== "free" ? (
+                  {isExactCurrent && discount?.needsApply && plan.id !== "free" ? (
                     <fetcher.Form method="POST" style={{ width: "100%" }}>
                       <input type="hidden" name="planId" value={plan.id} />
+                      <input type="hidden" name="interval" value={billingCycle} />
                       <button
                         type="submit"
                         disabled={isSubmitting}
@@ -883,14 +1119,14 @@ export default function Plan() {
                         {isSubmitting ? "Applying..." : `Apply my ${discount.percent}% discount`}
                       </button>
                     </fetcher.Form>
-                  ) : isCurrent ? (
+                  ) : isExactCurrent ? (
                     <button
                       type="button"
                       disabled
                       className="rv-btn"
                       style={{ width: "100%", background: "var(--rv-primary-surface)", color: "var(--rv-primary-text)", border: "1px solid var(--rv-primary-border)", cursor: "default", fontWeight: 700 }}
                     >
-                      ✓ Active Plan
+                      {buttonLabel}
                     </button>
                   ) : isBilledPlan ? (
                     <button
@@ -914,6 +1150,7 @@ export default function Plan() {
                   ) : (
                     <fetcher.Form method="POST" style={{ width: "100%" }}>
                       <input type="hidden" name="planId" value={plan.id} />
+                      <input type="hidden" name="interval" value={billingCycle} />
                       <button
                         type="submit"
                         disabled={isSubmitting}
@@ -931,8 +1168,16 @@ export default function Plan() {
                     </fetcher.Form>
                   )}
 
-                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: isCurrent ? "var(--rv-primary-text)" : "var(--rv-text-subdued)", fontWeight: 500 }}>
-                    {isCurrent ? (trialStillActive ? trialSubtext(plan) : "Active Plan • Included") : trialSubtext(plan)}
+                  <div style={{ textAlign: "center", marginTop: "8px", fontSize: "11px", color: isExactCurrent ? "var(--rv-primary-text)" : "var(--rv-text-subdued)", fontWeight: 500 }}>
+                    {isExactCurrent
+                      ? (isFreeGrowthCard
+                        ? `Free Growth active until ${formatDate(activeFreeGrowth.expiresAt)}`
+                        : trialStillActive
+                          ? trialSubtext(plan)
+                          : `Active Plan • ${activeInterval === "ANNUAL" ? "Billed Annually" : "Billed Monthly"}`)
+                      : isSameTierDifferentCycle
+                        ? (isAnnualSelected ? "Save 2 months every year" : "Billed monthly")
+                        : trialSubtext(plan)}
                   </div>
                 </div>
               </div>
@@ -1002,6 +1247,7 @@ export default function Plan() {
               </button>
               <fetcher.Form method="POST">
                 <input type="hidden" name="planId" value={confirmModal.planId} />
+                <input type="hidden" name="interval" value={billingCycle} />
                 <button
                   type="submit"
                   disabled={isSubmitting}

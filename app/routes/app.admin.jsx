@@ -106,9 +106,13 @@ export const loader = async ({ request }) => {
           ? { percent: storePercent, source: normalizeTier(discount?.tier) }
           : { percent: globalPercent, source: "GLOBAL" };
 
+    const normPlan = normalizePlanId(m.planId);
+    const planOrder = PLAN_TIERS[normPlan]?.order ?? 0;
+    const effectivePlanId = seatActive && planOrder < (PLAN_TIERS.growth?.order ?? 2) ? "growth" : normPlan;
+
     return {
       shop: m.shop,
-      planId: normalizePlanId(m.planId),
+      planId: effectivePlanId,
       hasUsedTrial: Boolean(m.hasUsedTrial),
       trialEndsAt: m.trialEndsAt ?? null,
       monitoringEnabled: Boolean(m.monitoringEnabled),

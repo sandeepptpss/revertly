@@ -74,6 +74,13 @@ async function checkRestorePointIntegrity(shop) {
   const rp = await prisma.restorePoint.findFirst({
     where: { shop },
     orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      createdAt: true,
+      snapshotData: true,
+    },
   });
 
   if (!rp) {

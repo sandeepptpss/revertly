@@ -183,6 +183,8 @@ model RestorePoint {
   updatedAt       DateTime  @updatedAt
 
   @@index([shop])
+  @@index([shop, createdAt])
+  @@index([shop, status, createdAt])
 }
 
 // Historical Orders Vault for Tax & Chargeback Protection
@@ -241,6 +243,7 @@ model AppSettings {
   bulkWindowMinutes   Int     @default(10)
   planId              String   @default("free") @db.VarChar(50)
   subscriptionId      String?  @db.VarChar(255)
+  billingInterval     String?  @default("EVERY_30_DAYS") @db.VarChar(50)
   hasUsedTrial        Boolean  @default(false)
   trialEndsAt         DateTime?
   productLimitReachedAt DateTime?

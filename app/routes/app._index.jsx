@@ -62,6 +62,13 @@ export const loader = async ({ request }) => {
     prisma.restorePoint.findFirst({
       where: { shop, status: "READY" },
       orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        createdAt: true,
+        status: true,
+        productCount: true,
+      },
     }),
     prisma.appSettings.findUnique({ where: { shop } }),
   ]);
