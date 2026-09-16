@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLoaderData, useFetcher, useRouteError, useBlocker, Link } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, useBlocker, Link, useSearchParams } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { getOrCreateSettings, validateSlackWebhookUrl } from "../monitor.server.js";
@@ -433,7 +433,17 @@ export default function Settings() {
   );
 
   // Navigation tab
-  const [activeTab, setActiveTab] = useState("all");
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(
+    () => searchParams.get("tab") || "all",
+  );
+
+  useEffect(() => {
+    const tabParam = searchParams.get("tab");
+    if (tabParam) {
+      setActiveTab(tabParam);
+    }
+  }, [searchParams]);
 
   // ── DRAFT values — what the merchant is currently editing ──
   const [monitoringEnabled, setMonitoringEnabled] = useState(saved.monitoringEnabled);

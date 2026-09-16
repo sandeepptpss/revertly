@@ -107,11 +107,14 @@ export const loader = async ({ request }) => {
     folder: settings?.cloudSyncFolder || "Revertly_Backups",
   };
 
+  const monitoringEnabled = settings ? Boolean(settings.monitoringEnabled) : true;
+
   return {
     stats: { totalProducts, todayChanges, openIncidents, readyRestorePoints, totalRollbacks },
     recentChanges,
     recentIncidents,
     shop,
+    monitoringEnabled,
     isInitialized: totalProducts > 0,
     backupCadence: {
       schedule,
@@ -140,7 +143,21 @@ function timeAgo(date) {
   return `${days}d ago`;
 }
 
+function timeUntil(date) {
+  if (!date) return "";
+  const diffMs = new Date(date).getTime() - Date.now();
+  if (diffMs <= 0) return "overdue / running soon";
+  const mins = Math.floor(diffMs / 60000);
+  const hours = Math.floor(diffMs / 3600000);
+  const days = Math.floor(diffMs / 86400000);
+  if (mins < 1) return "in < 1m";
+  if (mins < 60) return `in ${mins}m`;
+  if (hours < 24) return `in ${hours}h`;
+  return `in ${days}d`;
+}
+
 function fieldLabel(fn) {
+  if (!fn) return "Field";
   return fn
     .replace("variant.", "")
     .replace(/([A-Z])/g, " $1")
@@ -148,8 +165,17 @@ function fieldLabel(fn) {
 }
 
 export default function Dashboard() {
-  const { stats, recentChanges, recentIncidents, isInitialized, backupCadence, storage, retention } =
-    useLoaderData();
+  const {
+    stats,
+    recentChanges,
+    recentIncidents,
+    shop,
+    monitoringEnabled,
+    isInitialized,
+    backupCadence,
+    storage,
+    retention,
+  } = useLoaderData();
 
   return (
     <s-page heading="Dashboard" inlineSize="large">
@@ -160,22 +186,46 @@ export default function Dashboard() {
           <div className="rv-pulse-wrapper">
             <div
               className="rv-pulse-indicator"
-              style={{ background: isInitialized ? "var(--rv-primary)" : "var(--rv-warning)" }}
+              style={{
+                background: !isInitialized
+                  ? "var(--rv-warning)"
+                  : !monitoringEnabled
+                  ? "var(--rv-warning)"
+                  : "var(--rv-primary)",
+              }}
             />
           </div>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "3px", flexWrap: "wrap" }}>
               <strong style={{ fontSize: "16px", color: "var(--rv-text)", fontWeight: 700 }}>
-                {isInitialized ? "Store Protection Active" : "Store Monitoring Setup Required"}
+                {!isInitialized
+                  ? "Store Monitoring Setup Required"
+                  : !monitoringEnabled
+                  ? "Store Protection Paused"
+                  : "Store Protection Active"}
               </strong>
-              <span className={`rv-badge ${isInitialized ? "rv-badge-success" : "rv-badge-warning"}`}>
-                {isInitialized ? "Guarded 24/7" : "Action Needed"}
+              <span
+                className={`rv-badge ${
+                  !isInitialized
+                    ? "rv-badge-warning"
+                    : !monitoringEnabled
+                    ? "rv-badge-warning"
+                    : "rv-badge-success"
+                }`}
+              >
+                {!isInitialized
+                  ? "Action Needed"
+                  : !monitoringEnabled
+                  ? "Monitoring Suspended"
+                  : "Guarded 24/7"}
               </span>
             </div>
             <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-              {isInitialized
-                ? `${stats.totalProducts.toLocaleString()} products guarded against accidental price crashes, bad CSV imports, and unintended deletions.`
-                : "Initialize your store baseline snapshot to start monitoring product edits and prevent revenue loss."}
+              {!isInitialized
+                ? "Initialize your store baseline snapshot to start monitoring product edits and prevent revenue loss."
+                : !monitoringEnabled
+                ? "Real-time catalog webhooks are currently paused in Settings. Changes to products will not trigger alerts or incident logs."
+                : `${stats.totalProducts.toLocaleString()} products guarded against accidental price crashes, bad CSV imports, and unintended deletions.`}
             </p>
           </div>
         </div>
@@ -186,9 +236,19 @@ export default function Dashboard() {
               <ShieldCheckIcon size={16} />
               <span>Initialize Monitoring Now</span>
             </Link>
+          ) : !monitoringEnabled ? (
+            <>
+              <Link to="/app/settings?tab=monitoring" className="rv-btn rv-btn-warning">
+                <span>Re-enable Protection</span>
+              </Link>
+              <Link to="/app/restore-points?create=true" className="rv-btn rv-btn-secondary">
+                <SaveIcon size={15} />
+                <span>+ Create Restore Point</span>
+              </Link>
+            </>
           ) : (
             <>
-              <Link to="/app/restore-points" className="rv-btn rv-btn-primary">
+              <Link to="/app/restore-points?create=true" className="rv-btn rv-btn-primary">
                 <SaveIcon size={15} />
                 <span>+ Create Restore Point</span>
               </Link>
@@ -248,9 +308,10 @@ export default function Dashboard() {
 
                 {/* Cloud Sync Status Indicator Badge */}
                 {backupCadence?.cloudSync?.connected ? (
-                  <span
+                  <Link
+                    to="/app/settings?tab=cloud"
                     className="rv-badge rv-badge-info"
-                    style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
+                    style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px" }}
                   >
                     {backupCadence.cloudSync.provider === "GOOGLE_DRIVE" ? (
                       <GoogleDriveIcon size={13} style={{ color: "#ea4335" }} />
@@ -258,10 +319,10 @@ export default function Dashboard() {
                       <DropboxIcon size={13} style={{ color: "#0061fe" }} />
                     )}
                     <span>{backupCadence.cloudSync.provider === "GOOGLE_DRIVE" ? "G-Drive Sync: Active" : "Dropbox Sync: Active"}</span>
-                  </span>
+                  </Link>
                 ) : (
                   <Link
-                    to="/app/settings"
+                    to="/app/settings?tab=cloud"
                     className="rv-badge rv-badge-neutral"
                     style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px" }}
                   >
@@ -281,7 +342,7 @@ export default function Dashboard() {
                     {" "}
                     &bull; Next automated run:{" "}
                     <span style={{ color: "var(--rv-primary)", fontWeight: 600 }}>
-                      {new Date(backupCadence.nextBackupAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC ({timeAgo(backupCadence.nextBackupAt).replace("ago", "").trim() ? "in " + timeAgo(backupCadence.nextBackupAt).replace("ago", "").trim() : "scheduled"})
+                      {new Date(backupCadence.nextBackupAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' })} UTC ({timeUntil(backupCadence.nextBackupAt)})
                     </span>
                   </>
                 )}
@@ -294,7 +355,7 @@ export default function Dashboard() {
               <SaveIcon size={14} />
               <span>Restore Points</span>
             </Link>
-            <Link to="/app/settings" className="rv-btn rv-btn-primary rv-btn-sm">
+            <Link to="/app/settings?tab=schedules" className="rv-btn rv-btn-primary rv-btn-sm">
               <SettingsIcon size={14} />
               <span>Backup Schedule</span>
             </Link>
@@ -363,7 +424,7 @@ export default function Dashboard() {
                   : "—"}
               </div>
               <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                History kept back to this date
+                Max policy retention cutoff
               </div>
             </div>
           </div>
@@ -408,12 +469,18 @@ export default function Dashboard() {
                   width: "8px",
                   height: "8px",
                   borderRadius: "50%",
-                  background: isInitialized ? "#10b981" : "#f59e0b",
+                  background: !isInitialized ? "#f59e0b" : !monitoringEnabled ? "#f59e0b" : "#10b981",
                   display: "inline-block",
                   flexShrink: 0,
                 }}
               />
-              <span>{isInitialized ? "Real-time tracking active" : "Baseline not initialized"}</span>
+              <span>
+                {!isInitialized
+                  ? "Baseline not initialized"
+                  : !monitoringEnabled
+                  ? "Tracking paused (in Settings)"
+                  : "Real-time tracking active"}
+              </span>
             </>
           }
           icon={<BoxIcon size={18} />}
@@ -608,9 +675,19 @@ export default function Dashboard() {
                       <span className="rv-badge rv-badge-neutral rv-badge-sm">
                         {fieldLabel(c.fieldName)}
                       </span>
-                      <span className="rv-diff-old">{c.oldValue || "—"}</span>
+                      <span
+                        className="rv-diff-old"
+                        title={c.oldValue || "—"}
+                      >
+                        {c.oldValue || "—"}
+                      </span>
                       <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)" }}>→</span>
-                      <span className="rv-diff-new">{c.newValue || "—"}</span>
+                      <span
+                        className="rv-diff-new"
+                        title={c.newValue || "—"}
+                      >
+                        {c.newValue || "—"}
+                      </span>
                     </div>
                   </div>
                   <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", whiteSpace: "nowrap" }}>
@@ -632,22 +709,42 @@ export default function Dashboard() {
             <span>Protection Engine &amp; Health Status</span>
           </h3>
           <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-            Shop: <code>{stats.shop || "Connected"}</code>
+            Shop: <code>{shop || "Connected"}</code>
           </span>
         </div>
         <div className="rv-card-body" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "20px", flexWrap: "wrap" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", flexShrink: 0 }} />
-              <span style={{ fontSize: "13px", fontWeight: 500 }}>Live Webhooks Active</span>
+              <span
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "50%",
+                  background: monitoringEnabled ? "#10b981" : "#f59e0b",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>
+                {monitoringEnabled ? "Live Webhooks Active" : "Webhooks Suspended"}
+              </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", flexShrink: 0 }} />
               <span style={{ fontSize: "13px", fontWeight: 500 }}>Encrypted Snapshot Storage</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", flexShrink: 0 }} />
-              <span style={{ fontSize: "13px", fontWeight: 500 }}>Automatic Anomaly Detection</span>
+              <span
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "50%",
+                  background: monitoringEnabled ? "#10b981" : "#f59e0b",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: "13px", fontWeight: 500 }}>
+                {monitoringEnabled ? "Automatic Anomaly Detection" : "Anomaly Detection Paused"}
+              </span>
             </div>
             {stats.totalRollbacks > 0 && (
               <span className="rv-badge rv-badge-success">
@@ -655,7 +752,7 @@ export default function Dashboard() {
               </span>
             )}
           </div>
-          <Link to="/app/settings" className="rv-btn rv-btn-secondary rv-btn-sm">
+          <Link to="/app/settings?tab=monitoring" className="rv-btn rv-btn-secondary rv-btn-sm">
             <SettingsIcon size={14} />
             <span>Protection Settings</span>
           </Link>

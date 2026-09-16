@@ -490,6 +490,8 @@ export async function rollbackProductFields(admin, shop, productId, changeEventI
         productInput.tags = restoredFields.tags.split(", ").filter(Boolean);
       if (restoredFields.bodyHtml !== undefined)
         productInput.bodyHtml = restoredFields.bodyHtml;
+      if (restoredFields.handle !== undefined)
+        productInput.handle = restoredFields.handle;
 
       const resp = await admin.graphql(
         `#graphql

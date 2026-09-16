@@ -12,6 +12,7 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -19,18 +20,36 @@ export const loader = async ({ request }) => {
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "";
 
-  const incidents = await prisma.incident.findMany({
-    where: {
-      shop,
-      ...(status ? { status } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    include: {
-      _count: { select: { changes: true } },
-    },
-  });
+  const [incidents, totalCount, openCount, resolvedCount, rolledBackCount, ignoredCount] = await Promise.all([
+    prisma.incident.findMany({
+      where: {
+        shop,
+        ...(status ? { status } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      include: {
+        _count: { select: { changes: true } },
+      },
+    }),
+    prisma.incident.count({ where: { shop } }),
+    prisma.incident.count({ where: { shop, status: "OPEN" } }),
+    prisma.incident.count({ where: { shop, status: "RESOLVED" } }),
+    prisma.incident.count({ where: { shop, status: "ROLLED_BACK" } }),
+    prisma.incident.count({ where: { shop, status: "IGNORED" } }),
+  ]);
 
-  return { incidents, currentStatus: status };
+  return {
+    incidents,
+    currentStatus: status,
+    counts: {
+      total: totalCount,
+      open: openCount,
+      resolved: resolvedCount,
+      rolledBack: rolledBackCount,
+      ignored: ignoredCount,
+    },
+  };
 };
 
 export const action = async ({ request }) => {
@@ -45,6 +64,9 @@ export const action = async ({ request }) => {
       return { success: false, message: "Invalid incident ID." };
     }
 
+    const perm = await checkPermission(shop, session, PERMISSIONS.RESTORE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     const incident = await prisma.incident.findFirst({
       where: { id: incidentId, shop },
     });
@@ -55,7 +77,8 @@ export const action = async ({ request }) => {
         where: { id: incidentId },
         data: { status: "RESOLVED", resolvedAt: new Date() },
       });
-      return { success: true, message: "Incident marked as resolved." };
+      await logAudit(shop, session, "INCIDENT_RESOLVE", { incidentId, name: incident.name });
+      return { success: true, message: `Incident "${incident.name}" marked as resolved.` };
     }
 
     if (intent === "ignore") {
@@ -63,7 +86,8 @@ export const action = async ({ request }) => {
         where: { id: incidentId },
         data: { status: "IGNORED", resolvedAt: new Date() },
       });
-      return { success: true, message: "Incident ignored." };
+      await logAudit(shop, session, "INCIDENT_IGNORE", { incidentId, name: incident.name });
+      return { success: true, message: `Incident "${incident.name}" ignored.` };
     }
 
     return { success: false, message: "Action failed." };
@@ -81,20 +105,21 @@ function formatTime(date) {
 }
 
 export default function Incidents() {
-  const { incidents, currentStatus } = useLoaderData();
+  const { incidents, currentStatus, counts } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
+  const isSubmitting = fetcher.state !== "idle";
 
   const handleAction = (intent, incidentId) => {
     fetcher.submit({ intent, incidentId: String(incidentId) }, { method: "POST" });
   };
 
   const statuses = [
-    { id: "", label: "All Incidents", to: "/app/incidents" },
-    { id: "OPEN", label: "Open", to: "/app/incidents?status=OPEN" },
-    { id: "RESOLVED", label: "Resolved", to: "/app/incidents?status=RESOLVED" },
-    { id: "ROLLED_BACK", label: "Rolled Back", to: "/app/incidents?status=ROLLED_BACK" },
-    { id: "IGNORED", label: "Ignored", to: "/app/incidents?status=IGNORED" },
+    { id: "", label: "All Incidents", count: counts?.total ?? 0, to: "/app/incidents" },
+    { id: "OPEN", label: "Open", count: counts?.open ?? 0, to: "/app/incidents?status=OPEN" },
+    { id: "RESOLVED", label: "Resolved", count: counts?.resolved ?? 0, to: "/app/incidents?status=RESOLVED" },
+    { id: "ROLLED_BACK", label: "Rolled Back", count: counts?.rolledBack ?? 0, to: "/app/incidents?status=ROLLED_BACK" },
+    { id: "IGNORED", label: "Ignored", count: counts?.ignored ?? 0, to: "/app/incidents?status=IGNORED" },
   ];
 
   return (
@@ -133,10 +158,14 @@ export default function Incidents() {
       {incidents.length === 0 ? (
         <EmptyState
           icon={<ShieldCheckIcon size={28} style={{ color: "var(--rv-primary)" }} />}
-          title={currentStatus ? `No ${currentStatus.toLowerCase()} incidents` : "All Clear — Zero Incidents Detected"}
+          title={
+            currentStatus
+              ? `No ${currentStatus.toLowerCase().replace(/_/g, " ")} incidents`
+              : "All Clear — Zero Incidents Detected"
+          }
           description={
             currentStatus
-              ? `There are currently no incidents matching the "${currentStatus}" status.`
+              ? `There are currently no incidents matching the "${currentStatus.toLowerCase().replace(/_/g, " ")}" status.`
               : "Revertly monitors your catalog 24/7. When unauthorized bulk changes, price crashes, or rule violations occur, they will be quarantined here for 1-click rollback."
           }
           action={
@@ -232,22 +261,32 @@ export default function Incidents() {
                           <span>Review &amp; Rollback</span>
                           <ArrowRightIcon size={13} />
                         </Link>
-                        <button
-                          type="button"
-                          onClick={() => handleAction("resolve", inc.id)}
-                          className="rv-btn rv-btn-secondary rv-btn-sm"
-                          style={{ color: "var(--rv-primary)" }}
-                        >
-                          <CheckCircleIcon size={13} />
-                          <span>Resolve</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleAction("ignore", inc.id)}
-                          className="rv-btn rv-btn-subtle rv-btn-sm"
-                        >
-                          Ignore
-                        </button>
+                        {(() => {
+                          const isThisResolving = isSubmitting && fetcher.formData?.get("incidentId") === String(inc.id) && fetcher.formData?.get("intent") === "resolve";
+                          const isThisIgnoring = isSubmitting && fetcher.formData?.get("incidentId") === String(inc.id) && fetcher.formData?.get("intent") === "ignore";
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                disabled={isSubmitting}
+                                onClick={() => handleAction("resolve", inc.id)}
+                                className="rv-btn rv-btn-secondary rv-btn-sm"
+                                style={{ color: "var(--rv-primary)" }}
+                              >
+                                <CheckCircleIcon size={13} className={isThisResolving ? "rv-spin" : ""} />
+                                <span>{isThisResolving ? "Resolving..." : "Resolve"}</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSubmitting}
+                                onClick={() => handleAction("ignore", inc.id)}
+                                className="rv-btn rv-btn-subtle rv-btn-sm"
+                              >
+                                <span>{isThisIgnoring ? "Ignoring..." : "Ignore"}</span>
+                              </button>
+                            </>
+                          );
+                        })()}
                       </>
                     ) : (
                       <Link

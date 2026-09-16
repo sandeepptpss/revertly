@@ -1,9 +1,15 @@
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request, params }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
+
+  const perm = await checkPermission(shop, session, PERMISSIONS.VIEW);
+  if (!perm.allowed || perm.actor?.suspended) {
+    throw new Response("Forbidden: Insufficient permissions to export backup data", { status: 403 });
+  }
 
   const rpId = parseInt(params.id);
   if (isNaN(rpId)) {
@@ -17,6 +23,13 @@ export const loader = async ({ request, params }) => {
   if (!restorePoint) {
     throw new Response("Restore Point Not Found", { status: 404 });
   }
+
+  await logAudit(shop, perm.actor, "BACKUP_EXPORTED", {
+    resourceType: "RestorePoint",
+    resourceId: rpId,
+    details: { name: restorePoint.name },
+    request,
+  });
 
   const cleanShop = shop.replace(/^https?:\/\//, "").replace(/[^a-zA-Z0-9_-]/g, "_");
   const dateStr = new Date(restorePoint.createdAt).toISOString().split("T")[0];

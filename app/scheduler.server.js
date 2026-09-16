@@ -9,6 +9,7 @@ import { withJobLock } from "./cron.server.js";
 import { syncRestorePointToCloud } from "./cloudSync.server.js";
 import { runDueServiceChecks } from "./uptime.server.js";
 import { runDueQaSuites } from "./qa.server.js";
+import { checkFeatureAccess } from "./billing.server.js";
 
 /**
  * Computes the next scheduled backup timestamp based on cadence and UTC preferred time
@@ -62,6 +63,8 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
   const timestampStr = now.toISOString().slice(0, 16).replace("T", " ");
   const backupName = `Automated Daily Backup - ${timestampStr} UTC`;
 
+  const themeCheck = await checkFeatureAccess(shop, "themes");
+
   const backupRes = await createMultiResourceRestorePoint({
     admin,
     shop,
@@ -69,7 +72,7 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
     description: `Automated ${settings.autoBackupSchedule.toLowerCase()} snapshot executed automatically by Revertly Guardian (${source}).`,
     options: {
       includeProducts: true,
-      includeThemes: Boolean(admin),
+      includeThemes: Boolean(admin && themeCheck.allowed),
       includeCollections: Boolean(admin),
       includePages: Boolean(admin),
       includeMenus: Boolean(admin),

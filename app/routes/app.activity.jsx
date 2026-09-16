@@ -2,6 +2,7 @@ import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { restoreDeletedProduct } from "../monitor.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   ClockIcon,
@@ -21,8 +22,8 @@ export const loader = async ({ request }) => {
   const shop = session.shop;
   const url = new URL(request.url);
   const page = parseInt(url.searchParams.get("page") || "1");
-  const field = url.searchParams.get("field") || "";
-  const product = url.searchParams.get("product") || "";
+  const field = (url.searchParams.get("field") || "").trim();
+  const product = (url.searchParams.get("product") || "").trim();
   const perPage = 50;
 
   const where = {
@@ -46,7 +47,7 @@ export const loader = async ({ request }) => {
     }),
   ]);
 
-  return { changes, total, page, perPage, field, product, deletedProducts };
+  return { changes, total, page, perPage, field, product, deletedProducts, shop };
 };
 
 export const action = async ({ request }) => {
@@ -57,9 +58,16 @@ export const action = async ({ request }) => {
     const intent = formData.get("intent");
 
     if (intent === "restoreDeleted") {
+      const perm = await checkPermission(shop, session, PERMISSIONS.RESTORE);
+      if (!perm.allowed) return { success: false, message: perm.message };
+
       const productId = formData.get("productId");
       const res = await restoreDeletedProduct(admin, shop, productId);
       if (res.success) {
+        await logAudit(shop, session, "PRODUCT_RESTORE", {
+          productId,
+          title: res.title,
+        });
         return {
           success: true,
           message: `Successfully recreated "${res.title}" as Draft in Shopify!`,
@@ -87,14 +95,25 @@ function formatTime(date) {
 }
 
 function fieldLabel(fieldName) {
-  return fieldName
-    .replace("variant.", "Variant ")
+  if (!fieldName) return "Field";
+  const clean = fieldName.startsWith("variant.")
+    ? fieldName.replace("variant.", "")
+    : fieldName.startsWith("metafield.")
+    ? fieldName.replace("metafield.", "Metafield: ")
+    : fieldName;
+  if (clean === "bodyHtml") return "Description";
+  if (clean === "compareAtPrice") return "Compare-at Price";
+  if (clean === "inventoryQuantity") return "Inventory";
+  const formatted = clean
     .replace(/([A-Z])/g, " $1")
-    .replace(/^./, (s) => s.toUpperCase());
+    .replace(/^./, (s) => s.toUpperCase())
+    .trim();
+  return fieldName.startsWith("variant.") ? `Variant ${formatted}` : formatted;
 }
 
 export default function Activity() {
-  const { changes, total, page, perPage, field, product, deletedProducts } = useLoaderData();
+  const { changes, total, page, perPage, field, product, deletedProducts, shop } = useLoaderData();
+  const cleanShop = (shop || "").replace(".myshopify.com", "");
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isRestoring = fetcher.state !== "idle";
@@ -156,14 +175,19 @@ export default function Activity() {
                         <fetcher.Form method="POST" style={{ display: "inline" }}>
                           <input type="hidden" name="intent" value="restoreDeleted" />
                           <input type="hidden" name="productId" value={p.productId} />
-                          <button
-                            type="submit"
-                            disabled={isRestoring}
-                            className="rv-btn rv-btn-primary rv-btn-sm"
-                          >
-                            <RefreshCwIcon size={13} />
-                            <span>1-Click Restore to Shopify</span>
-                          </button>
+                          {(() => {
+                            const isThisRestoring = isRestoring && fetcher.formData?.get("productId") === String(p.productId);
+                            return (
+                              <button
+                                type="submit"
+                                disabled={isRestoring}
+                                className="rv-btn rv-btn-primary rv-btn-sm"
+                              >
+                                <RefreshCwIcon size={13} className={isThisRestoring ? "rv-spin" : ""} />
+                                <span>{isThisRestoring ? "Restoring..." : "1-Click Restore to Shopify"}</span>
+                              </button>
+                            );
+                          })()}
                         </fetcher.Form>
                       </td>
                     </tr>
@@ -178,7 +202,7 @@ export default function Activity() {
       {/* ── Search & Filter Toolbar ── */}
       <div className="rv-filter-bar">
         <form method="get" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
-          <div className="rv-search-wrapper" style={{ flexGrow: 1, maxWidth: "320px" }}>
+          <div className="rv-search-wrapper" style={{ flexGrow: 1, maxWidth: "300px", minWidth: "180px" }}>
             <span className="rv-search-icon">
               <SearchIcon size={15} />
             </span>
@@ -192,16 +216,23 @@ export default function Activity() {
             />
           </div>
 
-          <select name="field" defaultValue={field} className="rv-select">
+          <select
+            name="field"
+            defaultValue={field}
+            className="rv-select"
+            style={{ width: "auto", minWidth: "170px", maxWidth: "230px" }}
+          >
             <option value="">All Field Types</option>
             <option value="price">Price Changes</option>
             <option value="compareAtPrice">Compare At Price</option>
             <option value="inventory">Inventory Changes</option>
             <option value="title">Product Title</option>
+            <option value="bodyHtml">Product Description</option>
             <option value="status">Status Changes</option>
             <option value="vendor">Vendor</option>
             <option value="tags">Tags</option>
             <option value="sku">SKU Changes</option>
+            <option value="metafield">Metafields</option>
           </select>
 
           <button type="submit" className="rv-btn rv-btn-secondary rv-btn-sm">
@@ -253,33 +284,56 @@ export default function Activity() {
               </tr>
             </thead>
             <tbody>
-              {changes.map((c) => (
-                <tr key={c.id}>
-                  <td style={{ fontWeight: 600 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <BoxIcon size={15} style={{ color: "var(--rv-text-subdued)", flexShrink: 0 }} />
-                      <span style={{ maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {c.productTitle}
+              {changes.map((c) => {
+                const productAdminUrl = cleanShop && c.productId ? `https://admin.shopify.com/store/${cleanShop}/products/${c.productId}` : null;
+                return (
+                  <tr key={c.id}>
+                    <td style={{ fontWeight: 600 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <BoxIcon size={15} style={{ color: "var(--rv-text-subdued)", flexShrink: 0 }} />
+                        {productAdminUrl ? (
+                          <a
+                            href={productAdminUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              color: "var(--rv-text)",
+                              textDecoration: "none",
+                              maxWidth: "260px",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              display: "inline-block",
+                            }}
+                            title={`Open ${c.productTitle} in Shopify Admin`}
+                          >
+                            {c.productTitle}
+                          </a>
+                        ) : (
+                          <span style={{ maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {c.productTitle}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <span className="rv-badge rv-badge-neutral rv-badge-sm">
+                        {fieldLabel(c.fieldName)}
                       </span>
-                    </div>
-                  </td>
-                  <td>
-                    <span className="rv-badge rv-badge-neutral rv-badge-sm">
-                      {fieldLabel(c.fieldName)}
-                    </span>
-                  </td>
-                  <td>
-                    <span className="rv-diff-old">{c.oldValue || "—"}</span>
-                  </td>
-                  <td style={{ color: "var(--rv-text-subdued)", textAlign: "center" }}>→</td>
-                  <td>
-                    <span className="rv-diff-new">{c.newValue || "—"}</span>
-                  </td>
-                  <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px", whiteSpace: "nowrap" }}>
-                    {formatTime(c.changedAt)}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td>
+                      <span className="rv-diff-old" title={c.oldValue || "—"}>{c.oldValue || "—"}</span>
+                    </td>
+                    <td style={{ color: "var(--rv-text-subdued)", textAlign: "center" }}>→</td>
+                    <td>
+                      <span className="rv-diff-new" title={c.newValue || "—"}>{c.newValue || "—"}</span>
+                    </td>
+                    <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px", whiteSpace: "nowrap" }}>
+                      {formatTime(c.changedAt)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -294,7 +348,7 @@ export default function Activity() {
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             {page > 1 ? (
               <Link
-                to={`/app/activity?page=${page - 1}${field ? `&field=${field}` : ""}${product ? `&product=${product}` : ""}`}
+                to={`/app/activity?page=${page - 1}${field ? `&field=${encodeURIComponent(field)}` : ""}${product ? `&product=${encodeURIComponent(product)}` : ""}`}
                 className="rv-btn rv-btn-secondary rv-btn-sm"
               >
                 <ArrowLeftIcon size={13} />
@@ -309,7 +363,7 @@ export default function Activity() {
 
             {page < totalPages ? (
               <Link
-                to={`/app/activity?page=${page + 1}${field ? `&field=${field}` : ""}${product ? `&product=${product}` : ""}`}
+                to={`/app/activity?page=${page + 1}${field ? `&field=${encodeURIComponent(field)}` : ""}${product ? `&product=${encodeURIComponent(product)}` : ""}`}
                 className="rv-btn rv-btn-secondary rv-btn-sm"
               >
                 <span>Next</span>

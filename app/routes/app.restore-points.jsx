@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, Link, useSearchParams } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -90,15 +90,22 @@ export const action = async ({ request }) => {
 
       const rawName = formData.get("name")?.trim();
       const defaultName = `Snapshot - ${new Date().toISOString().slice(0, 19).replace("T", " ")}`;
-      const name = rawName || defaultName;
-      const description = formData.get("description") || "";
+      const name = (rawName || defaultName).slice(0, 500);
+      const description = (formData.get("description") || "").slice(0, 2000);
 
       const themeCheck = await checkFeatureAccess(shop, "themes");
-      const includeProducts = formData.get("includeProducts") !== "0";
+      const includeProducts = formData.get("includeProducts") === "1";
       const includeThemes = themeCheck.allowed && formData.get("includeThemes") === "1";
-      const includeCollections = formData.get("includeCollections") !== "0";
-      const includePages = formData.get("includePages") !== "0";
-      const includeArticles = formData.get("includeArticles") !== "0";
+      const includeCollections = formData.get("includeCollections") === "1";
+      const includePages = formData.get("includePages") === "1";
+      const includeArticles = formData.get("includeArticles") === "1";
+
+      if (!includeProducts && !includeThemes && !includeCollections && !includePages && !includeArticles) {
+        return {
+          success: false,
+          message: "Please select at least one component (Products, Themes, Collections, Pages, or Articles) to include in the restore point.",
+        };
+      }
 
       const result = await createMultiResourceRestorePoint({
         admin,
@@ -126,6 +133,16 @@ export const action = async ({ request }) => {
       if (s.collections > 0) parts.push(`${s.collections} collections`);
       if (s.pages > 0) parts.push(`${s.pages} pages & menus`);
       if (s.articles > 0) parts.push(`${s.articles} blog articles`);
+
+      await logAudit(shop, perm.actor, "BACKUP_CREATED", {
+        resourceType: "RestorePoint",
+        resourceId: result.restorePoint?.id,
+        details: {
+          name,
+          summary: result.summary,
+        },
+        request,
+      });
 
       return {
         success: true,
@@ -210,8 +227,24 @@ export default function RestorePoints() {
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isCreating = fetcher.state !== "idle";
-  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [searchParams] = useSearchParams();
+  const [showCreateForm, setShowCreateForm] = useState(
+    () => searchParams.get("create") === "true",
+  );
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [components, setComponents] = useState({
+    products: true,
+    themes: Boolean(hasThemeAccess),
+    collections: true,
+    pages: true,
+    articles: true,
+  });
+
+  useEffect(() => {
+    if (searchParams.get("create") === "true") {
+      setShowCreateForm(true);
+    }
+  }, [searchParams]);
 
   const isDeleting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "delete";
 
@@ -232,7 +265,7 @@ export default function RestorePoints() {
     );
   };
 
-  const usedCount = limitInfo?.currentCount ?? restorePoints.length;
+  const usedCount = Math.max(limitInfo?.currentCount || 0, restorePoints.length);
   const maxLimit = limitInfo?.limit ?? Infinity;
   const isLimitReached = !limitInfo?.allowed;
   const quotaPercent = maxLimit === Infinity ? 0 : Math.min(100, Math.round((usedCount / maxLimit) * 100));
@@ -245,6 +278,13 @@ export default function RestorePoints() {
         <Banner
           tone={result.success ? "success" : "critical"}
           title={result.success ? "Restore Point Action Complete" : "Action Failed"}
+          action={
+            !result.success && result.message?.includes("Settings") ? (
+              <Link to="/app/settings" className="rv-btn rv-btn-secondary rv-btn-sm">
+                Go to Settings
+              </Link>
+            ) : undefined
+          }
         >
           {result.message}
         </Banner>
@@ -358,8 +398,16 @@ export default function RestorePoints() {
                   Components Included in this Snapshot:
                 </div>
                 <div className="rv-toggle-grid">
-                  <div className="rv-toggle-card rv-toggle-card-active">
-                    <input id="chk-products" type="checkbox" name="includeProducts" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                  <div className={`rv-toggle-card ${components.products ? "rv-toggle-card-active" : ""}`}>
+                    <input
+                      id="chk-products"
+                      type="checkbox"
+                      name="includeProducts"
+                      checked={components.products}
+                      onChange={(e) => setComponents((prev) => ({ ...prev, products: e.target.checked }))}
+                      value="1"
+                      style={{ marginTop: "3px", cursor: "pointer" }}
+                    />
                     <label htmlFor="chk-products" style={{ cursor: "pointer", flexGrow: 1 }}>
                       <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         <BoxIcon size={15} style={{ color: "var(--rv-primary)" }} />
@@ -370,14 +418,15 @@ export default function RestorePoints() {
                   </div>
 
                   <div
-                    className={`rv-toggle-card ${hasThemeAccess ? "rv-toggle-card-active" : ""}`}
+                    className={`rv-toggle-card ${hasThemeAccess && components.themes ? "rv-toggle-card-active" : ""}`}
                     style={{ opacity: hasThemeAccess ? 1 : 0.65, cursor: hasThemeAccess ? "pointer" : "not-allowed" }}
                   >
                     <input
                       id="chk-themes"
                       type="checkbox"
                       name="includeThemes"
-                      defaultChecked={hasThemeAccess}
+                      checked={hasThemeAccess && components.themes}
+                      onChange={(e) => hasThemeAccess && setComponents((prev) => ({ ...prev, themes: e.target.checked }))}
                       disabled={!hasThemeAccess}
                       value="1"
                       style={{ marginTop: "3px", cursor: hasThemeAccess ? "pointer" : "not-allowed" }}
@@ -398,24 +447,48 @@ export default function RestorePoints() {
                     </label>
                   </div>
 
-                  <div className="rv-toggle-card rv-toggle-card-active">
-                    <input id="chk-collections" type="checkbox" name="includeCollections" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                  <div className={`rv-toggle-card ${components.collections ? "rv-toggle-card-active" : ""}`}>
+                    <input
+                      id="chk-collections"
+                      type="checkbox"
+                      name="includeCollections"
+                      checked={components.collections}
+                      onChange={(e) => setComponents((prev) => ({ ...prev, collections: e.target.checked }))}
+                      value="1"
+                      style={{ marginTop: "3px", cursor: "pointer" }}
+                    />
                     <label htmlFor="chk-collections" style={{ cursor: "pointer", flexGrow: 1 }}>
                       <strong style={{ fontSize: "13px", display: "block" }}>Collections</strong>
                       <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Manual &amp; Smart Rules</span>
                     </label>
                   </div>
 
-                  <div className="rv-toggle-card rv-toggle-card-active">
-                    <input id="chk-pages" type="checkbox" name="includePages" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                  <div className={`rv-toggle-card ${components.pages ? "rv-toggle-card-active" : ""}`}>
+                    <input
+                      id="chk-pages"
+                      type="checkbox"
+                      name="includePages"
+                      checked={components.pages}
+                      onChange={(e) => setComponents((prev) => ({ ...prev, pages: e.target.checked }))}
+                      value="1"
+                      style={{ marginTop: "3px", cursor: "pointer" }}
+                    />
                     <label htmlFor="chk-pages" style={{ cursor: "pointer", flexGrow: 1 }}>
                       <strong style={{ fontSize: "13px", display: "block" }}>Pages &amp; Menus</strong>
                       <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Store Pages &amp; Navigation</span>
                     </label>
                   </div>
 
-                  <div className="rv-toggle-card rv-toggle-card-active">
-                    <input id="chk-articles" type="checkbox" name="includeArticles" defaultChecked value="1" style={{ marginTop: "3px", cursor: "pointer" }} />
+                  <div className={`rv-toggle-card ${components.articles ? "rv-toggle-card-active" : ""}`}>
+                    <input
+                      id="chk-articles"
+                      type="checkbox"
+                      name="includeArticles"
+                      checked={components.articles}
+                      onChange={(e) => setComponents((prev) => ({ ...prev, articles: e.target.checked }))}
+                      value="1"
+                      style={{ marginTop: "3px", cursor: "pointer" }}
+                    />
                     <label htmlFor="chk-articles" style={{ cursor: "pointer", flexGrow: 1 }}>
                       <strong style={{ fontSize: "13px", display: "block" }}>Blog Articles</strong>
                       <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Blog Posts &amp; Content</span>
@@ -489,7 +562,7 @@ export default function RestorePoints() {
                       className={`rv-badge ${
                         rp.status === "READY"
                           ? "rv-badge-success"
-                          : rp.status === "CREATING"
+                          : rp.status === "CREATING" || rp.status === "RESTORING"
                           ? "rv-badge-warning"
                           : "rv-badge-critical"
                       }`}
@@ -534,6 +607,10 @@ export default function RestorePoints() {
                         )}
                         <span>Synced ({rp.cloudProvider === "GOOGLE_DRIVE" ? "G-Drive" : "Dropbox"})</span>
                       </span>
+                    ) : rp.cloudSyncStatus === "FAILED" ? (
+                      <span className="rv-badge rv-badge-critical rv-badge-sm">
+                        Cloud Sync Failed
+                      </span>
                     ) : (
                       <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ color: "var(--rv-text-subdued)" }}>
                         Local Storage
@@ -551,19 +628,24 @@ export default function RestorePoints() {
                     <ArrowRightIcon size={13} />
                   </Link>
 
-                  <fetcher.Form method="POST" style={{ display: "inline" }}>
-                    <input type="hidden" name="intent" value="syncToCloud" />
-                    <input type="hidden" name="rpId" value={rp.id} />
-                    <button
-                      type="submit"
-                      disabled={isCreating}
-                      className="rv-btn rv-btn-secondary rv-btn-sm"
-                      title="Sync this snapshot to Google Drive or Dropbox"
-                    >
-                      <CloudUploadIcon size={13} />
-                      <span>{rp.cloudSyncStatus === "SYNCED" ? "Re-sync Cloud" : "Sync Cloud"}</span>
-                    </button>
-                  </fetcher.Form>
+                  {(() => {
+                    const isThisSyncing = isCreating && fetcher.formData?.get("intent") === "syncToCloud" && fetcher.formData?.get("rpId") === String(rp.id);
+                    return (
+                      <fetcher.Form method="POST" style={{ display: "inline" }}>
+                        <input type="hidden" name="intent" value="syncToCloud" />
+                        <input type="hidden" name="rpId" value={rp.id} />
+                        <button
+                          type="submit"
+                          disabled={isCreating}
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                          title="Sync this snapshot to Google Drive or Dropbox"
+                        >
+                          <CloudUploadIcon size={13} className={isThisSyncing ? "rv-spin" : ""} />
+                          <span>{isThisSyncing ? "Syncing..." : rp.cloudSyncStatus === "SYNCED" ? "Re-sync Cloud" : "Sync Cloud"}</span>
+                        </button>
+                      </fetcher.Form>
+                    );
+                  })()}
 
                   <a
                     href={`/app/restore-points/${rp.id}/export`}

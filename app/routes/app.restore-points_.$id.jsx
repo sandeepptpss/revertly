@@ -263,11 +263,25 @@ export const action = async ({ request, params }) => {
         selectedFilenames,
         mode,
       });
+
+      if (res?.success) {
+        await logAudit(shop, restorePerm.actor, "THEME_RESTORED", {
+          resourceType: "Theme",
+          resourceId: themeData.activeTheme.id,
+          details: {
+            themeName: themeData.activeTheme.name,
+            mode,
+            filesRestored: res.filesRestored || (selectedFilenames ? selectedFilenames.length : themeData.files.length),
+          },
+          request,
+        });
+      }
+
       return res;
     }
 
     if (intent === "restore_collection") {
-      const colIndex = parseInt(formData.get("colIndex"));
+      const colIndex = parseInt(formData.get("colIndex"), 10);
       const restorePoint = await prisma.restorePoint.findFirst({
         where: { id: rpId, shop },
       });
@@ -275,11 +289,20 @@ export const action = async ({ request, params }) => {
       const target = cols[colIndex];
       if (!target) return { success: false, message: "Collection not found in snapshot." };
       const res = await restoreCollection(admin, target);
-      return res.success ? { success: true, message: `Collection "${target.title}" successfully restored.` } : res;
+      if (res.success) {
+        await logAudit(shop, restorePerm.actor, "COLLECTION_RESTORED", {
+          resourceType: "Collection",
+          resourceId: target.id || String(colIndex),
+          details: { title: target.title, handle: target.handle },
+          request,
+        });
+        return { success: true, message: `Collection "${target.title}" successfully restored.` };
+      }
+      return res;
     }
 
     if (intent === "restore_page") {
-      const pageIndex = parseInt(formData.get("pageIndex"));
+      const pageIndex = parseInt(formData.get("pageIndex"), 10);
       const restorePoint = await prisma.restorePoint.findFirst({
         where: { id: rpId, shop },
       });
@@ -287,11 +310,20 @@ export const action = async ({ request, params }) => {
       const target = pages[pageIndex];
       if (!target) return { success: false, message: "Page not found in snapshot." };
       const res = await restorePage(admin, target);
-      return res.success ? { success: true, message: `Page "${target.title}" successfully restored.` } : res;
+      if (res.success) {
+        await logAudit(shop, restorePerm.actor, "PAGE_RESTORED", {
+          resourceType: "Page",
+          resourceId: target.id || String(pageIndex),
+          details: { title: target.title, handle: target.handle },
+          request,
+        });
+        return { success: true, message: `Page "${target.title}" successfully restored.` };
+      }
+      return res;
     }
 
     if (intent === "restore_article") {
-      const articleIndex = parseInt(formData.get("articleIndex"));
+      const articleIndex = parseInt(formData.get("articleIndex"), 10);
       const restorePoint = await prisma.restorePoint.findFirst({
         where: { id: rpId, shop },
       });
@@ -299,6 +331,14 @@ export const action = async ({ request, params }) => {
       const target = articles[articleIndex];
       if (!target) return { success: false, message: "Article not found in snapshot." };
       const res = await restoreArticle(admin, target);
+      if (res?.success) {
+        await logAudit(shop, restorePerm.actor, "ARTICLE_RESTORED", {
+          resourceType: "Article",
+          resourceId: target.id || String(articleIndex),
+          details: { title: target.title },
+          request,
+        });
+      }
       return res;
     }
 
@@ -368,7 +408,7 @@ export const action = async ({ request, params }) => {
       if (!current) continue;
 
       const mockEvents = [];
-      const fieldKeys = ["title", "status", "vendor", "tags"];
+      const fieldKeys = ["title", "status", "vendor", "tags", "handle"];
       for (const key of fieldKeys) {
         const sv = String(savedSnap[key] ?? "");
         const cv = String(current[key] ?? "");
@@ -534,10 +574,12 @@ export default function RestorePointDetail() {
   const [expandedFile, setExpandedFile] = useState(null);
   const [selectedProductIds, setSelectedProductIds] = useState([]);
   const [showLiveRestoreModal, setShowLiveRestoreModal] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null);
 
   useEffect(() => {
     if (result && !isRestoring) {
       setShowLiveRestoreModal(false);
+      setConfirmDialog(null);
     }
   }, [result, isRestoring]);
 
@@ -580,7 +622,7 @@ export default function RestorePointDetail() {
               className={`rv-badge ${
                 restorePoint.status === "READY"
                   ? "rv-badge-success"
-                  : restorePoint.status === "CREATING"
+                  : restorePoint.status === "CREATING" || restorePoint.status === "RESTORING"
                   ? "rv-badge-warning"
                   : "rv-badge-critical"
               }`}
@@ -613,6 +655,10 @@ export default function RestorePointDetail() {
                 )}
                 <span>Synced to {restorePoint.cloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"}</span>
               </span>
+            ) : restorePoint.cloudSyncStatus === "FAILED" ? (
+              <span className="rv-badge rv-badge-critical rv-badge-sm">
+                Cloud Sync Failed
+              </span>
             ) : (
               <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ color: "var(--rv-text-subdued)" }}>
                 Local Storage Only
@@ -627,18 +673,23 @@ export default function RestorePointDetail() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          <fetcher.Form method="POST" style={{ display: "inline" }}>
-            <input type="hidden" name="intent" value="syncToCloud" />
-            <button
-              type="submit"
-              disabled={isRestoring}
-              className="rv-btn rv-btn-secondary rv-btn-sm"
-              title="Sync snapshot to connected Google Drive / Dropbox"
-            >
-              <CloudUploadIcon size={14} />
-              <span>{restorePoint.cloudSyncStatus === "SYNCED" ? "Re-sync Cloud" : "Push to Cloud"}</span>
-            </button>
-          </fetcher.Form>
+          {(() => {
+            const isCloudSyncing = isRestoring && fetcher.formData?.get("intent") === "syncToCloud";
+            return (
+              <fetcher.Form method="POST" style={{ display: "inline" }}>
+                <input type="hidden" name="intent" value="syncToCloud" />
+                <button
+                  type="submit"
+                  disabled={isRestoring}
+                  className="rv-btn rv-btn-secondary rv-btn-sm"
+                  title="Sync snapshot to connected Google Drive / Dropbox"
+                >
+                  <CloudUploadIcon size={14} className={isCloudSyncing ? "rv-spin" : ""} />
+                  <span>{isCloudSyncing ? "Syncing..." : restorePoint.cloudSyncStatus === "SYNCED" ? "Re-sync Cloud" : "Push to Cloud"}</span>
+                </button>
+              </fetcher.Form>
+            );
+          })()}
 
           <a
             href={`/app/restore-points/${restorePoint.id}/export`}
@@ -918,19 +969,24 @@ export default function RestorePointDetail() {
 
             {/* Dual Safe Theme Restore Actions */}
             <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", paddingTop: "14px", borderTop: "1px solid var(--rv-border)" }}>
-              <fetcher.Form method="POST">
-                <input type="hidden" name="intent" value="restore_theme" />
-                <input type="hidden" name="mode" value="draft" />
-                <input type="hidden" name="selectedFiles" value={JSON.stringify(selectedFiles)} />
-                <button
-                  type="submit"
-                  disabled={selectedFiles.length === 0 || isRestoring}
-                  className="rv-btn rv-btn-primary rv-btn-lg"
-                >
-                  <ShieldCheckIcon size={16} />
-                  <span>Restore to Draft Theme (Safe Preview First)</span>
-                </button>
-              </fetcher.Form>
+              {(() => {
+                const isDraftRestoring = isRestoring && fetcher.formData?.get("intent") === "restore_theme" && fetcher.formData?.get("mode") === "draft";
+                return (
+                  <fetcher.Form method="POST">
+                    <input type="hidden" name="intent" value="restore_theme" />
+                    <input type="hidden" name="mode" value="draft" />
+                    <input type="hidden" name="selectedFiles" value={JSON.stringify(selectedFiles)} />
+                    <button
+                      type="submit"
+                      disabled={selectedFiles.length === 0 || isRestoring}
+                      className="rv-btn rv-btn-primary rv-btn-lg"
+                    >
+                      <ShieldCheckIcon size={16} className={isDraftRestoring ? "rv-spin" : ""} />
+                      <span>{isDraftRestoring ? "Creating Draft Theme..." : "Restore to Draft Theme (Safe Preview First)"}</span>
+                    </button>
+                  </fetcher.Form>
+                );
+              })()}
 
               <button
                 type="button"
@@ -977,28 +1033,48 @@ export default function RestorePointDetail() {
                 </div>
                 <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                   {selectedProductIds.length > 0 && (
-                    <fetcher.Form method="POST" style={{ margin: 0 }}>
-                      <input type="hidden" name="intent" value="restore_selected_products" />
-                      <input type="hidden" name="selectedProductIds" value={selectedProductIds.join(",")} />
-                      <button
-                        type="submit"
-                        disabled={isRestoring}
-                        className="rv-btn rv-btn-primary rv-btn-lg"
-                      >
-                        <span>{isRestoring ? "Restoring..." : `Restore Selected (${selectedProductIds.length})`}</span>
-                      </button>
-                    </fetcher.Form>
-                  )}
-                  <fetcher.Form method="POST" style={{ margin: 0 }}>
-                    <input type="hidden" name="intent" value="restore" />
                     <button
-                      type="submit"
+                      type="button"
                       disabled={isRestoring}
-                      className="rv-btn rv-btn-critical rv-btn-lg"
+                      onClick={() => {
+                        setConfirmDialog({
+                          title: `Restore ${selectedProductIds.length} Selected Products`,
+                          message: `Are you sure you want to restore the ${selectedProductIds.length} selected products to their snapshot state?`,
+                          dangerNote: "This will overwrite current live field values for the selected products in Shopify.",
+                          confirmLabel: `Restore Selected (${selectedProductIds.length})`,
+                          tone: "primary",
+                          onConfirm: () => {
+                            fetcher.submit(
+                              { intent: "restore_selected_products", selectedProductIds: selectedProductIds.join(",") },
+                              { method: "POST" }
+                            );
+                          },
+                        });
+                      }}
+                      className="rv-btn rv-btn-primary rv-btn-lg"
                     >
-                      <span>{isRestoring ? "Restoring products..." : `Restore All (${differences.length}) Products`}</span>
+                      <span>{isRestoring && fetcher.formData?.get("intent") === "restore_selected_products" ? "Restoring..." : `Restore Selected (${selectedProductIds.length})`}</span>
                     </button>
-                  </fetcher.Form>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isRestoring}
+                    onClick={() => {
+                      setConfirmDialog({
+                        title: `Restore All ${differences.length} Differing Products`,
+                        message: `Are you sure you want to restore all ${differences.length} products to their snapshot state?`,
+                        dangerNote: "This will overwrite current live prices, inventory, titles, and variant data across your store in Shopify.",
+                        confirmLabel: `Restore All (${differences.length}) Products`,
+                        tone: "critical",
+                        onConfirm: () => {
+                          fetcher.submit({ intent: "restore" }, { method: "POST" });
+                        },
+                      });
+                    }}
+                    className="rv-btn rv-btn-critical rv-btn-lg"
+                  >
+                    <span>{isRestoring && fetcher.formData?.get("intent") === "restore" ? "Restoring products..." : `Restore All (${differences.length}) Products`}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1060,18 +1136,29 @@ export default function RestorePointDetail() {
                       </span>
                     </div>
 
-                    <fetcher.Form method="POST" style={{ margin: 0 }}>
-                      <input type="hidden" name="intent" value="restore_single_product" />
-                      <input type="hidden" name="productId" value={d.productId} />
-                      <button
-                        type="submit"
-                        disabled={isRestoring}
-                        className="rv-btn rv-btn-secondary rv-btn-sm"
-                        title="Restore only this product to snapshot state"
-                      >
-                        <span>1-Click Restore Product</span>
-                      </button>
-                    </fetcher.Form>
+                    <button
+                      type="button"
+                      disabled={isRestoring}
+                      onClick={() => {
+                        setConfirmDialog({
+                          title: `Restore Product: "${d.title}"`,
+                          message: `Are you sure you want to restore "${d.title}" (#${d.productId}) to its snapshot state?`,
+                          dangerNote: "This will revert modified fields on this product back to snapshot values.",
+                          confirmLabel: "Confirm Product Restore",
+                          tone: "primary",
+                          onConfirm: () => {
+                            fetcher.submit(
+                              { intent: "restore_single_product", productId: String(d.productId) },
+                              { method: "POST" }
+                            );
+                          },
+                        });
+                      }}
+                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                      title="Restore only this product to snapshot state"
+                    >
+                      <span>1-Click Restore Product</span>
+                    </button>
                   </div>
                   <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
                     <table className="rv-table">
@@ -1137,13 +1224,25 @@ export default function RestorePointDetail() {
                       </span>
                     </td>
                     <td style={{ textAlign: "right" }}>
-                      <fetcher.Form method="POST" style={{ display: "inline" }}>
-                        <input type="hidden" name="intent" value="restore_collection" />
-                        <input type="hidden" name="colIndex" value={idx} />
-                        <button type="submit" className="rv-btn rv-btn-secondary rv-btn-sm">
-                          Recreate / Restore
-                        </button>
-                      </fetcher.Form>
+                      <button
+                        type="button"
+                        disabled={isRestoring}
+                        onClick={() => {
+                          setConfirmDialog({
+                            title: `Restore Collection: "${col.title}"`,
+                            message: `Are you sure you want to recreate or update collection "${col.title}" in Shopify?`,
+                            dangerNote: "Any manually removed conditions or changes made since the snapshot will be restored.",
+                            confirmLabel: "Restore Collection",
+                            tone: "primary",
+                            onConfirm: () => {
+                              fetcher.submit({ intent: "restore_collection", colIndex: String(idx) }, { method: "POST" });
+                            },
+                          });
+                        }}
+                        className="rv-btn rv-btn-secondary rv-btn-sm"
+                      >
+                        <span>Recreate / Restore</span>
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -1176,13 +1275,25 @@ export default function RestorePointDetail() {
                     <td style={{ fontWeight: 600 }}>{p.title}</td>
                     <td style={{ color: "var(--rv-text-subdued)" }}>/{p.handle}</td>
                     <td style={{ textAlign: "right" }}>
-                      <fetcher.Form method="POST" style={{ display: "inline" }}>
-                        <input type="hidden" name="intent" value="restore_page" />
-                        <input type="hidden" name="pageIndex" value={idx} />
-                        <button type="submit" className="rv-btn rv-btn-secondary rv-btn-sm">
-                          Restore Page
-                        </button>
-                      </fetcher.Form>
+                      <button
+                        type="button"
+                        disabled={isRestoring}
+                        onClick={() => {
+                          setConfirmDialog({
+                            title: `Restore Page: "${p.title}"`,
+                            message: `Are you sure you want to restore content page "${p.title}" in Shopify?`,
+                            dangerNote: "Page content and settings will be restored to their snapshot state.",
+                            confirmLabel: "Restore Page",
+                            tone: "primary",
+                            onConfirm: () => {
+                              fetcher.submit({ intent: "restore_page", pageIndex: String(idx) }, { method: "POST" });
+                            },
+                          });
+                        }}
+                        className="rv-btn rv-btn-secondary rv-btn-sm"
+                      >
+                        <span>Restore Page</span>
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -1227,13 +1338,25 @@ export default function RestorePointDetail() {
                       </td>
                       <td style={{ color: "var(--rv-text-subdued)" }}>{art.blogTitle || "Blog"}</td>
                       <td style={{ textAlign: "right" }}>
-                        <fetcher.Form method="POST" style={{ display: "inline" }}>
-                          <input type="hidden" name="intent" value="restore_article" />
-                          <input type="hidden" name="articleIndex" value={idx} />
-                          <button type="submit" className="rv-btn rv-btn-secondary rv-btn-sm">
-                            Restore Article
-                          </button>
-                        </fetcher.Form>
+                        <button
+                          type="button"
+                          disabled={isRestoring}
+                          onClick={() => {
+                            setConfirmDialog({
+                              title: `Restore Blog Article: "${art.title}"`,
+                              message: `Are you sure you want to restore blog article "${art.title}" in Shopify?`,
+                              dangerNote: "Article content will be updated to the snapshot version.",
+                              confirmLabel: "Restore Article",
+                              tone: "primary",
+                              onConfirm: () => {
+                                fetcher.submit({ intent: "restore_article", articleIndex: String(idx) }, { method: "POST" });
+                              },
+                            });
+                          }}
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                        >
+                          <span>Restore Article</span>
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -1274,6 +1397,26 @@ export default function RestorePointDetail() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── Action Confirmation Modal ── */}
+      {confirmDialog && (
+        <ConfirmModal
+          isOpen={Boolean(confirmDialog)}
+          title={confirmDialog?.title || "Confirm Action"}
+          message={confirmDialog?.message}
+          dangerNote={confirmDialog?.dangerNote}
+          confirmLabel={confirmDialog?.confirmLabel || "Confirm"}
+          submittingLabel="Restoring..."
+          tone={confirmDialog?.tone || "primary"}
+          isSubmitting={isRestoring}
+          onConfirm={() => {
+            if (confirmDialog?.onConfirm) confirmDialog.onConfirm();
+          }}
+          onClose={() => {
+            if (!isRestoring) setConfirmDialog(null);
+          }}
+        />
       )}
 
       {/* ── Live Theme Restore Confirmation Modal ── */}
