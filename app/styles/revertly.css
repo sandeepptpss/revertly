@@ -219,6 +219,21 @@ s-page {
   100% { transform: scale(0.9); opacity: 0; }
 }
 
+.rv-fade-in {
+  animation: rvFadeIn 220ms ease-out both;
+}
+
+@keyframes rvFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-fade-in {
+    animation: none;
+  }
+}
+
 /* ==========================================================================
    KPI Stat Cards Grid
    ========================================================================== */

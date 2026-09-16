@@ -17,21 +17,16 @@ export function computeExpiry(from = new Date()) {
 }
 
 /**
- * Returns the merchant's discount only if it is actually in force right now
- * (active flag set AND not past its yearly expiry). A discount that expired
- * is lazily flipped inactive here, so the admin list and the merchant's own
- * page never show a stale "active" badge past its year.
+ * Returns the merchant's discount only if it is actually in force right now:
+ * the active flag is set AND it has not passed its yearly expiry.
+ *
+ * Expiry is derived on read rather than written back, so this stays safe to
+ * call from a loader. The stored `isActive` flag records only whether the
+ * admin revoked the grant; it is never the sole basis for "is this in force".
  */
 export async function getActiveStoreDiscount(shop) {
   const row = await prisma.storeDiscount.findUnique({ where: { shop } });
   if (!row || !row.isActive) return null;
-
-  if (row.expiresAt <= new Date()) {
-    await prisma.storeDiscount
-      .update({ where: { shop }, data: { isActive: false } })
-      .catch(() => {});
-    return null;
-  }
-
+  if (row.expiresAt <= new Date()) return null;
   return row;
 }

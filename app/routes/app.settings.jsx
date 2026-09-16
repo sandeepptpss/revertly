@@ -1137,7 +1137,7 @@ export default function Settings() {
                             value="disconnectCloud"
                             formNoValidate
                             disabled={fetcher.state !== "idle"}
-                            className="rv-btn rv-btn-danger rv-btn-sm"
+                            className="rv-btn rv-btn-critical rv-btn-sm"
                             onClick={(e) => {
                               if (!window.confirm("Disconnect cloud storage? Stored access credentials will be deleted. Backups remain in the Revertly database.")) {
                                 e.preventDefault();

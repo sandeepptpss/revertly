@@ -130,7 +130,7 @@ export const loader = async ({ request }) => {
   const shop = session.shop;
   const isTest = process.env.NODE_ENV !== "production";
 
-  const { currentPlan, limits } = await getStorePlan(shop, billing, isTest);
+  const { currentPlan, limits, subscriptionDiscountPercent } = await getStorePlan(shop, billing, isTest);
 
   const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, activeDiscount] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
@@ -162,10 +162,28 @@ export const loader = async ({ request }) => {
     trialEndsAt: settings?.trialEndsAt || null,
     productLimitReachedAt: settings?.productLimitReachedAt || null,
     discount: activeDiscount
-      ? { percent: activeDiscount.discountPercent, note: activeDiscount.note, expiresAt: activeDiscount.expiresAt }
+      ? {
+          percent: activeDiscount.discountPercent,
+          note: activeDiscount.note,
+          expiresAt: activeDiscount.expiresAt,
+          // A discount only reduces a real charge once it is attached to a
+          // subscription. Granting one to a merchant who is already paying
+          // leaves their existing subscription untouched, so offer them a way
+          // to move onto a discounted one. Simulated subscriptions have no
+          // real charge behind them, so there is nothing to re-issue.
+          needsApply:
+            currentPlan !== "free" &&
+            subscriptionDiscountPercent !== activeDiscount.discountPercent &&
+            !isSimulatedSubscription(settings?.subscriptionId),
+        }
       : null,
   };
 };
+
+/** Plans activated in test/simulation mode never created a real Shopify charge. */
+function isSimulatedSubscription(subscriptionId) {
+  return Boolean(subscriptionId?.startsWith("sim_") || subscriptionId?.startsWith("test_"));
+}
 
 export const action = async ({ request }) => {
   const { session, billing } = await authenticate.admin(request);
@@ -178,11 +196,21 @@ export const action = async ({ request }) => {
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
   const currentPlan = normalizePlanId(settings?.planId);
 
+  // If the platform admin has granted this store an active yearly discount,
+  // apply it to the real Shopify charge — not just the price shown on this
+  // page — for the same number of billing cycles the discount is valid for.
+  const activeDiscount = await getActiveStoreDiscount(shop);
+
   if (targetPlanId === currentPlan) {
-    return {
-      success: false,
-      message: `Your store is already subscribed to the ${PLAN_TIERS[currentPlan]?.name || currentPlan} plan.`,
-    };
+    // Re-requesting the current plan is normally a no-op, but it is the only
+    // way to move an existing subscriber onto a discounted subscription.
+    const canReissueForDiscount = Boolean(activeDiscount) && targetPlanId !== "free";
+    if (!canReissueForDiscount) {
+      return {
+        success: false,
+        message: `Your store is already subscribed to the ${PLAN_TIERS[currentPlan]?.name || currentPlan} plan.`,
+      };
+    }
   }
 
   if (targetPlanId === "free") {
@@ -243,10 +271,6 @@ export const action = async ({ request }) => {
   const url = new URL(request.url);
   const returnUrl = `${url.origin}/app/plan`;
 
-  // If the platform admin has granted this store an active yearly discount,
-  // apply it to the real Shopify charge — not just the price shown on this
-  // page — for the same number of billing cycles the discount is valid for.
-  const activeDiscount = await getActiveStoreDiscount(shop);
   const lineItemOverrides = activeDiscount
     ? {
         lineItems: [
@@ -367,14 +391,32 @@ export default function Plan() {
       )}
 
       {/* ── Admin-Granted Discount Banner ──
-          Shown automatically whenever the platform admin has an active
-          discount on file for this store — no action needed on the
-          merchant's side, this just reflects what the admin set. */}
+          Shown whenever the platform admin has an active discount on file.
+          It reads differently depending on whether the discount is already
+          attached to the live subscription or still needs to be applied. */}
       {discount && (
-        <Banner tone="success" title={`🎉 ${discount.percent}% yearly discount applied`} className="rv-fade-in">
-          Your account has a special {discount.percent}% discount on paid plans, valid through{" "}
-          {new Date(discount.expiresAt).toLocaleDateString()}. Prices below already reflect it — it will
-          also be applied automatically to your Shopify subscription charge when you upgrade or renew.
+        <Banner
+          tone={discount.needsApply ? "warning" : "success"}
+          title={
+            discount.needsApply
+              ? `${discount.percent}% discount ready to apply`
+              : `🎉 ${discount.percent}% discount applied`
+          }
+          className="rv-fade-in"
+        >
+          {discount.needsApply ? (
+            <>
+              You have a special {discount.percent}% discount, valid through{" "}
+              {new Date(discount.expiresAt).toLocaleDateString()}, but your current subscription is still
+              being charged at full price. Use <strong>Apply my {discount.percent}% discount</strong> on your
+              active plan below to switch to the discounted price.
+            </>
+          ) : (
+            <>
+              Your special {discount.percent}% discount is active and reflected in the prices below, valid
+              through {new Date(discount.expiresAt).toLocaleDateString()}.
+            </>
+          )}
         </Banner>
       )}
 
@@ -567,7 +609,19 @@ export default function Plan() {
 
                 {/* Bottom Action Button */}
                 <div style={{ borderTop: "1px solid var(--rv-border-subtle)", paddingTop: "14px", marginTop: "auto" }}>
-                  {isCurrent ? (
+                  {isCurrent && discount?.needsApply && plan.id !== "free" ? (
+                    <fetcher.Form method="POST" style={{ width: "100%" }}>
+                      <input type="hidden" name="planId" value={plan.id} />
+                      <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        className="rv-btn rv-btn-primary"
+                        style={{ width: "100%", fontWeight: 700 }}
+                      >
+                        {isSubmitting ? "Applying..." : `Apply my ${discount.percent}% discount`}
+                      </button>
+                    </fetcher.Form>
+                  ) : isCurrent ? (
                     <button
                       type="button"
                       disabled

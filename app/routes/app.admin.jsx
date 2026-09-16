@@ -3,7 +3,7 @@ import { useLoaderData, useFetcher, useRouteError, redirect } from "react-router
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
-import { isPlatformAdmin, PLATFORM_ADMIN_SHOP } from "../platformAdmin.server.js";
+import { isPlatformAdmin, getSessionEmail, PLATFORM_ADMIN_SHOP } from "../platformAdmin.server.js";
 import { computeExpiry, DISCOUNT_DURATION_MONTHS } from "../storeDiscount.server.js";
 import { PLAN_TIERS } from "../billing.constants.js";
 import { normalizePlanId } from "../billing.server.js";
@@ -35,12 +35,22 @@ export const loader = async ({ request }) => {
     throw redirect("/app");
   }
 
-  const [merchants, discounts, restorePointCounts, openIncidentCounts] = await Promise.all([
+  const [settingsRows, installedShops, discounts, restorePointCounts, openIncidentCounts] = await Promise.all([
     prisma.appSettings.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.session.findMany({ distinct: ["shop"], select: { shop: true } }),
     prisma.storeDiscount.findMany(),
     prisma.restorePoint.groupBy({ by: ["shop"], _count: { _all: true } }),
     prisma.incident.groupBy({ by: ["shop"], _count: { _all: true }, where: { status: "OPEN" } }),
   ]);
+
+  // AppSettings rows are written lazily, so a store can be installed without
+  // one. Union the two lists so a freshly-installed merchant is still visible
+  // here — and therefore still grantable.
+  const settingsByShop = new Map(settingsRows.map((s) => [s.shop, s]));
+  const merchants = [
+    ...settingsRows,
+    ...installedShops.filter((s) => !settingsByShop.has(s.shop)).map((s) => ({ shop: s.shop })),
+  ];
 
   const discountByShop = new Map(discounts.map((d) => [d.shop, d]));
   const restoreCountByShop = new Map(restorePointCounts.map((r) => [r.shop, r._count._all]));
@@ -53,13 +63,13 @@ export const loader = async ({ request }) => {
     return {
       shop: m.shop,
       planId: normalizePlanId(m.planId),
-      hasUsedTrial: m.hasUsedTrial,
-      trialEndsAt: m.trialEndsAt,
-      monitoringEnabled: m.monitoringEnabled,
-      circuitBreakerEnabled: m.circuitBreakerEnabled,
-      alertEmail: m.alertEmail,
-      lastAutoBackupAt: m.lastAutoBackupAt,
-      createdAt: m.createdAt,
+      hasUsedTrial: Boolean(m.hasUsedTrial),
+      trialEndsAt: m.trialEndsAt ?? null,
+      monitoringEnabled: Boolean(m.monitoringEnabled),
+      circuitBreakerEnabled: Boolean(m.circuitBreakerEnabled),
+      alertEmail: m.alertEmail ?? null,
+      lastAutoBackupAt: m.lastAutoBackupAt ?? null,
+      firstSeenAt: m.createdAt ?? null,
       restorePointCount: restoreCountByShop.get(m.shop) || 0,
       openIncidentCount: incidentCountByShop.get(m.shop) || 0,
       discount: discount
@@ -91,24 +101,32 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
   const targetShop = String(formData.get("targetShop") || "").trim().toLowerCase();
-  const adminEmail = (session.email || "").trim().toLowerCase();
+  const adminEmail = getSessionEmail(session);
 
   if (!targetShop) {
     return { success: false, message: "Choose a merchant store first." };
   }
 
-  const merchant = await prisma.appSettings.findUnique({ where: { shop: targetShop } });
-  if (!merchant) {
+  // Mirrors the loader's union: a store with a live session but no settings
+  // row yet is still a real merchant.
+  const [merchantSettings, merchantSession] = await Promise.all([
+    prisma.appSettings.findUnique({ where: { shop: targetShop } }),
+    prisma.session.findFirst({ where: { shop: targetShop }, select: { id: true } }),
+  ]);
+  if (!merchantSettings && !merchantSession) {
     return { success: false, message: `"${targetShop}" is not a known merchant store.` };
   }
 
   if (intent === "setDiscount") {
-    const rawPercent = formData.get("discountPercent");
-    const percent = parseInt(String(rawPercent ?? "").trim(), 10);
-    if (!Number.isFinite(percent) || percent < 1 || percent > 100) {
+    // Strict: parseInt would quietly accept "50abc", "50.9" and "1e9".
+    const rawPercent = String(formData.get("discountPercent") ?? "").trim();
+    const percent = /^\d{1,3}$/.test(rawPercent) ? Number(rawPercent) : NaN;
+    if (!Number.isInteger(percent) || percent < 1 || percent > 100) {
       return { success: false, message: "Discount must be a whole number percentage between 1 and 100." };
     }
-    const note = String(formData.get("note") || "").trim().slice(0, 500) || null;
+    // Truncate by code point: slicing UTF-16 units can split an emoji's
+    // surrogate pair, which MySQL rejects outright.
+    const note = Array.from(String(formData.get("note") || "").trim()).slice(0, 500).join("") || null;
     const expiresAt = computeExpiry();
 
     const existing = await prisma.storeDiscount.findUnique({ where: { shop: targetShop } });
@@ -152,8 +170,8 @@ export const action = async ({ request }) => {
 
   if (intent === "removeDiscount") {
     const existing = await prisma.storeDiscount.findUnique({ where: { shop: targetShop } });
-    if (!existing) {
-      return { success: false, message: `${targetShop} has no discount to remove.` };
+    if (!existing || !existing.isActive) {
+      return { success: false, message: `${targetShop} has no active discount to remove.` };
     }
 
     // Soft-disable rather than delete, so the grant/removal history survives
@@ -250,7 +268,7 @@ export default function AdminPanel() {
                       <th>Discount</th>
                       <th>Backups</th>
                       <th>Open Incidents</th>
-                      <th>Installed</th>
+                      <th>First seen</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
@@ -286,7 +304,7 @@ export default function AdminPanel() {
                               <span className="rv-badge rv-badge-neutral">0</span>
                             )}
                           </td>
-                          <td>{formatDate(row.createdAt)}</td>
+                          <td>{formatDate(row.firstSeenAt)}</td>
                           <td>
                             <div style={{ display: "flex", gap: "8px" }}>
                               <button
@@ -304,7 +322,7 @@ export default function AdminPanel() {
                                   <button
                                     type="submit"
                                     disabled={busy}
-                                    className="rv-btn rv-btn-danger rv-btn-sm"
+                                    className="rv-btn rv-btn-critical rv-btn-sm"
                                     onClick={(e) => {
                                       if (!window.confirm(`Remove the ${row.discount.percent}% discount for ${row.shop}?`)) {
                                         e.preventDefault();
@@ -402,7 +420,11 @@ export default function AdminPanel() {
             <ul style={{ margin: 0, paddingLeft: "18px" }}>
               <li>A discount is always granted for {durationMonths} months from the moment you set or update it.</li>
               <li>The merchant sees it immediately on their own Plans &amp; Billing page — no separate sync step.</li>
-              <li>If they upgrade or renew while it&apos;s active, the discount is applied to the real Shopify subscription charge for {durationMonths} billing cycles.</li>
+              <li>It reaches the real Shopify charge only when they start or switch to a paid plan, and then lasts {durationMonths} billing cycles.</li>
+              <li>
+                A merchant already on a paid plan keeps paying their current price until they change plan —
+                granting a discount does not alter a subscription that already exists.
+              </li>
               <li>Removing a discount here disables it immediately; it does not retroactively change a subscription that already applied it.</li>
             </ul>
           </div>

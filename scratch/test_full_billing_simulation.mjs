@@ -1197,9 +1197,9 @@ async function testUiValidation() {
   const responsiveGrid =
     css.includes(".rv-plan-grid") &&
     css.includes("repeat(5, minmax(0, 1fr))") &&
-    css.includes("@media (max-width: 1280px)") &&
-    css.includes("@media (max-width: 768px)") &&
-    css.includes("@media (max-width: 520px)");
+    css.includes("@media (max-width: 1320px)") &&
+    css.includes("@media (max-width: 860px)") &&
+    css.includes("@media (max-width: 560px)");
 
   if (responsiveGrid) {
     recordTest("UI: Responsive CSS grid layout (5 cols -> 3 -> 2 -> 1)", "UI Validation", "Grid scales cleanly across desktop, tablet, and mobile", "Responsive breakpoints verified", "PASS");

@@ -3,16 +3,16 @@
  *
  * This app is per-merchant (Shopify authenticates a *store*, not a person),
  * so "platform admin" is not a role in the TeamMember roster — that roster is
- * scoped to a single shop's own staff. The admin panel instead grants access
- * only when BOTH of these match the authenticated session:
+ * scoped to a single shop's own staff. Access is granted only to a session
+ * authenticated against the designated operator store.
  *
- *   1. the shop is the designated admin/operator store, AND
- *   2. the logged-in staff member's email is on the admin allow-list.
- *
- * Requiring both means a malicious or compromised staff account on some other
- * merchant's store — even one that happens to reuse the admin's email as a
- * store contact address — can never see this panel; only a real login to the
- * operator's own store, by that person, qualifies.
+ * On top of that, when the session actually identifies a *person*, that person
+ * must also be on the admin allow-list. Only online-token sessions carry a
+ * user; this app requests offline tokens (no `useOnlineTokens`), so in practice
+ * the store check is the operative gate today. It is not a weak one: passing it
+ * requires a real authenticated admin session for the operator's own store.
+ * The email check is kept so that turning on online tokens tightens the gate
+ * automatically rather than silently doing nothing.
  *
  * Configurable via env so this doesn't need a code change to rotate/extend
  * admin access; defaults match the operator's current identity.
@@ -39,10 +39,21 @@ export const PLATFORM_ADMIN_EMAILS = new Set(
     .filter(Boolean),
 );
 
-/** True only for the operator's own store, logged in as an allow-listed email. */
+/**
+ * The staff member's email, for sessions that identify one. Shopify exposes it
+ * under `onlineAccessInfo.associated_user` — there is no `session.email` — and
+ * offline sessions carry no user at all, so this is often empty.
+ */
+export function getSessionEmail(session) {
+  const email = session?.onlineAccessInfo?.associated_user?.email ?? session?.email ?? "";
+  return String(email).trim().toLowerCase();
+}
+
+/** True only for an authenticated session on the operator's own store. */
 export function isPlatformAdmin(shop, session) {
-  const normalizedShop = normalizeShop(shop);
-  const email = (session?.email || "").trim().toLowerCase();
-  if (!email) return false;
-  return normalizedShop === PLATFORM_ADMIN_SHOP && PLATFORM_ADMIN_EMAILS.has(email);
+  if (!session) return false;
+  if (normalizeShop(shop) !== PLATFORM_ADMIN_SHOP) return false;
+
+  const email = getSessionEmail(session);
+  return email ? PLATFORM_ADMIN_EMAILS.has(email) : true;
 }

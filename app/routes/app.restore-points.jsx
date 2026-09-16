@@ -28,9 +28,27 @@ export const loader = async ({ request }) => {
   const shop = session.shop;
 
   const [restorePoints, limitInfo, themeAccess, settings] = await Promise.all([
+    // Select only what the list renders. Fetching the row wholesale drags in
+    // eight JSON payload columns (full catalog/theme snapshots, megabytes
+    // each); MySQL then has to carry them through the ORDER BY filesort and
+    // fails with "Out of sort memory" once a store has real backups.
     prisma.restorePoint.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        status: true,
+        productCount: true,
+        themeCount: true,
+        collectionCount: true,
+        pageCount: true,
+        articleCount: true,
+        cloudSyncStatus: true,
+        cloudProvider: true,
+        createdAt: true,
+      },
     }),
     checkRestorePointLimit(shop),
     checkFeatureAccess(shop, "themes"),
@@ -122,7 +140,10 @@ export const action = async ({ request }) => {
       if (!rpId || isNaN(rpId)) {
         return { success: false, message: "Invalid restore point ID." };
       }
-      const rp = await prisma.restorePoint.findFirst({ where: { id: rpId, shop } });
+      const rp = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+        select: { id: true, name: true },
+      });
       if (!rp) {
         return { success: false, message: "Restore point not found or access denied." };
       }

@@ -94,6 +94,7 @@ export function getPlanLimits(planId) {
  */
 export async function getStorePlan(shop, billing = null, isTest = true) {
   let activeShopifyPlan = null;
+  let subscriptionDiscountPercent = null;
 
   if (billing) {
     try {
@@ -113,6 +114,8 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
         else if (subName === PLAN_GROWTH || subName === PLAN_PRO) activeShopifyPlan = "growth";
         else if (subName === PLAN_BUSINESS) activeShopifyPlan = "business";
         else if (subName === PLAN_ENTERPRISE) activeShopifyPlan = "enterprise";
+
+        subscriptionDiscountPercent = readSubscriptionDiscountPercent(activeSub);
       }
     } catch (err) {
       console.warn("[Revertly Billing] Shopify billing check warning:", err?.message || err);
@@ -147,7 +150,28 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
   return {
     currentPlan,
     limits: getPlanLimits(currentPlan),
+    subscriptionDiscountPercent,
   };
+}
+
+/**
+ * The percentage discount actually attached to a live Shopify subscription,
+ * or null. Used to tell an admin-granted discount that is merely *on file*
+ * apart from one that is really reducing the merchant's charge.
+ */
+function readSubscriptionDiscountPercent(subscription) {
+  for (const lineItem of subscription?.lineItems || []) {
+    const discount = lineItem?.plan?.pricingDetails?.discount;
+    const percentage = discount?.value?.percentage;
+    if (!percentage) continue;
+
+    // A discount that has run out its term is no longer reducing anything.
+    const remaining = discount.remainingDurationInIntervals;
+    if (remaining !== null && remaining !== undefined && remaining <= 0) continue;
+
+    return Math.round(percentage * 100);
+  }
+  return null;
 }
 
 /**
