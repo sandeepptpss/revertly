@@ -252,6 +252,9 @@ export default function Dashboard() {
                 <SaveIcon size={15} />
                 <span>+ Create Restore Point</span>
               </Link>
+              <Link to="/app/import-export" className="rv-btn rv-btn-secondary">
+                <span>Import &amp; Export</span>
+              </Link>
               <Link to="/app/vault" className="rv-btn rv-btn-secondary">
                 <DatabaseIcon size={15} />
                 <span>Data Vault</span>

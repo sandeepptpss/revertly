@@ -342,6 +342,90 @@ export const action = async ({ request, params }) => {
       return res;
     }
 
+    if (intent === "restore_all_collections") {
+      const restorePoint = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+      });
+      const cols = Array.isArray(restorePoint?.collectionData) ? restorePoint.collectionData : [];
+      if (cols.length === 0) return { success: false, message: "No collections found in snapshot." };
+      let successCount = 0;
+      let failedCount = 0;
+      for (const target of cols) {
+        const res = await restoreCollection(admin, target);
+        if (res.success) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      }
+      await logAudit(shop, restorePerm.actor, "COLLECTIONS_BULK_RESTORED", {
+        resourceType: "Collection",
+        resourceId: String(rpId),
+        details: { total: cols.length, successCount, failedCount },
+        request,
+      });
+      return {
+        success: successCount > 0,
+        message: `Restored ${successCount} collections successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
+      };
+    }
+
+    if (intent === "restore_all_pages") {
+      const restorePoint = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+      });
+      const pages = Array.isArray(restorePoint?.pageData) ? restorePoint.pageData : [];
+      if (pages.length === 0) return { success: false, message: "No pages found in snapshot." };
+      let successCount = 0;
+      let failedCount = 0;
+      for (const target of pages) {
+        const res = await restorePage(admin, target);
+        if (res.success) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      }
+      await logAudit(shop, restorePerm.actor, "PAGES_BULK_RESTORED", {
+        resourceType: "Page",
+        resourceId: String(rpId),
+        details: { total: pages.length, successCount, failedCount },
+        request,
+      });
+      return {
+        success: successCount > 0,
+        message: `Restored ${successCount} pages successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
+      };
+    }
+
+    if (intent === "restore_all_articles") {
+      const restorePoint = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+      });
+      const articles = restorePoint?.articleData?.articles || [];
+      if (articles.length === 0) return { success: false, message: "No articles found in snapshot." };
+      let successCount = 0;
+      let failedCount = 0;
+      for (const target of articles) {
+        const res = await restoreArticle(admin, target);
+        if (res?.success) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      }
+      await logAudit(shop, restorePerm.actor, "ARTICLES_BULK_RESTORED", {
+        resourceType: "Article",
+        resourceId: String(rpId),
+        details: { total: articles.length, successCount, failedCount },
+        request,
+      });
+      return {
+        success: successCount > 0,
+        message: `Restored ${successCount} articles successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
+      };
+    }
+
     if (
       intent !== "restore" &&
       intent !== "restore_single_product" &&
@@ -584,14 +668,25 @@ export default function RestorePointDetail() {
   }, [result, isRestoring]);
 
   const [activeTab, setActiveTab] = useState(() => {
+    const type = restorePoint.backupType;
+    if (type === "THEMES" && themeData?.activeTheme) return "theme";
+    if (type === "COLLECTIONS" && collectionData.length > 0) return "collections";
+    if (type === "PAGES" && pageData.length > 0) return "pages";
+    if (type === "BLOGS" && (articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)) return "articles";
     if (differences.length > 0) return "products";
     if (themeData?.activeTheme) return "theme";
+    if (savedCount > 0) return "products";
+    if (collectionData.length > 0) return "collections";
+    if (pageData.length > 0) return "pages";
+    if (articleData?.articles?.length > 0) return "articles";
     return "products";
   });
 
   const tabs = [
     ...(themeData?.activeTheme ? [{ id: "theme", label: "Theme Code", count: filesList.length }] : []),
-    { id: "products", label: "Products", count: differences.length },
+    ...((savedCount > 0 || differences.length > 0 || ["FULL", "PRODUCTS"].includes(restorePoint.backupType) || (!themeData?.activeTheme && collectionData.length === 0 && pageData.length === 0 && (!articleData?.articles || articleData.articles.length === 0)))
+      ? [{ id: "products", label: "Products", count: differences.length }]
+      : []),
     ...(collectionData.length > 0 ? [{ id: "collections", label: "Collections", count: collectionData.length }] : []),
     ...(pageData.length > 0 ? [{ id: "pages", label: "Pages & Menus", count: pageData.length }] : []),
     ...((articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)
@@ -1080,7 +1175,13 @@ export default function RestorePointDetail() {
             </div>
           )}
 
-          {differences.length === 0 ? (
+          {savedCount === 0 ? (
+            <EmptyState
+              icon={<BoxIcon size={28} style={{ color: "var(--rv-text-subdued)" }} />}
+              title="No Products Captured in this Restore Point"
+              description={`This snapshot was captured as a dedicated ${restorePoint.backupType || "Resource"} backup and does not include product catalog snapshots.`}
+            />
+          ) : differences.length === 0 ? (
             <EmptyState
               icon={<CheckCircleIcon size={28} style={{ color: "var(--rv-primary)" }} />}
               title="100% In Sync with Restore Point"
@@ -1198,10 +1299,34 @@ export default function RestorePointDetail() {
       {/* ── Collections Backup Section ── */}
       {activeTab === "collections" && collectionData.length > 0 && (
         <div className="rv-card">
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>Protected Collections ({collectionData.length})</span>
-            </h3>
+          <div className="rv-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+            <div>
+              <h3 className="rv-card-title">
+                <span>Protected Smart Collections ({collectionData.length})</span>
+              </h3>
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                Rule-based smart collections and rule sets preserved in this snapshot.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isRestoring}
+              onClick={() => {
+                setConfirmDialog({
+                  title: `Restore All ${collectionData.length} Collections`,
+                  message: `Are you sure you want to restore all ${collectionData.length} smart collections to their snapshot state in Shopify?`,
+                  dangerNote: "Existing collections will be updated or recreated if missing.",
+                  confirmLabel: `Restore All (${collectionData.length}) Collections`,
+                  tone: "primary",
+                  onConfirm: () => {
+                    fetcher.submit({ intent: "restore_all_collections" }, { method: "POST" });
+                  },
+                });
+              }}
+              className="rv-btn rv-btn-primary rv-btn-md"
+            >
+              <span>{isRestoring && fetcher.formData?.get("intent") === "restore_all_collections" ? "Restoring All..." : `Restore All (${collectionData.length}) Collections`}</span>
+            </button>
           </div>
           <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
             <table className="rv-table">
@@ -1255,10 +1380,34 @@ export default function RestorePointDetail() {
       {/* ── Pages Backup Section ── */}
       {activeTab === "pages" && pageData.length > 0 && (
         <div className="rv-card">
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>Protected Content Pages ({pageData.length})</span>
-            </h3>
+          <div className="rv-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+            <div>
+              <h3 className="rv-card-title">
+                <span>Protected Content Pages ({pageData.length})</span>
+              </h3>
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                Pages, handles, and content preserved in this snapshot.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isRestoring}
+              onClick={() => {
+                setConfirmDialog({
+                  title: `Restore All ${pageData.length} Pages`,
+                  message: `Are you sure you want to restore all ${pageData.length} pages to their snapshot state in Shopify?`,
+                  dangerNote: "Page content and metadata will be updated in Shopify.",
+                  confirmLabel: `Restore All (${pageData.length}) Pages`,
+                  tone: "primary",
+                  onConfirm: () => {
+                    fetcher.submit({ intent: "restore_all_pages" }, { method: "POST" });
+                  },
+                });
+              }}
+              className="rv-btn rv-btn-primary rv-btn-md"
+            >
+              <span>{isRestoring && fetcher.formData?.get("intent") === "restore_all_pages" ? "Restoring All..." : `Restore All (${pageData.length}) Pages`}</span>
+            </button>
           </div>
           <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
             <table className="rv-table">
@@ -1306,10 +1455,36 @@ export default function RestorePointDetail() {
       {/* ── Blogs & Articles Backup Section ── */}
       {activeTab === "articles" && (
         <div className="rv-card">
-          <div className="rv-card-header">
-            <h3 className="rv-card-title">
-              <span>Protected Blog Articles ({articleData?.articles?.length || 0})</span>
-            </h3>
+          <div className="rv-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+            <div>
+              <h3 className="rv-card-title">
+                <span>Protected Blog Articles ({articleData?.articles?.length || 0})</span>
+              </h3>
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                Blog articles and published content preserved in this snapshot.
+              </p>
+            </div>
+            {articleData?.articles?.length > 0 && (
+              <button
+                type="button"
+                disabled={isRestoring}
+                onClick={() => {
+                  setConfirmDialog({
+                    title: `Restore All ${articleData.articles.length} Articles`,
+                    message: `Are you sure you want to restore all ${articleData.articles.length} blog articles to their snapshot state in Shopify?`,
+                    dangerNote: "Article titles, body HTML, and publish status will be updated.",
+                    confirmLabel: `Restore All (${articleData.articles.length}) Articles`,
+                    tone: "primary",
+                    onConfirm: () => {
+                      fetcher.submit({ intent: "restore_all_articles" }, { method: "POST" });
+                    },
+                  });
+                }}
+                className="rv-btn rv-btn-primary rv-btn-md"
+              >
+                <span>{isRestoring && fetcher.formData?.get("intent") === "restore_all_articles" ? "Restoring All..." : `Restore All (${articleData.articles.length}) Articles`}</span>
+              </button>
+            )}
           </div>
           {(!articleData?.articles || articleData.articles.length === 0) ? (
             <EmptyState

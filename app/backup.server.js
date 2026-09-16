@@ -11,12 +11,12 @@ import prisma from "./db.server.js";
 /**
  * Fetches all themes and backs up the active (MAIN) theme's metadata and critical files.
  */
-export async function fetchThemeBackup(admin) {
+export async function fetchThemeBackup(admin, targetThemeId = null) {
   try {
     const themeRes = await admin.graphql(
       `#graphql
       query getThemes {
-        themes(first: 10) {
+        themes(first: 25) {
           nodes {
             id
             name
@@ -29,7 +29,14 @@ export async function fetchThemeBackup(admin) {
     );
     const themeJson = await themeRes.json();
     const themes = themeJson.data?.themes?.nodes || [];
-    const mainTheme = themes.find((t) => t.role === "MAIN") || themes[0];
+
+    let mainTheme = null;
+    if (targetThemeId) {
+      mainTheme = themes.find((t) => t.id === targetThemeId || t.id.endsWith(`/${targetThemeId}`) || t.id === `gid://shopify/Theme/${targetThemeId}`);
+    }
+    if (!mainTheme) {
+      mainTheme = themes.find((t) => t.role === "MAIN") || themes[0];
+    }
 
     if (!mainTheme) {
       return { themes: [], activeTheme: null, files: [] };
@@ -568,6 +575,115 @@ export async function restoreThemeFilesWithSafety({
 }
 
 // ============================================================================
+// 1B. LIVE PRODUCTS BACKUP & CATALOG SYNC
+// ============================================================================
+
+/**
+ * Fetches live products, variants, pricing, inventory, and metafields directly from Shopify Admin.
+ * If shop is provided, updates productSnapshot baseline table automatically.
+ */
+export async function fetchLiveProductsBackup(admin, shop = null) {
+  try {
+    const allProducts = [];
+    let hasNextPage = true;
+    let cursor = null;
+
+    while (hasNextPage) {
+      const query = `#graphql
+        query getProductsForBackup($cursor: String) {
+          products(first: 50, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              title
+              status
+              vendor
+              productType
+              tags
+              handle
+              bodyHtml
+              publishedAt
+              metafields(first: 50) {
+                nodes { id namespace key value type }
+              }
+              variants(first: 100) {
+                nodes {
+                  id title price compareAtPrice sku inventoryQuantity barcode
+                }
+              }
+            }
+          }
+        }`;
+
+      const resp = await admin.graphql(query, { variables: { cursor } });
+      const json = await resp.json();
+      const productsData = json.data?.products;
+      if (!productsData) break;
+
+      const items = productsData.nodes || [];
+      for (const p of items) {
+        const numericId = String(p.id).replace("gid://shopify/Product/", "");
+        const rawVariants = p.variants?.nodes || [];
+        const rawMetafields = p.metafields?.nodes || [];
+        const snap = {
+          id: p.id,
+          title: p.title,
+          status: p.status,
+          vendor: p.vendor,
+          productType: p.productType,
+          tags: p.tags,
+          handle: p.handle,
+          bodyHtml: p.bodyHtml,
+          variants: rawVariants,
+          metafields: rawMetafields,
+        };
+
+        if (shop) {
+          try {
+            await prisma.productSnapshot.upsert({
+              where: { shop_productId: { shop, productId: numericId } },
+              create: {
+                shop,
+                productId: numericId,
+                title: p.title || "",
+                status: p.status || "ACTIVE",
+                vendor: p.vendor || "",
+                productType: p.productType || "",
+                tags: Array.isArray(p.tags) ? p.tags.join(", ") : p.tags || "",
+                handle: p.handle || "",
+                snapshotData: snap,
+              },
+              update: {
+                title: p.title || "",
+                status: p.status || "ACTIVE",
+                snapshotData: snap,
+              },
+            });
+          } catch (e) {
+            // ignore individual upsert errors
+          }
+        }
+
+        allProducts.push({
+          productId: numericId,
+          title: p.title,
+          snapshotData: snap,
+        });
+      }
+
+      hasNextPage = productsData.pageInfo?.hasNextPage || false;
+      cursor = productsData.pageInfo?.endCursor || null;
+      if (allProducts.length >= 250) break;
+    }
+
+    return allProducts;
+  } catch (err) {
+    console.warn("fetchLiveProductsBackup error:", err?.message || err);
+    return [];
+  }
+}
+
+// ============================================================================
 // 2. COLLECTIONS BACKUP & RESTORE
 // ============================================================================
 
@@ -607,9 +723,13 @@ export async function fetchCollectionsBackup(admin) {
 }
 
 /**
- * Restores or recreates a collection from snapshot
+ * Restores or recreates a collection from snapshot (tries update first if ID exists, then recreates)
  */
 export async function restoreCollection(admin, col) {
+  if (!col || !col.title) {
+    return { success: false, message: "Invalid collection data." };
+  }
+
   try {
     const input = {
       title: col.title,
@@ -629,6 +749,37 @@ export async function restoreCollection(admin, col) {
       };
     }
 
+    // 1. Try updating collection in-place if ID exists
+    if (col.id) {
+      try {
+        const updateRes = await admin.graphql(
+          `#graphql
+          mutation collectionUpdate($input: CollectionInput!) {
+            collectionUpdate(input: $input) {
+              collection {
+                id
+                title
+                handle
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }`,
+          { variables: { input: { id: col.id, ...input } } }
+        );
+        const updateJson = await updateRes.json();
+        const updateErrors = updateJson.data?.collectionUpdate?.userErrors || [];
+        if (updateErrors.length === 0 && updateJson.data?.collectionUpdate?.collection?.id) {
+          return { success: true, mode: "updated", collection: updateJson.data.collectionUpdate.collection };
+        }
+      } catch (updateErr) {
+        // Fallback to recreate if collection was deleted
+      }
+    }
+
+    // 2. Recreate collection if update not possible or deleted
     const res = await admin.graphql(
       `#graphql
       mutation collectionCreate($input: CollectionInput!) {
@@ -652,7 +803,7 @@ export async function restoreCollection(admin, col) {
     if (userErrors.length > 0) {
       return { success: false, message: userErrors.map((e) => e.message).join(", ") };
     }
-    return { success: true, collection: json.data?.collectionCreate?.collection };
+    return { success: true, mode: "created", collection: json.data?.collectionCreate?.collection };
   } catch (err) {
     console.error("restoreCollection error:", err?.message || err);
     return { success: false, message: err?.message || "Failed to restore collection." };
@@ -691,10 +842,52 @@ export async function fetchPagesBackup(admin) {
 }
 
 /**
- * Restores/recreates a deleted content page
+ * Restores/recreates a deleted or modified content page (tries update first if ID exists, then recreates)
  */
 export async function restorePage(admin, p) {
+  if (!p || !p.title) {
+    return { success: false, message: "Invalid page data." };
+  }
+
   try {
+    const pageInput = {
+      title: p.title,
+      handle: p.handle,
+      body: p.body || p.bodyHtml || "",
+      isPublished: p.isPublished ?? true,
+    };
+
+    // 1. Try updating page in-place if ID exists
+    if (p.id) {
+      try {
+        const updateRes = await admin.graphql(
+          `#graphql
+          mutation pageUpdate($id: ID!, $page: PageUpdateInput!) {
+            pageUpdate(id: $id, page: $page) {
+              page {
+                id
+                title
+                handle
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }`,
+          { variables: { id: p.id, page: pageInput } }
+        );
+        const updateJson = await updateRes.json();
+        const updateErrors = updateJson.data?.pageUpdate?.userErrors || [];
+        if (updateErrors.length === 0 && updateJson.data?.pageUpdate?.page?.id) {
+          return { success: true, mode: "updated", page: updateJson.data.pageUpdate.page };
+        }
+      } catch (updateErr) {
+        // Fallback to recreate if page was deleted
+      }
+    }
+
+    // 2. Recreate page if update not possible or deleted
     const res = await admin.graphql(
       `#graphql
       mutation pageCreate($page: PageCreateInput!) {
@@ -712,12 +905,7 @@ export async function restorePage(admin, p) {
       }`,
       {
         variables: {
-          page: {
-            title: p.title,
-            handle: p.handle,
-            body: p.body || "",
-            isPublished: p.isPublished ?? true,
-          },
+          page: pageInput,
         },
       }
     );
@@ -726,7 +914,7 @@ export async function restorePage(admin, p) {
     if (userErrors.length > 0) {
       return { success: false, message: userErrors.map((e) => e.message).join(", ") };
     }
-    return { success: true, page: json.data?.pageCreate?.page };
+    return { success: true, mode: "created", page: json.data?.pageCreate?.page };
   } catch (err) {
     console.error("restorePage error:", err?.message || err);
     return { success: false, message: err?.message || "Failed to restore page." };
@@ -1035,6 +1223,8 @@ export async function createMultiResourceRestorePoint({
   shop,
   name,
   description = "",
+  backupType: explicitBackupType = null,
+  themeId = null,
   options = {
     includeProducts: true,
     includeThemes: true,
@@ -1048,6 +1238,22 @@ export async function createMultiResourceRestorePoint({
     (name && String(name).trim()) ||
     `Manual Snapshot - ${new Date().toISOString().slice(0, 19).replace("T", " ")}`;
 
+  // Determine primary backup type
+  let backupType = explicitBackupType || "FULL";
+  if (!explicitBackupType) {
+    if (options.includeThemes && !options.includeProducts && !options.includeCollections && !options.includePages && !options.includeArticles) {
+      backupType = "THEMES";
+    } else if (options.includeProducts && !options.includeThemes && !options.includeCollections && !options.includePages && !options.includeArticles) {
+      backupType = "PRODUCTS";
+    } else if (options.includeCollections && !options.includeProducts && !options.includeThemes && !options.includePages && !options.includeArticles) {
+      backupType = "COLLECTIONS";
+    } else if (options.includePages && !options.includeProducts && !options.includeThemes && !options.includeCollections && !options.includeArticles) {
+      backupType = "PAGES";
+    } else if (options.includeArticles && !options.includeProducts && !options.includeThemes && !options.includeCollections && !options.includePages) {
+      backupType = "BLOGS";
+    }
+  }
+
   // 1. Create the pending restore point
   const rp = await prisma.restorePoint.create({
     data: {
@@ -1055,7 +1261,7 @@ export async function createMultiResourceRestorePoint({
       name: safeName,
       description,
       status: "CREATING",
-      backupType: "FULL",
+      backupType,
     },
   });
 
@@ -1063,13 +1269,19 @@ export async function createMultiResourceRestorePoint({
     // 2. Concurrently fetch all requested resources using Promise.allSettled
     const tasks = [];
 
-    // Task 0: Products (from local snapshot baseline)
+    // Task 0: Products (from local snapshot baseline or fetch live from Shopify if empty)
     if (options.includeProducts !== false) {
       tasks.push(
-        prisma.productSnapshot.findMany({
-          where: { shop },
-          select: { productId: true, snapshotData: true, title: true },
-        })
+        (async () => {
+          let prods = await prisma.productSnapshot.findMany({
+            where: { shop },
+            select: { productId: true, snapshotData: true, title: true },
+          });
+          if (prods.length === 0 && admin) {
+            prods = await fetchLiveProductsBackup(admin, shop);
+          }
+          return prods;
+        })()
       );
     } else {
       tasks.push(Promise.resolve([]));
@@ -1077,7 +1289,7 @@ export async function createMultiResourceRestorePoint({
 
     // Task 1: Theme & Assets
     if (options.includeThemes !== false) {
-      tasks.push(fetchThemeBackup(admin));
+      tasks.push(fetchThemeBackup(admin, themeId));
     } else {
       tasks.push(Promise.resolve(null));
     }
@@ -1125,12 +1337,6 @@ export async function createMultiResourceRestorePoint({
     const menuCount = Array.isArray(menus) ? menus.length : 0;
     const articleCount = Array.isArray(articleData?.articles) ? articleData.articles.length : 0;
 
-    // Determine primary backup type
-    let backupType = "FULL";
-    if (options.includeThemes && !options.includeProducts) backupType = "THEMES";
-    else if (options.includeCollections && !options.includeProducts) backupType = "COLLECTIONS";
-    else if (options.includeProducts && !options.includeThemes && !options.includeCollections) backupType = "PRODUCTS";
-
     // 3. Update RestorePoint to READY status
     const updated = await prisma.restorePoint.update({
       where: { id: rp.id },
@@ -1162,6 +1368,7 @@ export async function createMultiResourceRestorePoint({
         pages: pageCount,
         menus: menuCount,
         articles: articleCount,
+        backupType,
       },
     };
   } catch (err) {
@@ -1172,6 +1379,117 @@ export async function createMultiResourceRestorePoint({
     });
     return { success: false, message: err?.message || "Failed to create restore point." };
   }
+}
+
+/**
+ * Dedicated 1-Click Full Theme Backup (Active theme or specific theme by ID)
+ */
+export async function backupTheme({ admin, shop, themeId = null, name = null, description = "" }) {
+  const defaultName = `Theme Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return createMultiResourceRestorePoint({
+    admin,
+    shop,
+    name: name || defaultName,
+    description: description || "Dedicated snapshot of theme templates, config, layouts, and liquid files.",
+    backupType: "THEMES",
+    themeId,
+    options: {
+      includeProducts: false,
+      includeThemes: true,
+      includeCollections: false,
+      includePages: false,
+      includeMenus: false,
+      includeArticles: false,
+    },
+  });
+}
+
+/**
+ * Dedicated 1-Click Product Catalog Backup
+ */
+export async function backupProducts({ admin, shop, name = null, description = "" }) {
+  const defaultName = `Product Catalog Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return createMultiResourceRestorePoint({
+    admin,
+    shop,
+    name: name || defaultName,
+    description: description || "Dedicated snapshot of all store products, variants, pricing, and metafields.",
+    backupType: "PRODUCTS",
+    options: {
+      includeProducts: true,
+      includeThemes: false,
+      includeCollections: false,
+      includePages: false,
+      includeMenus: false,
+      includeArticles: false,
+    },
+  });
+}
+
+/**
+ * Dedicated 1-Click Collection Backup (Smart Rules & Custom Lists)
+ */
+export async function backupCollections({ admin, shop, name = null, description = "" }) {
+  const defaultName = `Collections Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return createMultiResourceRestorePoint({
+    admin,
+    shop,
+    name: name || defaultName,
+    description: description || "Dedicated snapshot of automated collection ruleSets and custom product collections.",
+    backupType: "COLLECTIONS",
+    options: {
+      includeProducts: false,
+      includeThemes: false,
+      includeCollections: true,
+      includePages: false,
+      includeMenus: false,
+      includeArticles: false,
+    },
+  });
+}
+
+/**
+ * Dedicated 1-Click Page & Menu Backup
+ */
+export async function backupPages({ admin, shop, name = null, description = "" }) {
+  const defaultName = `Pages & Menus Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return createMultiResourceRestorePoint({
+    admin,
+    shop,
+    name: name || defaultName,
+    description: description || "Dedicated snapshot of store pages, landing policies, and navigation menus.",
+    backupType: "PAGES",
+    options: {
+      includeProducts: false,
+      includeThemes: false,
+      includeCollections: false,
+      includePages: true,
+      includeMenus: true,
+      includeArticles: false,
+    },
+  });
+}
+
+/**
+ * Dedicated 1-Click Blog & Article Backup
+ */
+export async function backupBlogs({ admin, shop, name = null, description = "" }) {
+  const defaultName = `Blogs & Articles Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return createMultiResourceRestorePoint({
+    admin,
+    shop,
+    name: name || defaultName,
+    description: description || "Dedicated snapshot of all blog posts, authors, tags, and articles.",
+    backupType: "BLOGS",
+    options: {
+      includeProducts: false,
+      includeThemes: false,
+      includeCollections: false,
+      includePages: false,
+      includeMenus: false,
+      includeArticles: true,
+    },
+  });
 }
 
 // ============================================================================
@@ -1428,3 +1746,284 @@ export function generateOrdersCsv(orders = []) {
     [headers.map((h) => `"${h}"`).join(","), ...rows.map((r) => r.join(","))].join("\r\n")
   );
 }
+
+/**
+ * Generates a clean, compliant CSV of products for merchant exports & spreadsheet viewing
+ */
+export function generateProductsCsv(products = []) {
+  const headers = [
+    "Product ID",
+    "Title",
+    "Handle",
+    "Status",
+    "Vendor",
+    "Product Type",
+    "Tags",
+    "Variants Count",
+    "Price Min",
+    "Price Max",
+    "Updated At",
+  ];
+
+  const rows = products.map((p) => {
+    const raw = p.snapshotData || p;
+    const variants = raw.variants || [];
+    const prices = variants.map((v) => parseFloat(v.price) || 0);
+    const minPrice = prices.length > 0 ? Math.min(...prices).toFixed(2) : "0.00";
+    const maxPrice = prices.length > 0 ? Math.max(...prices).toFixed(2) : "0.00";
+
+    return [
+      p.productId || raw.id || "",
+      raw.title || p.title || "",
+      raw.handle || "",
+      raw.status || "ACTIVE",
+      raw.vendor || "",
+      raw.productType || "",
+      Array.isArray(raw.tags) ? raw.tags.join(", ") : raw.tags || "",
+      variants.length,
+      minPrice,
+      maxPrice,
+      raw.updatedAt || "",
+    ].map((val) => `"${String(val).replace(/"/g, '""')}"`);
+  });
+
+  return (
+    "\uFEFF" +
+    [headers.map((h) => `"${h}"`).join(","), ...rows.map((r) => r.join(","))].join("\r\n")
+  );
+}
+
+/**
+ * Imports and validates an external Revertly backup archive (.json).
+ * Supports saving directly as an offline restore point or triggering live restoration.
+ */
+export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_AS_RESTORE_POINT" }) {
+  try {
+    const data = typeof payload === "string" ? JSON.parse(payload) : payload;
+    if (!data || typeof data !== "object") {
+      return { success: false, message: "Invalid backup file: Not a valid JSON document." };
+    }
+
+    // Extract assets from either standard disaster recovery format or raw datasets
+    const storeAssets = data.storeAssets || {};
+    const products = Array.isArray(storeAssets.products)
+      ? storeAssets.products
+      : Array.isArray(data.products)
+      ? data.products
+      : Array.isArray(data)
+      ? data
+      : [];
+
+    const theme = storeAssets.theme || data.theme || null;
+    const collections = Array.isArray(storeAssets.collections)
+      ? storeAssets.collections
+      : Array.isArray(data.collections)
+      ? data.collections
+      : [];
+
+    const pages = Array.isArray(storeAssets.pages)
+      ? storeAssets.pages
+      : Array.isArray(data.pages)
+      ? data.pages
+      : [];
+
+    const menus = Array.isArray(storeAssets.menus)
+      ? storeAssets.menus
+      : Array.isArray(data.menus)
+      ? data.menus
+      : [];
+
+    const blogsAndArticles =
+      storeAssets.blogsAndArticles ||
+      data.blogsAndArticles || {
+        blogs: Array.isArray(data.blogs) ? data.blogs : [],
+        articles: Array.isArray(data.articles) ? data.articles : [],
+      };
+
+    const productCount = products.length;
+    const themeCount = theme?.activeTheme || (theme?.files && theme.files.length > 0) ? 1 : 0;
+    const collectionCount = collections.length;
+    const pageCount = pages.length;
+    const menuCount = menus.length;
+    const articleCount = Array.isArray(blogsAndArticles.articles) ? blogsAndArticles.articles.length : 0;
+
+    const totalItems = productCount + themeCount + collectionCount + pageCount + menuCount + articleCount;
+    if (totalItems === 0) {
+      return {
+        success: false,
+        message: "No recognizable store assets (Products, Themes, Collections, Pages, Articles) found in this backup file.",
+      };
+    }
+
+    let backupType = data.backupType || "FULL";
+    if (themeCount > 0 && productCount === 0 && collectionCount === 0 && pageCount === 0) {
+      backupType = "THEMES";
+    } else if (productCount > 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0) {
+      backupType = "PRODUCTS";
+    } else if (collectionCount > 0 && productCount === 0 && themeCount === 0 && pageCount === 0) {
+      backupType = "COLLECTIONS";
+    } else if (pageCount > 0 && productCount === 0 && themeCount === 0 && collectionCount === 0) {
+      backupType = "PAGES";
+    } else if (articleCount > 0 && productCount === 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0) {
+      backupType = "BLOGS";
+    }
+
+    const archiveName = data.name
+      ? `[Imported] ${data.name}`
+      : `Imported Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+
+    const archiveDescription = data.description
+      ? `(Imported Archive) ${data.description}`
+      : `Imported from external backup file. Original date: ${data.createdAt || data.exportedAt || "Unknown"}. Source shop: ${data.shop || "External"}.`;
+
+    // 1. Create the restore point record in DB
+    const restorePoint = await prisma.restorePoint.create({
+      data: {
+        shop,
+        name: archiveName.slice(0, 500),
+        description: archiveDescription.slice(0, 2000),
+        status: "READY",
+        backupType,
+        productCount,
+        themeCount,
+        collectionCount,
+        pageCount,
+        menuCount,
+        articleCount,
+        snapshotData: products.length > 0 ? products : undefined,
+        themeData: theme || undefined,
+        collectionData: collections.length > 0 ? collections : undefined,
+        pageData: pages.length > 0 ? pages : undefined,
+        menuData: menus.length > 0 ? menus : undefined,
+        articleData: articleCount > 0 || (blogsAndArticles.blogs && blogsAndArticles.blogs.length > 0) ? blogsAndArticles : undefined,
+      },
+    });
+
+    const summary = {
+      restorePointId: restorePoint.id,
+      products: productCount,
+      themes: themeCount,
+      collections: collectionCount,
+      pages: pageCount,
+      menus: menuCount,
+      articles: articleCount,
+      backupType,
+      restoredLive: false,
+    };
+
+    // 2. If mode is RESTORE_NOW, execute live restore of the items
+    if (mode === "RESTORE_NOW") {
+      let liveCollections = 0;
+      let livePages = 0;
+      let liveArticles = 0;
+      let liveTheme = false;
+
+      // Restore collections
+      for (const col of collections) {
+        const res = await restoreCollection(admin, col);
+        if (res.success) liveCollections++;
+      }
+
+      // Restore pages
+      for (const page of pages) {
+        const res = await restorePage(admin, page);
+        if (res.success) livePages++;
+      }
+
+      // Restore articles
+      for (const art of blogsAndArticles.articles || []) {
+        const res = await restoreArticle(admin, art);
+        if (res.success) liveArticles++;
+      }
+
+      // Restore theme staging if theme files present
+      if (theme && Array.isArray(theme.files) && theme.files.length > 0) {
+        const res = await restoreThemeFilesWithSafety({
+          admin,
+          shop,
+          themeId: theme.activeTheme?.id,
+          files: theme.files,
+          createStaging: true,
+        });
+        if (res.success) liveTheme = true;
+      }
+
+      // Sync imported products to baseline
+      let liveProducts = 0;
+      for (const p of products) {
+        const pId = p.productId || p.id;
+        const snap = p.snapshotData || p;
+        if (pId) {
+          const numericId = String(pId).replace("gid://shopify/Product/", "");
+          try {
+            await prisma.productSnapshot.upsert({
+              where: { shop_productId: { shop, productId: numericId } },
+              create: {
+                shop,
+                productId: numericId,
+                title: snap.title || p.title || "",
+                status: snap.status || "ACTIVE",
+                vendor: snap.vendor || "",
+                productType: snap.productType || "",
+                tags: Array.isArray(snap.tags) ? snap.tags.join(", ") : snap.tags || "",
+                bodyHtml: snap.bodyHtml || snap.body || "",
+                handle: snap.handle || "",
+                snapshotData: snap,
+              },
+              update: {
+                title: snap.title || p.title || "",
+                status: snap.status || "ACTIVE",
+                vendor: snap.vendor || "",
+                productType: snap.productType || "",
+                tags: Array.isArray(snap.tags) ? snap.tags.join(", ") : snap.tags || "",
+                bodyHtml: snap.bodyHtml || snap.body || "",
+                handle: snap.handle || "",
+                snapshotData: snap,
+              },
+            });
+            liveProducts++;
+          } catch (snapErr) {
+            // non-fatal per-product
+          }
+        }
+      }
+
+      summary.restoredLive = true;
+      summary.liveResults = {
+        products: liveProducts,
+        collections: liveCollections,
+        pages: livePages,
+        articles: liveArticles,
+        themeStagingCreated: liveTheme,
+      };
+
+      const resultParts = [];
+      if (liveProducts > 0) resultParts.push(`${liveProducts} products baseline synced`);
+      if (liveCollections > 0) resultParts.push(`${liveCollections} collections restored`);
+      if (livePages > 0) resultParts.push(`${livePages} pages restored`);
+      if (liveArticles > 0) resultParts.push(`${liveArticles} articles restored`);
+      if (liveTheme) resultParts.push("theme staging created");
+
+      return {
+        success: true,
+        restorePoint,
+        summary,
+        message: `Backup archive imported and live restore applied: ${resultParts.join(", ") || "No changes"}.`,
+      };
+    }
+
+    return {
+      success: true,
+      restorePoint,
+      summary,
+      message: `Backup archive imported successfully as Restore Point #${restorePoint.id} (${productCount} products, ${collectionCount} collections, ${pageCount} pages, ${articleCount} articles).`,
+    };
+  } catch (err) {
+    console.error("importBackupPayload error:", err?.message || err);
+    return {
+      success: false,
+      message: `Failed to import backup archive: ${err?.message || "Invalid JSON structure."}`,
+    };
+  }
+}
+

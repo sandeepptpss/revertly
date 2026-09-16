@@ -34,7 +34,7 @@ export const CLOUD_PROVIDERS = {
     label: "Dropbox",
     authorizeUrl: "https://www.dropbox.com/oauth2/authorize",
     tokenUrl: DROPBOX_TOKEN_URL,
-    scope: "files.content.write files.content.read account_info.read",
+    scope: "files.content.write files.content.read files.metadata.read account_info.read",
     clientIdEnv: "DROPBOX_APP_KEY",
     clientSecretEnv: "DROPBOX_APP_SECRET",
   },
@@ -357,6 +357,11 @@ export async function listCloudBackups(shop) {
       body: JSON.stringify({ path: `/${folder}`, recursive: false }),
     });
     if (!resp.ok) {
+      const errText = await resp.text();
+      // If the backup folder does not exist yet in Dropbox, treat as 0 files rather than error
+      if (errText.includes("path/not_found") || resp.status === 409) {
+        return { success: true, provider, files: [] };
+      }
       return { success: false, error: `Dropbox list failed: ${resp.status}` };
     }
     const data = await resp.json();

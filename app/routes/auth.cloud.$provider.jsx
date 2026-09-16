@@ -9,12 +9,9 @@
 import { redirect } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import { getProvider, isProviderConfigured } from "../cloudSync.server.js";
-import { createOAuthState, cloudCallbackUrl } from "../cloudOAuth.server.js";
+import { buildAuthorizeUrl, verifyLaunchToken } from "../cloudOAuth.server.js";
 
 export const loader = async ({ request, params }) => {
-  const { session } = await authenticate.admin(request);
-  const shop = session.shop;
-
   const provider = getProvider(params.provider);
   if (!provider) {
     return redirect(`/app/settings?cloud_error=${encodeURIComponent("Unknown cloud provider.")}`);
@@ -25,26 +22,41 @@ export const loader = async ({ request, params }) => {
     return redirect(`/app/settings?cloud_error=${encodeURIComponent(msg)}`);
   }
 
-  const state = createOAuthState(shop, provider.id);
-  const redirectUri = cloudCallbackUrl(provider.id);
+  const url = new URL(request.url);
+  const launchToken = url.searchParams.get("token");
 
-  const url = new URL(provider.authorizeUrl);
-  url.searchParams.set("client_id", process.env[provider.clientIdEnv]);
-  url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("state", state);
-
-  if (provider.id === "GOOGLE_DRIVE") {
-    url.searchParams.set("scope", provider.scope);
-    // Without both of these Google returns no refresh token on repeat consents,
-    // which would silently break sync as soon as the access token expires.
-    url.searchParams.set("access_type", "offline");
-    url.searchParams.set("prompt", "consent");
-    url.searchParams.set("include_granted_scopes", "true");
+  let shop;
+  if (launchToken) {
+    try {
+      ({ shop } = verifyLaunchToken(launchToken, provider.id));
+    } catch (err) {
+      console.warn(`[Cloud OAuth] Invalid launch token: ${err?.message}`);
+      return redirect(`/app/settings?cloud_error=${encodeURIComponent(err?.message || "Invalid connection token.")}`);
+    }
   } else {
-    url.searchParams.set("token_access_type", "offline");
-    url.searchParams.set("scope", provider.scope);
+    // Fallback for direct authenticated session requests
+    try {
+      const { session } = await authenticate.admin(request);
+      shop = session?.shop;
+    } catch (authErr) {
+      const shopParam = url.searchParams.get("shop");
+      if (shopParam) {
+        throw authErr;
+      }
+      return redirect(`/app/settings?cloud_error=${encodeURIComponent("Please connect your cloud storage from the Settings page.")}`);
+    }
   }
 
-  return redirect(url.toString());
+  if (!shop) {
+    return redirect(`/app/settings?cloud_error=${encodeURIComponent("Could not identify the store for this cloud connection.")}`);
+  }
+
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedProto = request.headers.get("x-forwarded-proto") || "https";
+  const publicBase = forwardedHost
+    ? `${forwardedProto}://${forwardedHost}`
+    : process.env.APP_URL || process.env.HOST || process.env.SHOPIFY_APP_URL;
+
+  const authUrl = buildAuthorizeUrl(shop, provider.id, publicBase);
+  return redirect(authUrl);
 };

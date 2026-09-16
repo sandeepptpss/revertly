@@ -8,6 +8,7 @@ import { EMBED_ACTIVE, EMBED_UNKNOWN } from "../monitoring.constants.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { checkFeatureAccess } from "../billing.server.js";
 import { getCloudProviderStatus, listCloudBackups } from "../cloudSync.server.js";
+import { createLaunchToken } from "../cloudOAuth.server.js";
 import { checkPermission, PERMISSIONS } from "../team.server.js";
 import {
   SettingsIcon,
@@ -51,7 +52,12 @@ export const loader = async ({ request }) => {
   // Drives an honest "needs configuration" state instead of a Connect button
   // that could only fail. The missing-env detail is for operators only — the
   // merchant-facing banner must not mention server configuration.
-  const cloudProviders = getCloudProviderStatus();
+  const cloudProviders = getCloudProviderStatus().map((p) => ({
+    ...p,
+    launchUrl: p.configured
+      ? `/auth/cloud/${p.id.toLowerCase()}?token=${createLaunchToken(shop, p.id)}`
+      : null,
+  }));
   for (const p of cloudProviders) {
     if (!p.configured) {
       console.warn(
@@ -1296,7 +1302,7 @@ export default function Settings() {
                               data remains fully private.
                             </p>
                             <a
-                              href={`/auth/cloud/${connectProvider.toLowerCase()}`}
+                              href={selectedProviderStatus?.launchUrl || `/auth/cloud/${connectProvider.toLowerCase()}`}
                               target="_top"
                               rel="noopener"
                               className="rv-btn rv-btn-primary"

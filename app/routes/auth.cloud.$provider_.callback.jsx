@@ -10,29 +10,49 @@ import prisma from "../db.server.js";
 import { getProvider, isProviderConfigured } from "../cloudSync.server.js";
 import { verifyOAuthState, exchangeCodeForTokens, fetchAccountEmail } from "../cloudOAuth.server.js";
 
-const settingsRedirect = (params) => redirect(`/app/settings?${new URLSearchParams(params)}`);
+const returnToShopifyAdmin = (shop, params) => {
+  const query = new URLSearchParams(params).toString();
+  if (shop) {
+    const apiKey = process.env.SHOPIFY_API_KEY || "1aa2f8043b53bd114b8814fc368663fd";
+    const cleanShop = shop.replace(".myshopify.com", "");
+    return redirect(`https://admin.shopify.com/store/${cleanShop}/apps/${apiKey}/app/settings?${query}`);
+  }
+  return redirect(`/app/settings?${query}`);
+};
+
+function extractShopFromState(state) {
+  if (!state || typeof state !== "string" || !state.includes(".")) return null;
+  try {
+    const [b64] = state.split(".");
+    const payload = JSON.parse(Buffer.from(b64, "base64url").toString("utf8"));
+    return payload.shop || null;
+  } catch {
+    return null;
+  }
+}
 
 export const loader = async ({ request, params }) => {
   const provider = getProvider(params.provider);
-  if (!provider) {
-    return settingsRedirect({ cloud_error: "Unknown cloud provider." });
-  }
-  if (!isProviderConfigured(provider.id)) {
-    return settingsRedirect({ cloud_error: `${provider.label} is not configured on this server.` });
-  }
-
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const providerError = url.searchParams.get("error");
+  const fallbackShop = extractShopFromState(state);
+
+  if (!provider) {
+    return returnToShopifyAdmin(fallbackShop, { cloud_error: "Unknown cloud provider." });
+  }
+  if (!isProviderConfigured(provider.id)) {
+    return returnToShopifyAdmin(fallbackShop, { cloud_error: `${provider.label} is not configured on this server.` });
+  }
 
   if (providerError) {
-    return settingsRedirect({
+    return returnToShopifyAdmin(fallbackShop, {
       cloud_error: `${provider.label} authorization was declined (${providerError}).`,
     });
   }
   if (!code) {
-    return settingsRedirect({ cloud_error: "Authorization code missing from callback." });
+    return returnToShopifyAdmin(fallbackShop, { cloud_error: "Authorization code missing from callback." });
   }
 
   let shop;
@@ -40,7 +60,7 @@ export const loader = async ({ request, params }) => {
     ({ shop } = verifyOAuthState(state, provider.id));
   } catch (err) {
     console.warn(`[Cloud OAuth] Rejected callback: ${err?.message}`);
-    return settingsRedirect({ cloud_error: err?.message || "Invalid OAuth state." });
+    return returnToShopifyAdmin(fallbackShop, { cloud_error: err?.message || "Invalid OAuth state." });
   }
 
   try {
@@ -87,12 +107,14 @@ export const loader = async ({ request, params }) => {
       })
       .catch(() => {});
 
-    return settingsRedirect({
+    return returnToShopifyAdmin(shop, {
       cloud_connected: provider.id,
       ...(tokens.refreshToken ? {} : { cloud_warning: "no_refresh_token" }),
     });
   } catch (err) {
     console.error("[Cloud OAuth] Token exchange failed:", err?.message);
-    return settingsRedirect({ cloud_error: err?.message || "Could not complete authorization." });
+    return returnToShopifyAdmin(shop || fallbackShop, {
+      cloud_error: err?.message || "Could not complete authorization.",
+    });
   }
 };

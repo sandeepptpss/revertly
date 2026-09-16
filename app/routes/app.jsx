@@ -47,6 +47,7 @@ export default function App() {
         <s-link href="/app/activity">Activity</s-link>
         <s-link href="/app/incidents">Incidents</s-link>
         <s-link href="/app/restore-points">Restore Points</s-link>
+        <s-link href="/app/import-export">Import &amp; Export</s-link>
         <s-link href="/app/vault">Data Vault</s-link>
         <s-link href="/app/rollback-history">Rollback History</s-link>
         <s-link href="/app/rules">Rules</s-link>
