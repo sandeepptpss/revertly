@@ -4,7 +4,7 @@ import { buildSnapshot } from "../monitor.server.js";
 import { createMultiResourceRestorePoint } from "../backup.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useFetcher, useLoaderData, useRouteError, Link } from "react-router";
-import { getPlanLimits } from "../billing.server.js";
+import { getEffectiveLimits } from "../billing.server.js";
 import {
   ShieldCheckIcon,
   RefreshCwIcon,
@@ -29,7 +29,7 @@ export const action = async ({ request }) => {
     const shop = session.shop;
 
     const settings = await prisma.appSettings.findUnique({ where: { shop } });
-    const limits = getPlanLimits(settings?.planId);
+    const limits = await getEffectiveLimits(shop, settings);
 
     let cursor = null;
     let totalSaved = 0;

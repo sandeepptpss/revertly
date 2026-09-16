@@ -6,7 +6,7 @@
  * suite that always passes would be worse than none at all.
  */
 import prisma from "./db.server.js";
-import { getPlanLimits } from "./billing.server.js";
+import { getEffectiveLimits } from "./billing.server.js";
 import { listCloudBackups, isProviderConfigured } from "./cloudSync.server.js";
 
 const PASS = "PASS";
@@ -269,7 +269,7 @@ async function checkDetectionRules(shop) {
 
 /** History held beyond the plan window indicates retention is not running. */
 async function checkRetentionPolicy(shop, settings) {
-  const limits = getPlanLimits(settings?.planId);
+  const limits = await getEffectiveLimits(shop, settings);
   const retentionDays = limits.retentionDays || 7;
   const cutoff = new Date(Date.now() - retentionDays * 86_400_000);
 

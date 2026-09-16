@@ -3,7 +3,7 @@ import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { calculateStoreStorageUsage } from "../backup.server.js";
-import { getPlanLimits } from "../billing.server.js";
+import { getEffectiveLimits } from "../billing.server.js";
 import {
   ShieldCheckIcon,
   BoxIcon,
@@ -70,7 +70,7 @@ export const loader = async ({ request }) => {
   // errors and returns a safe shape, so this cannot break the dashboard.
   const [storage, planLimitsInfo] = await Promise.all([
     calculateStoreStorageUsage(shop),
-    Promise.resolve(getPlanLimits(settings?.planId)),
+    getEffectiveLimits(shop, settings),
   ]);
 
   const retentionDays = planLimitsInfo.retentionDays || 7;

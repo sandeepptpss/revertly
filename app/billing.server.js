@@ -90,6 +90,36 @@ export function getPlanLimits(planId) {
 }
 
 /**
+ * The plan a shop is *entitled* to right now: what it pays for, raised to
+ * Growth while it holds an unexpired promotional free-Growth seat.
+ *
+ * Every entitlement decision must go through this rather than reading
+ * AppSettings.planId directly. A promotional seat deliberately leaves planId
+ * at "free" (see freeGrowth.server.js), so code that reads the stored plan
+ * enforces Free on a merchant whose Plans & Billing page promises Growth —
+ * blocking restore points, rules and the vault, and pruning their history to
+ * the 7-day Free window.
+ *
+ * Pass `settings` when the caller has already loaded the AppSettings row, to
+ * avoid a second query.
+ */
+export async function getEffectivePlanId(shop, settings) {
+  const row =
+    settings !== undefined ? settings : await prisma.appSettings.findUnique({ where: { shop } });
+  const paidPlan = normalizePlanId(row?.planId);
+
+  const { getActiveFreeGrowthGrant } = await import("./freeGrowth.server.js");
+  const grant = await getActiveFreeGrowthGrant(shop);
+
+  return grant && planRank(paidPlan) < planRank("growth") ? "growth" : paidPlan;
+}
+
+/** Plan limits for `getEffectivePlanId`. */
+export async function getEffectiveLimits(shop, settings) {
+  return getPlanLimits(await getEffectivePlanId(shop, settings));
+}
+
+/**
  * Resolves current active plan for a shop, synchronizing between Shopify billing and AppSettings.
  */
 export async function getStorePlan(shop, billing = null, isTest = true) {
@@ -198,8 +228,7 @@ function readSubscriptionDiscountPercent(subscription) {
  * Check if the shop can create another restore point.
  */
 export async function checkRestorePointLimit(shop) {
-  const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const plan = normalizePlanId(settings?.planId);
+  const plan = await getEffectivePlanId(shop);
   const limits = getPlanLimits(plan);
   const count = await prisma.restorePoint.count({ where: { shop } });
 
@@ -217,8 +246,7 @@ export async function checkRestorePointLimit(shop) {
  * Check if the shop can activate or create another detection rule.
  */
 export async function checkRuleLimit(shop) {
-  const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const plan = normalizePlanId(settings?.planId);
+  const plan = await getEffectivePlanId(shop);
   const limits = getPlanLimits(plan);
   const activeCount = await prisma.detectionRule.count({
     where: { shop, isActive: true },
@@ -238,8 +266,7 @@ export async function checkRuleLimit(shop) {
  * Check if the shop has access to Orders & Customers Vault and its max order sync count.
  */
 export async function checkVaultAccess(shop) {
-  const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const plan = normalizePlanId(settings?.planId);
+  const plan = await getEffectivePlanId(shop);
   const limits = getPlanLimits(plan);
 
   const allowed = limits.vaultOrders > 0;
@@ -255,8 +282,7 @@ export async function checkVaultAccess(shop) {
  * Check if the shop has access to a specific premium feature.
  */
 export async function checkFeatureAccess(shop, feature) {
-  const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const plan = normalizePlanId(settings?.planId);
+  const plan = await getEffectivePlanId(shop);
   const limits = getPlanLimits(plan);
 
   const allowed = Boolean(limits[feature]);

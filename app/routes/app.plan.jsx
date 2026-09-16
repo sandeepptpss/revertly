@@ -165,6 +165,12 @@ export const loader = async ({ request }) => {
 
   return {
     currentPlan,
+    // What the store is actually billed for. `currentPlan` can be higher than
+    // this when a promotional Growth seat is in play, and the two must not be
+    // conflated: entitlements follow `currentPlan`, but which plans are an
+    // upgrade or a downgrade — and which one Shopify would cancel — follows
+    // what is really being paid for.
+    paidPlan,
     limits,
     usage: { productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount },
     shop,
@@ -209,8 +215,6 @@ export const action = async ({ request }) => {
   const { session, billing } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
-  const rawPlanId = formData.get("planId");
-  const targetPlanId = normalizePlanId(rawPlanId);
   const isTest = process.env.NODE_ENV !== "production";
 
   // ── Claiming a free Growth seat ──────────────────────────────────────────
@@ -240,6 +244,9 @@ export const action = async ({ request }) => {
     return {
       success: true,
       planId: "growth",
+      // An entitlement, not a subscription — so this result must not be read as
+      // a change to what the store is billed for.
+      promotional: true,
       message: `Growth plan activated free of charge through ${new Date(grant.expiresAt).toLocaleDateString()}. There is no subscription and nothing to pay.`,
     };
   }
@@ -275,6 +282,19 @@ export const action = async ({ request }) => {
     return {
       success: true,
       message: `VIP discount activated — ${claimed.discountPercent}% off for the next ${DISCOUNT_DURATION_MONTHS} months, through ${new Date(claimed.expiresAt).toLocaleDateString()}.`,
+    };
+  }
+
+  // Resolved strictly, NOT through normalizePlanId(): that maps anything it
+  // doesn't recognise — a typo, a stale form, a missing field — to "free",
+  // which here is the branch that cancels the merchant's subscription. An
+  // unrecognised plan must be refused, never silently downgraded.
+  const rawPlanId = String(formData.get("planId") ?? "").trim().toLowerCase();
+  const targetPlanId = rawPlanId === "pro" ? "growth" : rawPlanId;
+  if (!PLAN_TIERS[targetPlanId]) {
+    return {
+      success: false,
+      message: "That plan isn't available. Pick a plan from the list below and try again.",
     };
   }
 
@@ -343,7 +363,12 @@ export const action = async ({ request }) => {
     await prisma.appSettings.upsert({
       where: { shop },
       create: { shop, planId: "free", subscriptionId: null },
-      update: { planId: "free", subscriptionId: null },
+      // Disarm paid protections at the moment of downgrade, exactly as the
+      // app_subscriptions/update webhook does for a Shopify-side cancellation.
+      // Without this, a downgrade made here (and every simulated one, which
+      // fires no webhook at all) leaves Settings reporting the Circuit Breaker
+      // as "Armed" for a plan that no longer includes it.
+      update: { planId: "free", subscriptionId: null, circuitBreakerEnabled: false },
     });
 
     return {
@@ -377,11 +402,19 @@ export const action = async ({ request }) => {
       }
     : {};
 
+  // The 14-day trial in shopify.server.js is per *plan*, so without this a
+  // merchant could subscribe, trial, downgrade to Free and re-subscribe for
+  // another free 14 days, indefinitely. `hasUsedTrial` is already recorded on
+  // first activation (here and in the app_subscriptions/update webhook); this
+  // is the point where it is finally honoured.
+  const trialOverride = settings?.hasUsedTrial ? { trialDays: 0 } : {};
+
   try {
     return await billing.request({
       plan: targetShopifyPlan,
       isTest,
       returnUrl,
+      ...trialOverride,
       ...lineItemOverrides,
     });
   } catch (err) {
@@ -446,7 +479,7 @@ export const action = async ({ request }) => {
 };
 
 export default function Plan() {
-  const { currentPlan, usage, limits, trialEndsAt, productLimitReachedAt, discount, freeGrowth, vipOffer, freeGrowthOffer } = useLoaderData();
+  const { currentPlan, paidPlan, usage, limits, hasUsedTrial, trialEndsAt, productLimitReachedAt, discount, freeGrowth, vipOffer, freeGrowthOffer } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activePlan = result?.planId || currentPlan;
@@ -461,7 +494,14 @@ export default function Plan() {
     }
   }, [result]);
 
-  const activeOrder = PLAN_TIERS[activePlan]?.order ?? 0;
+  // Upgrade/downgrade is a statement about *money*, so it is measured against
+  // the plan being billed, not against an entitlement handed out by the
+  // promotion. Measuring it against `activePlan` labelled Starter a
+  // "downgrade" for a promotional Growth store that would in fact start paying
+  // $9, and offered it a "Downgrade to Free" that the action then rejected as
+  // "already subscribed to the Free plan".
+  const billedPlan = result?.planId && !result.promotional ? result.planId : paidPlan;
+  const billedOrder = PLAN_TIERS[billedPlan]?.order ?? 0;
   const trialStillActive = trialEndsAt && new Date(trialEndsAt) > new Date();
 
   function trialSubtext(plan) {
@@ -469,6 +509,9 @@ export default function Plan() {
     if (activePlan === plan.id && trialStillActive) {
       return `Trial active until ${new Date(trialEndsAt).toLocaleDateString()}`;
     }
+    // The trial is once per store, so keep advertising it only while it is
+    // still on offer — see the trialDays override in the action.
+    if (hasUsedTrial) return "Billed from day one";
     return plan.subtext;
   }
 
@@ -627,7 +670,17 @@ export default function Plan() {
             <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
               CURRENT SUBSCRIPTION
             </span>
-            <span className="rv-badge rv-badge-success">Active</span>
+            {/* "Active" must mean a real Shopify subscription. A Free store
+                has none, and a promotional Growth seat deliberately has none
+                either — badging both as an active subscription misreports the
+                billing state on the page whose job is to report it. */}
+            {billedPlan !== "free" ? (
+              <span className="rv-badge rv-badge-success">Active</span>
+            ) : freeGrowth ? (
+              <span className="rv-badge rv-badge-success">Promotional · no charge</span>
+            ) : (
+              <span className="rv-badge rv-badge-neutral">No subscription</span>
+            )}
           </div>
           <h2 style={{ margin: "0 0 6px", fontSize: "22px", fontWeight: 800, color: "var(--rv-text)" }}>
             {PLAN_TIERS[activePlan]?.name || activePlan} Plan
@@ -685,9 +738,13 @@ export default function Plan() {
       <div className="rv-plan-grid">
         {PLANS.map((plan) => {
           const isCurrent = activePlan === plan.id;
+          // True only for the plan the store is actually billed for. For a
+          // promotional Growth store that is the Free card, which must not
+          // offer a "downgrade" to the plan it is already on.
+          const isBilledPlan = billedPlan === plan.id && !isCurrent;
           const planOrder = PLAN_TIERS[plan.id]?.order ?? 0;
-          const isUpgrade = planOrder > activeOrder;
-          const isDowngrade = planOrder < activeOrder;
+          const isUpgrade = planOrder > billedOrder;
+          const isDowngrade = planOrder < billedOrder;
 
           const isGrowth = plan.id === "growth";
           const isBusiness = plan.id === "business";
@@ -722,6 +779,8 @@ export default function Plan() {
           let buttonLabel = `Choose ${plan.name}`;
           if (isCurrent) {
             buttonLabel = "✓ Active Plan";
+          } else if (isBilledPlan) {
+            buttonLabel = "✓ Your billed plan";
           } else if (plan.id === "free") {
             buttonLabel = "Downgrade to Free";
           } else if (isUpgrade) {
@@ -832,6 +891,15 @@ export default function Plan() {
                       style={{ width: "100%", background: "var(--rv-primary-surface)", color: "var(--rv-primary-text)", border: "1px solid var(--rv-primary-border)", cursor: "default", fontWeight: 700 }}
                     >
                       ✓ Active Plan
+                    </button>
+                  ) : isBilledPlan ? (
+                    <button
+                      type="button"
+                      disabled
+                      className="rv-btn"
+                      style={{ width: "100%", background: "var(--rv-surface-subdued)", color: "var(--rv-text-subdued)", border: "1px solid var(--rv-border)", cursor: "default", fontWeight: 600 }}
+                    >
+                      {buttonLabel}
                     </button>
                   ) : isDowngrade ? (
                     <button

@@ -5,7 +5,7 @@ import {
   sendIncidentAlert,
   triggerCircuitBreaker,
 } from "../monitor.server.js";
-import { getPlanLimits } from "../billing.server.js";
+import { getEffectiveLimits } from "../billing.server.js";
 
 function buildSnapshotFromPayload(product) {
   return {
@@ -114,7 +114,7 @@ export const action = async ({ request }) => {
       deletedAt: null,
     };
 
-    const limits = getPlanLimits(settings?.planId);
+    const limits = await getEffectiveLimits(shop, settings);
 
     if (!prevRecord) {
       if (limits.products !== Infinity) {

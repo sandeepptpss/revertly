@@ -205,9 +205,10 @@ export async function calculateStoreStorageUsage(shop) {
  * Enterprise = 365 days, Business = 180 days, Growth = 90 days, etc.
  */
 export async function enforceBackupRetentionPolicy(shop) {
-  const { getPlanLimits } = await import("./billing.server.js");
-  const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const limits = getPlanLimits(settings?.planId);
+  const { getEffectiveLimits } = await import("./billing.server.js");
+  // Entitlement, not the stored plan: a promotional Growth seat must get the
+  // 90-day window it is promised, or this would prune its history at 7 days.
+  const limits = await getEffectiveLimits(shop);
   const retentionDays = limits.retentionDays || 7;
 
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
