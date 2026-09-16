@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError, redirect } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server.js";
@@ -21,6 +21,7 @@ import { PLAN_TIERS } from "../billing.constants.js";
 import { normalizePlanId } from "../billing.server.js";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import ConfirmModal from "../components/ConfirmModal.jsx";
 import {
   ShieldCheckIcon,
   DatabaseIcon,
@@ -265,6 +266,13 @@ export const action = async ({ request }) => {
     if (!Number.isInteger(limit) || limit < 0 || limit > 1000) {
       return { success: false, message: "Seat limit must be a whole number between 0 and 1000." };
     }
+
+    const rawMonths = String(formData.get("freeGrowthDurationMonths") ?? "2").trim();
+    const durationMonths = /^\d{1,2}$/.test(rawMonths) ? Number(rawMonths) : NaN;
+    if (!Number.isInteger(durationMonths) || durationMonths < 1 || durationMonths > 36) {
+      return { success: false, message: "Free offer duration must be a whole number between 1 and 36 months." };
+    }
+
     const enabled = formData.get("freeGrowthEnabled") === "1";
 
     const used = await prisma.freeGrowthGrant.count();
@@ -275,18 +283,46 @@ export const action = async ({ request }) => {
       };
     }
 
-    await prisma.platformSettings.upsert({
-      where: { id: 1 },
-      create: { id: 1, freeGrowthEnabled: enabled, freeGrowthSeatLimit: limit, updatedByEmail: adminEmail || null },
-      update: { freeGrowthEnabled: enabled, freeGrowthSeatLimit: limit, updatedByEmail: adminEmail || null },
-    });
+    try {
+      await prisma.platformSettings.upsert({
+        where: { id: 1 },
+        create: {
+          id: 1,
+          freeGrowthEnabled: enabled,
+          freeGrowthSeatLimit: limit,
+          freeGrowthDurationMonths: durationMonths,
+          updatedByEmail: adminEmail || null,
+        },
+        update: {
+          freeGrowthEnabled: enabled,
+          freeGrowthSeatLimit: limit,
+          freeGrowthDurationMonths: durationMonths,
+          updatedByEmail: adminEmail || null,
+        },
+      });
+    } catch (upsertErr) {
+      if (upsertErr?.message?.includes("freeGrowthDurationMonths")) {
+        // Fallback for long-running Node/Vite processes caching older Prisma Client definitions
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO PlatformSettings (id, freeGrowthEnabled, freeGrowthSeatLimit, freeGrowthDurationMonths, updatedByEmail, updatedAt) 
+           VALUES (1, ?, ?, ?, ?, NOW()) 
+           ON DUPLICATE KEY UPDATE freeGrowthEnabled = VALUES(freeGrowthEnabled), freeGrowthSeatLimit = VALUES(freeGrowthSeatLimit), freeGrowthDurationMonths = VALUES(freeGrowthDurationMonths), updatedByEmail = VALUES(updatedByEmail), updatedAt = NOW()`,
+          enabled ? 1 : 0,
+          limit,
+          durationMonths,
+          adminEmail || null
+        );
+      } else {
+        throw upsertErr;
+      }
+    }
 
-    await writeAdminAudit("ADMIN_FREE_GROWTH_UPDATED", adminEmail, { enabled, seatLimit: limit });
+    await writeAdminAudit("ADMIN_FREE_GROWTH_UPDATED", adminEmail, { enabled, seatLimit: limit, durationMonths });
 
     return {
       success: true,
       message: enabled
-        ? `Free Growth promotion is on, ${limit} seats total (${used} already awarded).`
+        ? `Free Growth promotion is on: ${durationMonths}-month free offer for the first ${limit} merchants (${used} claimed, ${Math.max(0, limit - used)} left).`
         : "Free Growth promotion is off. Stores that already hold a seat keep it until it expires.",
     };
   }
@@ -401,9 +437,16 @@ function formatDate(value) {
 
 export default function AdminPanel() {
   const { merchants, durationMonths, global: globalDiscount, freeGrowth } = useLoaderData();
-  const fetcher = useFetcher();
-  const result = fetcher.data;
-  const busy = fetcher.state !== "idle";
+  const globalFetcher = useFetcher();
+  const freeGrowthFetcher = useFetcher();
+  const storeFetcher = useFetcher();
+
+  const isGlobalBusy = globalFetcher.state !== "idle";
+  const isFreeGrowthBusy = freeGrowthFetcher.state !== "idle";
+  const isStoreBusy = storeFetcher.state !== "idle";
+
+  // Display the result message from whichever action was triggered
+  const result = globalFetcher.data || freeGrowthFetcher.data || storeFetcher.data;
 
   const [editingShop, setEditingShop] = useState(null);
   const [percentDraft, setPercentDraft] = useState("10");
@@ -413,7 +456,26 @@ export default function AdminPanel() {
   const [globalPercentDraft, setGlobalPercentDraft] = useState(String(globalDiscount.percent ?? 10));
   const [globalNoteDraft, setGlobalNoteDraft] = useState(globalDiscount.note ?? "");
   const [seatLimitDraft, setSeatLimitDraft] = useState(String(freeGrowth.limit));
+  const [durationMonthsDraft, setDurationMonthsDraft] = useState(String(freeGrowth.durationMonths || 2));
   const [freeGrowthOn, setFreeGrowthOn] = useState(freeGrowth.enabled);
+
+  const [removeDiscountTarget, setRemoveDiscountTarget] = useState(null);
+  const [showClearGlobalModal, setShowClearGlobalModal] = useState(false);
+
+  const isClearingGlobal = globalFetcher.state !== "idle" && globalFetcher.formData?.get("intent") === "clearGlobalDiscount";
+  const isRemovingDiscount = storeFetcher.state !== "idle" && storeFetcher.formData?.get("intent") === "removeDiscount";
+
+  useEffect(() => {
+    if (globalFetcher.data && !isClearingGlobal) {
+      setShowClearGlobalModal(false);
+    }
+  }, [globalFetcher.data, isClearingGlobal]);
+
+  useEffect(() => {
+    if (storeFetcher.data && !isRemovingDiscount) {
+      setRemoveDiscountTarget(null);
+    }
+  }, [storeFetcher.data, isRemovingDiscount]);
 
   function startEditing(row) {
     setEditingShop(row.shop);
@@ -438,7 +500,7 @@ export default function AdminPanel() {
           </Banner>
         )}
 
-        {/* ── Global yearly discount ── */}
+        {/* ── Global Yearly Discount ── */}
         <div className="rv-card" style={{ margin: "20px 0" }}>
           <div className="rv-card-header">
             <div className="rv-card-icon-title">
@@ -463,11 +525,11 @@ export default function AdminPanel() {
           </div>
 
           <div className="rv-card-body">
-            <fetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
+            <globalFetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
               <input type="hidden" name="intent" value="setGlobalDiscount" />
               <div className="rv-form-field" style={{ maxWidth: "160px" }}>
                 <label className="rv-form-label" htmlFor="global-percent">Discount %</label>
-                <div className="rv-input-group">
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                   <input
                     id="global-percent"
                     type="number"
@@ -479,7 +541,7 @@ export default function AdminPanel() {
                     onChange={(e) => setGlobalPercentDraft(e.target.value)}
                     className="rv-input"
                   />
-                  <span className="rv-input-suffix">%</span>
+                  <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>%</span>
                 </div>
               </div>
               <div className="rv-form-field" style={{ flex: 1, minWidth: "220px" }}>
@@ -488,34 +550,29 @@ export default function AdminPanel() {
                   id="global-note"
                   type="text"
                   name="globalNote"
+                  placeholder="e.g. Black Friday campaign"
                   value={globalNoteDraft}
                   onChange={(e) => setGlobalNoteDraft(e.target.value)}
-                  placeholder="e.g. Black Friday campaign"
                   className="rv-input"
-                  style={{ width: "100%" }}
                 />
               </div>
-              <button type="submit" disabled={busy} className="rv-btn rv-btn-primary rv-btn-sm">
+              <button type="submit" disabled={isGlobalBusy} className="rv-btn rv-btn-primary rv-btn-sm">
                 <SparklesIcon size={14} />
-                <span>{busy ? "Saving..." : `Apply to all stores (${durationMonths} months)`}</span>
+                <span>{isGlobalBusy ? "Saving..." : `Apply to all stores (${durationMonths} months)`}</span>
               </button>
-            </fetcher.Form>
+            </globalFetcher.Form>
 
             {globalDiscount.isActive && (
-              <fetcher.Form method="POST" style={{ marginTop: "12px" }}>
-                <input type="hidden" name="intent" value="clearGlobalDiscount" />
+              <div style={{ marginTop: "12px" }}>
                 <button
-                  type="submit"
-                  disabled={busy}
-                  className="rv-btn rv-btn-critical rv-btn-sm"
-                  onClick={(e) => {
-                    if (!window.confirm("Turn off the global discount for every store?")) e.preventDefault();
-                  }}
+                  type="button"
+                  disabled={isGlobalBusy}
+                  className="rv-btn rv-btn-secondary rv-btn-sm"
+                  onClick={() => setShowClearGlobalModal(true)}
                 >
-                  <Trash2Icon size={14} />
-                  <span>Turn off global discount</span>
+                  Turn off global discount
                 </button>
-              </fetcher.Form>
+              </div>
             )}
           </div>
         </div>
@@ -529,17 +586,17 @@ export default function AdminPanel() {
               </div>
               <div>
                 <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
-                  Free Growth for the first {freeGrowth.limit} stores to claim
+                  Free Growth for the first {freeGrowth.limit} stores to claim ({freeGrowth.durationMonths} Months Free)
                 </h3>
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
                   Offered to every installed store while places remain. A place is taken only when the
-                  merchant claims it, giving full Growth features at no charge for {durationMonths} months
+                  merchant claims it, giving full Growth features at no charge for {freeGrowth.durationMonths} months
                   with no Shopify subscription created.
                 </p>
               </div>
             </div>
-            <span className={`rv-badge ${freeGrowth.enabled ? "rv-badge-success" : "rv-badge-neutral"}`} style={{ fontWeight: 700 }}>
-              {freeGrowth.enabled ? "Running" : "Paused"}
+            <span className={`rv-badge ${freeGrowth.enabled ? (freeGrowth.remaining > 0 ? "rv-badge-success" : "rv-badge-warning") : "rv-badge-neutral"}`} style={{ fontWeight: 700 }}>
+              {!freeGrowth.enabled ? "Paused" : freeGrowth.remaining > 0 ? "Running" : "Fully Claimed"}
             </span>
           </div>
 
@@ -547,18 +604,20 @@ export default function AdminPanel() {
             <div style={{ marginBottom: "14px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "6px" }}>
                 <strong>{freeGrowth.used} of {freeGrowth.limit} seats claimed</strong>
-                <span style={{ color: "var(--rv-text-subdued)" }}>{freeGrowth.remaining} left</span>
+                <span style={{ color: "var(--rv-text-subdued)", fontWeight: 600 }}>
+                  {freeGrowth.remaining > 0 ? `${freeGrowth.remaining} left` : "Limit reached (Offer closed to new users)"}
+                </span>
               </div>
               <div style={{ height: "8px", borderRadius: "999px", background: "var(--rv-surface-subdued)", overflow: "hidden" }}>
-                <div style={{ width: `${seatPct}%`, height: "100%", background: "var(--rv-primary)" }} />
+                <div style={{ width: `${seatPct}%`, height: "100%", background: freeGrowth.remaining === 0 ? "var(--rv-warning)" : "var(--rv-primary)" }} />
               </div>
             </div>
 
-            <fetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
+            <freeGrowthFetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
               <input type="hidden" name="intent" value="updateFreeGrowth" />
               <input type="hidden" name="freeGrowthEnabled" value={freeGrowthOn ? "1" : "0"} />
               <div className="rv-form-field" style={{ maxWidth: "160px" }}>
-                <label className="rv-form-label" htmlFor="seat-limit">Total seats</label>
+                <label className="rv-form-label" htmlFor="seat-limit">Eligible merchants</label>
                 <input
                   id="seat-limit"
                   type="number"
@@ -571,6 +630,20 @@ export default function AdminPanel() {
                   className="rv-input"
                 />
               </div>
+              <div className="rv-form-field" style={{ maxWidth: "160px" }}>
+                <label className="rv-form-label" htmlFor="duration-months">Free duration (months)</label>
+                <input
+                  id="duration-months"
+                  type="number"
+                  min="1"
+                  max="36"
+                  required
+                  name="freeGrowthDurationMonths"
+                  value={durationMonthsDraft}
+                  onChange={(e) => setDurationMonthsDraft(e.target.value)}
+                  className="rv-input"
+                />
+              </div>
               <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", paddingBottom: "8px" }}>
                 <input
                   type="checkbox"
@@ -579,16 +652,17 @@ export default function AdminPanel() {
                 />
                 <span>Offer seats to merchants</span>
               </label>
-              <button type="submit" disabled={busy} className="rv-btn rv-btn-primary rv-btn-sm">
+              <button type="submit" disabled={isFreeGrowthBusy} className="rv-btn rv-btn-primary rv-btn-sm">
                 <HistoryIcon size={14} />
-                <span>{busy ? "Saving..." : "Save promotion"}</span>
+                <span>{isFreeGrowthBusy ? "Saving..." : "Save promotion"}</span>
               </button>
-            </fetcher.Form>
+            </freeGrowthFetcher.Form>
 
             <p style={{ margin: "12px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
               Stores that install but never claim take up nothing, so you always give away{" "}
               {freeGrowth.limit} real activations. A seat returns to the pool when that store uninstalls.
               Seats are never revoked automatically, so the total cannot be lowered below {freeGrowth.used}.
+              Once all {freeGrowth.limit} places are claimed, the offer automatically closes to new users.
             </p>
           </div>
         </div>
@@ -704,22 +778,15 @@ export default function AdminPanel() {
                                 <span>{row.discount?.isActive || row.discount?.awaitingClaim ? "Edit" : "Grant"}</span>
                               </button>
                               {(row.discount?.isActive || row.discount?.awaitingClaim) && (
-                                <fetcher.Form method="POST" style={{ display: "inline" }}>
-                                  <input type="hidden" name="intent" value="removeDiscount" />
-                                  <input type="hidden" name="targetShop" value={row.shop} />
-                                  <button
-                                    type="submit"
-                                    disabled={busy}
-                                    className="rv-btn rv-btn-critical rv-btn-sm"
-                                    onClick={(e) => {
-                                      if (!window.confirm(`Remove the ${row.discount.percent}% discount for ${row.shop}?`)) {
-                                        e.preventDefault();
-                                      }
-                                    }}
-                                  >
-                                    <Trash2Icon size={14} />
-                                  </button>
-                                </fetcher.Form>
+                                <button
+                                  type="button"
+                                  disabled={isStoreBusy}
+                                  className="rv-btn rv-btn-critical rv-btn-sm"
+                                  onClick={() => setRemoveDiscountTarget(row)}
+                                  title="Remove discount"
+                                >
+                                  <Trash2Icon size={14} />
+                                </button>
                               )}
                             </div>
                           </td>
@@ -728,7 +795,7 @@ export default function AdminPanel() {
                         {editingShop === row.shop && (
                           <tr>
                             <td colSpan={8} style={{ background: "var(--rv-surface-subdued)" }}>
-                              <fetcher.Form
+                              <storeFetcher.Form
                                 method="POST"
                                 style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap", padding: "12px 4px" }}
                                 onSubmit={() => setEditingShop(null)}
@@ -784,9 +851,9 @@ export default function AdminPanel() {
                                     style={{ width: "100%" }}
                                   />
                                 </div>
-                                <button type="submit" disabled={busy} className="rv-btn rv-btn-primary rv-btn-sm">
+                                <button type="submit" disabled={isStoreBusy} className="rv-btn rv-btn-primary rv-btn-sm">
                                   <HistoryIcon size={14} />
-                                  <span>{busy ? "Saving..." : `Apply (valid ${durationMonths} months)`}</span>
+                                  <span>{isStoreBusy ? "Saving..." : `Apply (valid ${durationMonths} months)`}</span>
                                 </button>
                                 <button
                                   type="button"
@@ -795,7 +862,7 @@ export default function AdminPanel() {
                                 >
                                   Cancel
                                 </button>
-                              </fetcher.Form>
+                              </storeFetcher.Form>
                             </td>
                           </tr>
                         )}
@@ -855,6 +922,54 @@ export default function AdminPanel() {
           </div>
         </div>
       </div>
+
+      {/* ── Clear Global Discount Modal ── */}
+      <ConfirmModal
+        isOpen={showClearGlobalModal}
+        title="Turn Off Global Discount"
+        message="Are you sure you want to turn off the global yearly discount for every store?"
+        dangerNote="New merchants and stores without individual discounts will no longer receive a promotional discount when upgrading to annual plans."
+        confirmLabel="Turn Off Global Discount"
+        submittingLabel="Turning Off..."
+        tone="warning"
+        isSubmitting={isClearingGlobal}
+        onConfirm={() => {
+          globalFetcher.submit({ intent: "clearGlobalDiscount" }, { method: "POST" });
+        }}
+        onClose={() => {
+          if (!isClearingGlobal) setShowClearGlobalModal(false);
+        }}
+      />
+
+      {/* ── Remove Store Discount Modal ── */}
+      <ConfirmModal
+        isOpen={Boolean(removeDiscountTarget)}
+        title="Remove Store Discount"
+        message={
+          removeDiscountTarget ? (
+            <>
+              Are you sure you want to remove the{" "}
+              <strong>{removeDiscountTarget.discount?.percent}% discount</strong> for{" "}
+              <strong>{removeDiscountTarget.shop}</strong>?
+            </>
+          ) : null
+        }
+        dangerNote="The store will revert to standard plan pricing or the global discount if active. Existing active Shopify subscriptions will not be retroactively changed."
+        confirmLabel="Remove Discount"
+        submittingLabel="Removing..."
+        tone="critical"
+        isSubmitting={isRemovingDiscount}
+        onConfirm={() => {
+          if (!removeDiscountTarget) return;
+          storeFetcher.submit(
+            { intent: "removeDiscount", targetShop: removeDiscountTarget.shop },
+            { method: "POST" }
+          );
+        }}
+        onClose={() => {
+          if (!isRemovingDiscount) setRemoveDiscountTarget(null);
+        }}
+      />
     </s-page>
   );
 }

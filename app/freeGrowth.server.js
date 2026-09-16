@@ -19,10 +19,17 @@
  *     rather than a rotating pool.
  */
 import prisma from "./db.server.js";
-import { getPlatformSettings, DISCOUNT_DURATION_MONTHS, computeExpiry } from "./storeDiscount.server.js";
+import { getPlatformSettings } from "./storeDiscount.server.js";
 
 export const FREE_GROWTH_PLAN_ID = "growth";
-export const FREE_GROWTH_DURATION_MONTHS = DISCOUNT_DURATION_MONTHS;
+export const DEFAULT_FREE_GROWTH_DURATION_MONTHS = 2;
+
+/** Calculates expiry date from a starting date and number of months. */
+export function computeFreeGrowthExpiry(from = new Date(), durationMonths = DEFAULT_FREE_GROWTH_DURATION_MONTHS) {
+  const d = new Date(from);
+  d.setMonth(d.getMonth() + durationMonths);
+  return d;
+}
 
 /** The store's seat if it still entitles them to Growth, else null. */
 export async function getActiveFreeGrowthGrant(shop) {
@@ -39,11 +46,16 @@ export async function countFreeGrowthSeatsUsed() {
 
 export async function getFreeGrowthStatus() {
   const [settings, used] = await Promise.all([getPlatformSettings(), countFreeGrowthSeatsUsed()]);
+  const limit = Number(settings.freeGrowthSeatLimit) || 20;
+  const durationMonths = Number(settings.freeGrowthDurationMonths) || DEFAULT_FREE_GROWTH_DURATION_MONTHS;
+  const remaining = Math.max(0, limit - used);
   return {
-    enabled: settings.freeGrowthEnabled,
-    limit: settings.freeGrowthSeatLimit,
+    enabled: Boolean(settings.freeGrowthEnabled),
+    limit,
+    durationMonths,
     used,
-    remaining: Math.max(0, settings.freeGrowthSeatLimit - used),
+    remaining,
+    isSoldOut: remaining < 1,
   };
 }
 
@@ -58,7 +70,11 @@ export async function getFreeGrowthOffer(shop) {
     prisma.freeGrowthGrant.findUnique({ where: { shop } }),
   ]);
   if (!status.enabled || status.remaining < 1 || held) return null;
-  return { remaining: status.remaining, limit: status.limit, durationMonths: FREE_GROWTH_DURATION_MONTHS };
+  return {
+    remaining: status.remaining,
+    limit: status.limit,
+    durationMonths: status.durationMonths,
+  };
 }
 
 /**
@@ -94,9 +110,12 @@ export async function claimFreeGrowthSeat(shop) {
       const used = await tx.freeGrowthGrant.count();
       if (used >= current.freeGrowthSeatLimit) return null;
 
+      const durationMonths = Number(current.freeGrowthDurationMonths) || DEFAULT_FREE_GROWTH_DURATION_MONTHS;
       const claimedAt = new Date();
+      const expiresAt = computeFreeGrowthExpiry(claimedAt, durationMonths);
+
       return tx.freeGrowthGrant.create({
-        data: { shop, grantedAt: claimedAt, expiresAt: computeExpiry(claimedAt) },
+        data: { shop, grantedAt: claimedAt, expiresAt },
       });
     });
   } catch (err) {

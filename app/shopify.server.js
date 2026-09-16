@@ -61,7 +61,7 @@ const shopify = shopifyApp({
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
-          amount: 90,
+          amount: 108,
           currencyCode: "USD",
           interval: BillingInterval.Annual,
         },
@@ -83,7 +83,7 @@ const shopify = shopifyApp({
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
-          amount: 240,
+          amount: 288,
           currencyCode: "USD",
           interval: BillingInterval.Annual,
         },
@@ -105,7 +105,7 @@ const shopify = shopifyApp({
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
-          amount: 490,
+          amount: 588,
           currencyCode: "USD",
           interval: BillingInterval.Annual,
         },
@@ -127,7 +127,7 @@ const shopify = shopifyApp({
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
-          amount: 790,
+          amount: 948,
           currencyCode: "USD",
           interval: BillingInterval.Annual,
         },

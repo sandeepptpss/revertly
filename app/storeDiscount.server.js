@@ -119,46 +119,91 @@ export async function getActiveGlobalDiscount(settings = null) {
 const SOURCE_LABELS = {
   VIP: "VIP discount",
   STANDARD: "Account discount",
-  GLOBAL: "Limited-time offer",
+  GLOBAL: "Global Yearly Discount",
 };
 
 /**
- * The single best percentage discount this store qualifies for, or null.
+ * Resolves both store-specific and global discounts available to this store.
  *
- * Best = largest percentage. A store-level grant wins an exact tie, because it
- * was set for this merchant specifically and is the more meaningful thing to
- * show them.
+ * Global discount applies exclusively to annual/yearly billing.
+ * Store-specific discounts (STANDARD/VIP) apply to the store's account (including monthly).
  */
-export async function resolveBestDiscount(shop, settings = null) {
+export async function resolveDiscounts(shop, settings = null) {
   const [storeDiscount, globalDiscount] = await Promise.all([
     getActiveStoreDiscount(shop),
     getActiveGlobalDiscount(settings),
   ]);
 
-  const candidates = [];
+  let storeCandidate = null;
   if (storeDiscount) {
     const source = normalizeTier(storeDiscount.tier);
-    candidates.push({
+    storeCandidate = {
       percent: storeDiscount.discountPercent,
       source,
       label: SOURCE_LABELS[source],
       note: storeDiscount.note,
       expiresAt: storeDiscount.expiresAt,
       storeSpecific: true,
-    });
+    };
   }
+
+  let globalCandidate = null;
   if (globalDiscount) {
-    candidates.push({
+    globalCandidate = {
       percent: globalDiscount.percent,
       source: "GLOBAL",
       label: SOURCE_LABELS.GLOBAL,
       note: globalDiscount.note,
       expiresAt: globalDiscount.expiresAt,
       storeSpecific: false,
-    });
+    };
   }
-  if (candidates.length === 0) return null;
 
-  candidates.sort((a, b) => b.percent - a.percent || Number(b.storeSpecific) - Number(a.storeSpecific));
-  return candidates[0];
+  // Monthly candidate: ONLY storeCandidate (global discount does not apply to monthly)
+  const monthlyDiscount = storeCandidate;
+
+  // Yearly candidate: highest percentage between store and global; store-specific wins ties
+  let yearlyDiscount = null;
+  if (storeCandidate && globalCandidate) {
+    yearlyDiscount =
+      storeCandidate.percent >= globalCandidate.percent
+        ? storeCandidate
+        : globalCandidate;
+  } else {
+    yearlyDiscount = storeCandidate || globalCandidate || null;
+  }
+
+  return {
+    storeDiscount: storeCandidate,
+    globalDiscount: globalCandidate,
+    monthlyDiscount,
+    yearlyDiscount,
+    // Overall best discount for backwards compatibility
+    bestDiscount: yearlyDiscount || monthlyDiscount || null,
+  };
+}
+
+/**
+ * The single best percentage discount this store qualifies for, or null.
+ * Interval-aware:
+ * - When interval is monthly ("monthly" / "EVERY_30_DAYS"), only store discounts apply.
+ * - When interval is annual ("annual" / "ANNUAL"), the best between store and global applies.
+ * - When interval is null, returns yearlyDiscount || monthlyDiscount || null.
+ */
+export async function resolveBestDiscount(shop, interval = null, settings = null) {
+  let effectiveInterval = interval;
+  let effectiveSettings = settings;
+  if (interval && typeof interval === "object" && !settings) {
+    effectiveSettings = interval;
+    effectiveInterval = null;
+  }
+
+  const discounts = await resolveDiscounts(shop, effectiveSettings);
+  if (effectiveInterval === "monthly" || effectiveInterval === "EVERY_30_DAYS") {
+    return discounts.monthlyDiscount;
+  }
+  if (effectiveInterval === "annual" || effectiveInterval === "ANNUAL") {
+    return discounts.yearlyDiscount;
+  }
+  return discounts.bestDiscount;
 }

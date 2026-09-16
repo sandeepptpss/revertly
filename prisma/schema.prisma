@@ -305,6 +305,7 @@ model PlatformSettings {
   globalDiscountExpiresAt DateTime?
   freeGrowthEnabled       Boolean   @default(true)
   freeGrowthSeatLimit     Int       @default(20)
+  freeGrowthDurationMonths Int      @default(2)
   updatedByEmail          String?   @db.VarChar(255)
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt

@@ -7,11 +7,8 @@ const createClient = () => new PrismaClient();
 let prisma;
 
 if (process.env.NODE_ENV !== "production") {
-  // In dev, store on global to survive HMR but clear it so schema changes
-  // picked up after a full process restart take effect.
-  if (!global.__prisma) {
-    global.__prisma = createClient();
-  }
+  // Always recreate PrismaClient on module reload in dev to pick up schema changes
+  global.__prisma = createClient();
   prisma = global.__prisma;
 } else {
   prisma = createClient();

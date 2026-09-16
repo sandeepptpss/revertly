@@ -27,8 +27,8 @@ export const PLAN_TIERS = {
     name: "Starter",
     price: 9,
     monthlyPrice: 9,
-    yearlyPrice: 90,
-    yearlyMonthlyEquivalent: 7.5,
+    yearlyPrice: 108,
+    yearlyMonthlyEquivalent: 9,
     order: 1,
   },
   growth: {
@@ -36,8 +36,8 @@ export const PLAN_TIERS = {
     name: "Growth",
     price: 24,
     monthlyPrice: 24,
-    yearlyPrice: 240,
-    yearlyMonthlyEquivalent: 20,
+    yearlyPrice: 288,
+    yearlyMonthlyEquivalent: 24,
     order: 2,
   },
   business: {
@@ -45,8 +45,8 @@ export const PLAN_TIERS = {
     name: "Business",
     price: 49,
     monthlyPrice: 49,
-    yearlyPrice: 490,
-    yearlyMonthlyEquivalent: 40.83,
+    yearlyPrice: 588,
+    yearlyMonthlyEquivalent: 49,
     order: 3,
   },
   enterprise: {
@@ -54,8 +54,8 @@ export const PLAN_TIERS = {
     name: "Enterprise",
     price: 79,
     monthlyPrice: 79,
-    yearlyPrice: 790,
-    yearlyMonthlyEquivalent: 65.83,
+    yearlyPrice: 948,
+    yearlyMonthlyEquivalent: 79,
     order: 4,
   },
 };

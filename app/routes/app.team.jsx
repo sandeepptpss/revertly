@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -15,6 +15,7 @@ import {
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import ConfirmModal from "../components/ConfirmModal.jsx";
 
 const ROLE_DESCRIPTIONS = {
   OWNER: "Full control, including billing and team management.",
@@ -177,6 +178,23 @@ export default function Team() {
   const result = fetcher.data;
   const busy = fetcher.state !== "idle";
   const [showInvite, setShowInvite] = useState(false);
+  const [removeMemberTarget, setRemoveMemberTarget] = useState(null);
+
+  const isRemovingMember = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "remove";
+
+  useEffect(() => {
+    if (result && !isRemovingMember) {
+      setRemoveMemberTarget(null);
+    }
+  }, [result, isRemovingMember]);
+
+  const handleRemoveMemberConfirm = () => {
+    if (!removeMemberTarget) return;
+    fetcher.submit(
+      { intent: "remove", memberId: String(removeMemberTarget.id) },
+      { method: "POST" }
+    );
+  };
 
   const owners = members.filter((m) => m.role === "OWNER" && m.status === "ACTIVE");
 
@@ -339,18 +357,15 @@ export default function Team() {
                       </td>
                       {canManage && (
                         <td>
-                          <fetcher.Form method="POST" style={{ display: "inline" }}>
-                            <input type="hidden" name="intent" value="remove" />
-                            <input type="hidden" name="memberId" value={m.id} />
-                            <button
-                              type="submit"
-                              disabled={busy || (m.role === "OWNER" && owners.length <= 1)}
-                              title={m.role === "OWNER" && owners.length <= 1 ? "The last owner cannot be removed" : "Remove member"}
-                              className="rv-btn rv-btn-sm rv-btn-critical"
-                            >
-                              <Trash2Icon size={14} />
-                            </button>
-                          </fetcher.Form>
+                          <button
+                            type="button"
+                            onClick={() => setRemoveMemberTarget(m)}
+                            disabled={busy || (m.role === "OWNER" && owners.length <= 1)}
+                            title={m.role === "OWNER" && owners.length <= 1 ? "The last owner cannot be removed" : "Remove member"}
+                            className="rv-btn rv-btn-sm rv-btn-critical"
+                          >
+                            <Trash2Icon size={14} />
+                          </button>
                         </td>
                       )}
                     </tr>
@@ -432,6 +447,34 @@ export default function Team() {
           )}
         </div>
       </div>
+
+      {/* ── Remove Team Member Modal ── */}
+      <ConfirmModal
+        isOpen={Boolean(removeMemberTarget)}
+        title="Remove Team Member"
+        message={
+          removeMemberTarget ? (
+            <>
+              Are you sure you want to remove{" "}
+              <strong>
+                {removeMemberTarget.name
+                  ? `${removeMemberTarget.name} (${removeMemberTarget.email})`
+                  : removeMemberTarget.email}
+              </strong>{" "}
+              from your Revertly team?
+            </>
+          ) : null
+        }
+        dangerNote="This user will immediately lose access to your store's backups, restore operations, and Revertly settings."
+        confirmLabel="Remove Member"
+        submittingLabel="Removing..."
+        tone="critical"
+        isSubmitting={isRemovingMember}
+        onConfirm={handleRemoveMemberConfirm}
+        onClose={() => {
+          if (!isRemovingMember) setRemoveMemberTarget(null);
+        }}
+      />
     </s-page>
   );
 }

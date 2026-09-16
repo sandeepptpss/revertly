@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -16,6 +16,7 @@ import {
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import ConfirmModal from "../components/ConfirmModal.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -138,6 +139,23 @@ export default function Monitoring() {
   const result = fetcher.data;
   const busy = fetcher.state !== "idle";
   const [showAdd, setShowAdd] = useState(false);
+  const [removeServiceTarget, setRemoveServiceTarget] = useState(null);
+
+  const isRemovingService = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "remove";
+
+  useEffect(() => {
+    if (result && !isRemovingService) {
+      setRemoveServiceTarget(null);
+    }
+  }, [result, isRemovingService]);
+
+  const handleRemoveServiceConfirm = () => {
+    if (!removeServiceTarget) return;
+    fetcher.submit(
+      { intent: "remove", serviceId: String(removeServiceTarget.id) },
+      { method: "POST" }
+    );
+  };
 
   const down = services.filter((s) => s.status === "DOWN").length;
   const degraded = services.filter((s) => s.status === "DEGRADED").length;
@@ -266,13 +284,15 @@ export default function Monitoring() {
                             <RefreshCwIcon size={14} />
                           </button>
                         </fetcher.Form>{" "}
-                        <fetcher.Form method="POST" style={{ display: "inline" }}>
-                          <input type="hidden" name="intent" value="remove" />
-                          <input type="hidden" name="serviceId" value={s.id} />
-                          <button type="submit" disabled={busy} className="rv-btn rv-btn-sm rv-btn-critical" title="Stop monitoring">
-                            <Trash2Icon size={14} />
-                          </button>
-                        </fetcher.Form>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setRemoveServiceTarget(s)}
+                          className="rv-btn rv-btn-sm rv-btn-critical"
+                          title="Stop monitoring"
+                        >
+                          <Trash2Icon size={14} />
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -321,6 +341,29 @@ export default function Monitoring() {
           )}
         </div>
       </div>
+
+      {/* ── Stop Monitoring Service Modal ── */}
+      <ConfirmModal
+        isOpen={Boolean(removeServiceTarget)}
+        title="Stop Monitoring Service"
+        message={
+          removeServiceTarget ? (
+            <>
+              Are you sure you want to stop monitoring{" "}
+              <strong>&ldquo;{removeServiceTarget.name}&rdquo;</strong>?
+            </>
+          ) : null
+        }
+        dangerNote="Revertly will no longer track health checks, response latency, or uptime for this service. Past downtime event logs will remain recorded."
+        confirmLabel="Stop Monitoring"
+        submittingLabel="Removing..."
+        tone="critical"
+        isSubmitting={isRemovingService}
+        onConfirm={handleRemoveServiceConfirm}
+        onClose={() => {
+          if (!isRemovingService) setRemoveServiceTarget(null);
+        }}
+      />
     </s-page>
   );
 }

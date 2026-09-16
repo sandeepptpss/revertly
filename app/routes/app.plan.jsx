@@ -20,7 +20,7 @@ import {
   normalizePlanId,
 } from "../billing.server.js";
 import { resolveBestDiscount, getClaimableVipOffer, claimVipOffer } from "../storeDiscount.server.js";
-import { getFreeGrowthOffer, claimFreeGrowthSeat } from "../freeGrowth.server.js";
+import { getFreeGrowthOffer, claimFreeGrowthSeat, getFreeGrowthStatus } from "../freeGrowth.server.js";
 import { DISCOUNT_DURATION_MONTHS } from "../discount.constants.js";
 import { Banner } from "../components/Banner.jsx";
 import { SparklesIcon, ShieldCheckIcon } from "../components/Icons.jsx";
@@ -148,7 +148,7 @@ export const loader = async ({ request }) => {
     isTest,
   );
 
-  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, bestDiscount, vipOffer, freeGrowthOffer] = await Promise.all([
+  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, bestDiscount, vipOffer, freeGrowthOffer, freeGrowthStatus] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
     prisma.changeEvent.count({ where: { shop } }),
     prisma.restorePoint.count({ where: { shop } }),
@@ -163,6 +163,7 @@ export const loader = async ({ request }) => {
     getClaimableVipOffer(shop),
     // A free Growth seat is likewise claimed, not handed out at install.
     getFreeGrowthOffer(shop),
+    getFreeGrowthStatus(),
   ]);
 
   if (settings?.productLimitReachedAt && (limits.products === Infinity || productCount < limits.products)) {
@@ -190,6 +191,15 @@ export const loader = async ({ request }) => {
     productLimitReachedAt: settings?.productLimitReachedAt || null,
     // A promotional Growth seat: full Growth features, no subscription, no charge.
     freeGrowth: freeGrowth?.isActive ? { expiresAt: freeGrowth.expiresAt } : null,
+    // Overall status of the Free Growth promotion (limit, duration, whether sold out)
+    freeGrowthStatus: freeGrowthStatus
+      ? {
+        limit: freeGrowthStatus.limit,
+        durationMonths: freeGrowthStatus.durationMonths,
+        remaining: freeGrowthStatus.remaining,
+        isSoldOut: freeGrowthStatus.isSoldOut,
+      }
+      : null,
     // An unclaimed VIP offer. Nothing is discounted while this is showing.
     vipOffer: vipOffer ? { percent: vipOffer.discountPercent, note: vipOffer.note } : null,
     // An unclaimed free Growth seat. Only worth offering if Growth would
@@ -211,7 +221,8 @@ export const loader = async ({ request }) => {
         needsApply:
           paidPlan !== "free" &&
           subscriptionDiscountPercent !== bestDiscount.percent &&
-          !isSimulatedSubscription(settings?.subscriptionId),
+          !isSimulatedSubscription(settings?.subscriptionId) &&
+          (billingInterval === INTERVAL_ANNUAL || bestDiscount.source !== "GLOBAL"),
       }
       : null,
   };
@@ -247,7 +258,10 @@ export const action = async ({ request }) => {
           userName: "Merchant",
           action: "FREE_GROWTH_CLAIMED",
           resourceType: "FreeGrowthGrant",
-          details: { expiresAt: grant.expiresAt, durationMonths: DISCOUNT_DURATION_MONTHS },
+          details: {
+            expiresAt: grant.expiresAt,
+            durationMonths: Math.max(1, Math.round((new Date(grant.expiresAt).getTime() - new Date(grant.grantedAt).getTime()) / (30 * 24 * 60 * 60 * 1000))),
+          },
         },
       })
       .catch(() => { });
@@ -426,7 +440,10 @@ export const action = async ({ request }) => {
   const targetTier = PLAN_TIERS[targetPlanId];
   const targetPrice = isAnnual ? targetTier?.yearlyPrice : targetTier?.price;
 
-  const lineItemOverrides = activeDiscount
+  // Global Yearly Discount applies only to Annual plans. Store-specific discounts (VIP/Account) apply to both.
+  const isDiscountEligible = activeDiscount && (isAnnual || activeDiscount.source !== "GLOBAL");
+
+  const lineItemOverrides = isDiscountEligible
     ? {
       lineItems: [
         {
@@ -536,6 +553,7 @@ export default function Plan() {
     productLimitReachedAt,
     discount,
     freeGrowth,
+    freeGrowthStatus,
     vipOffer,
     freeGrowthOffer,
   } = useLoaderData();
@@ -689,9 +707,16 @@ export default function Plan() {
           A promotional seat: Growth features at no charge, no subscription. */}
       {activeFreeGrowth && (
         <Banner tone="success" title="🎉 Free Growth Promotion Active" className="rv-fade-in">
-          You claimed the Free Growth promotion from the first 20 stores offer. Every Growth feature is unlocked on your
+          You claimed the Free Growth promotion from the first {freeGrowthStatus?.limit || 20} stores offer. Every Growth feature is unlocked on your
           account at no charge until {formatDate(activeFreeGrowth.expiresAt)}. There is no
           subscription and nothing to pay. You can still upgrade to Business or Enterprise at any time.
+        </Banner>
+      )}
+
+      {/* ── Free Growth Sold Out Notice (if merchant did not claim and seats are full) ── */}
+      {!activeFreeGrowth && !freeGrowthOffer && freeGrowthStatus?.isSoldOut && (
+        <Banner tone="info" title="Free Growth Promotion Concluded" className="rv-fade-in">
+          The Free Growth offer for the first {freeGrowthStatus.limit} merchants has reached capacity and been fully claimed. Standard store protection plans are available below.
         </Banner>
       )}
 
@@ -716,6 +741,12 @@ export default function Plan() {
               but your current subscription is still being charged at full price. Use{" "}
               <strong>Apply my {discount.percent}% discount</strong> on your active plan below to switch to
               the discounted price.
+            </>
+          ) : discount.source === "GLOBAL" ? (
+            <>
+              A {discount.percent}% Global Yearly Discount is active on all yearly plans
+              {discount.expiresAt && <>, valid through {new Date(discount.expiresAt).toLocaleDateString()}</>}.
+              Choose <strong>Yearly Billing</strong> below to lock in {discount.percent}% savings.
             </>
           ) : (
             <>
@@ -858,20 +889,22 @@ export default function Plan() {
             }}
           >
             <span>Yearly Billing</span>
-            <span
-              style={{
-                background: "linear-gradient(135deg, #10b981, #059669)",
-                color: "#ffffff",
-                fontSize: "11px",
-                fontWeight: 800,
-                padding: "2px 8px",
-                borderRadius: "12px",
-                letterSpacing: "0.3px",
-                boxShadow: "0 1px 3px rgba(16,185,129,0.3)",
-              }}
-            >
-              SAVE 17% · 2 MONTHS FREE
-            </span>
+            {discount && discount.percent > 0 && (
+              <span
+                style={{
+                  background: "linear-gradient(135deg, #10b981, #059669)",
+                  color: "#ffffff",
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  padding: "2px 8px",
+                  borderRadius: "12px",
+                  letterSpacing: "0.3px",
+                  boxShadow: "0 1px 3px rgba(16,185,129,0.3)",
+                }}
+              >
+                {discount.percent}% OFF
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -898,6 +931,14 @@ export default function Plan() {
           const isBusiness = plan.id === "business";
           const isEnterprise = plan.id === "enterprise";
           const isFreeGrowthCard = Boolean(activeFreeGrowth) && isGrowth;
+
+          // Applicable discount depends on the selected billing cycle:
+          // - Global Yearly Discount applies only to Yearly Billing.
+          // - Store-specific discounts (VIP / Account) apply to both Monthly and Yearly.
+          const applicableDiscount = isAnnualSelected
+            ? (discount && discount.percent > 0 ? discount : null)
+            : (discount && discount.percent > 0 && discount.source !== "GLOBAL" ? discount : null);
+          const hasApplicableDiscount = Boolean(applicableDiscount && applicableDiscount.percent > 0);
 
           let cardBorder = "1px solid var(--rv-border)";
           let cardBg = "var(--rv-surface)";
@@ -932,7 +973,9 @@ export default function Plan() {
           if (isExactCurrent) {
             buttonLabel = isFreeGrowthCard ? "✓ Free Growth Active" : "✓ Active Plan";
           } else if (isSameTierDifferentCycle) {
-            buttonLabel = isAnnualSelected ? "Switch to Yearly (Save 17%)" : "Switch to Monthly";
+            buttonLabel = isAnnualSelected
+              ? (hasApplicableDiscount ? `Switch to Yearly (${applicableDiscount.percent}% Off)` : "Switch to Yearly")
+              : "Switch to Monthly";
           } else if (isBilledPlan) {
             buttonLabel = activeFreeGrowth ? "Standard Free (Included)" : "✓ Your billed plan";
           } else if (plan.id === "free") {
@@ -1016,10 +1059,8 @@ export default function Plan() {
                     const baseMonthly = tier?.monthlyPrice ?? 0;
                     const baseYearly = tier?.yearlyPrice ?? 0;
                     const yearlyMonthlyEq = tier?.yearlyMonthlyEquivalent ?? 0;
-                    const yearlySavings = (baseMonthly * 12) - baseYearly;
 
-                    const hasAdminDiscount = Boolean(discount && discount.percent > 0);
-                    const discountMultiplier = hasAdminDiscount ? (1 - discount.percent / 100) : 1;
+                    const discountMultiplier = hasApplicableDiscount ? (1 - applicableDiscount.percent / 100) : 1;
 
                     if (isAnnualSelected) {
                       const finalYearly = baseYearly * discountMultiplier;
@@ -1027,29 +1068,28 @@ export default function Plan() {
 
                       return (
                         <div style={{ marginBottom: "4px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", flexWrap: "wrap" }}>
-                            <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
-                              ${baseMonthly}/mo
-                            </span>
-                            <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                              SAVE ${yearlySavings}/YR
-                            </span>
-                            {hasAdminDiscount && (
-                              <span className="rv-badge rv-badge-warning rv-badge-sm" style={{ fontWeight: 700 }}>
-                                +{discount.percent}% OFF
+                          {hasApplicableDiscount && (
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", flexWrap: "wrap" }}>
+                              <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
+                                ${baseMonthly}/mo
                               </span>
-                            )}
-                          </div>
+                              <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
+                                {applicableDiscount.percent}% OFF
+                              </span>
+                            </div>
+                          )}
                           <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
                             <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
-                              {formatPrice(finalMonthlyEq)}
+                              {hasApplicableDiscount ? formatPrice(finalMonthlyEq) : formatPrice(baseYearly)}
                             </span>
                             <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                              / month
+                              {hasApplicableDiscount ? "/ month" : "/ year"}
                             </span>
                           </div>
                           <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                            Billed annually ({formatPrice(finalYearly)}/yr) · <strong>2 months free</strong>
+                            {hasApplicableDiscount
+                              ? `Billed annually (${formatPrice(finalYearly)}/yr) · ${applicableDiscount.percent}% off applied`
+                              : `Billed annually · ${formatPrice(yearlyMonthlyEq)}/month equivalent`}
                           </div>
                         </div>
                       );
@@ -1059,13 +1099,13 @@ export default function Plan() {
                     const finalMonthly = baseMonthly * discountMultiplier;
                     return (
                       <div style={{ marginBottom: "4px" }}>
-                        {hasAdminDiscount && (
+                        {hasApplicableDiscount && (
                           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
                             <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
                               ${baseMonthly}/mo
                             </span>
                             <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                              {discount.percent}% OFF
+                              {applicableDiscount.percent}% OFF
                             </span>
                           </div>
                         )}
@@ -1176,7 +1216,7 @@ export default function Plan() {
                           ? trialSubtext(plan)
                           : `Active Plan • ${activeInterval === "ANNUAL" ? "Billed Annually" : "Billed Monthly"}`)
                       : isSameTierDifferentCycle
-                        ? (isAnnualSelected ? "Save 2 months every year" : "Billed monthly")
+                        ? (isAnnualSelected ? (hasApplicableDiscount ? `${applicableDiscount.percent}% discount applied` : "Billed annually") : "Billed monthly")
                         : trialSubtext(plan)}
                   </div>
                 </div>

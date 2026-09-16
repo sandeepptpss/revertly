@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError, redirect, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -34,6 +34,7 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
+import ConfirmModal from "../components/ConfirmModal.jsx";
 
 export const loader = async ({ request, params }) => {
   const { session, admin } = await authenticate.admin(request);
@@ -532,6 +533,13 @@ export default function RestorePointDetail() {
   );
   const [expandedFile, setExpandedFile] = useState(null);
   const [selectedProductIds, setSelectedProductIds] = useState([]);
+  const [showLiveRestoreModal, setShowLiveRestoreModal] = useState(false);
+
+  useEffect(() => {
+    if (result && !isRestoring) {
+      setShowLiveRestoreModal(false);
+    }
+  }, [result, isRestoring]);
 
   const [activeTab, setActiveTab] = useState(() => {
     if (differences.length > 0) return "products";
@@ -924,24 +932,15 @@ export default function RestorePointDetail() {
                 </button>
               </fetcher.Form>
 
-              <fetcher.Form method="POST">
-                <input type="hidden" name="intent" value="restore_theme" />
-                <input type="hidden" name="mode" value="live" />
-                <input type="hidden" name="selectedFiles" value={JSON.stringify(selectedFiles)} />
-                <button
-                  type="submit"
-                  disabled={selectedFiles.length === 0 || isRestoring}
-                  className="rv-btn rv-btn-secondary rv-btn-lg"
-                  style={{ color: "var(--rv-critical)" }}
-                  onClick={(e) => {
-                    if (!confirm("Restore directly to live storefront? A safety backup will be captured first.")) {
-                      e.preventDefault();
-                    }
-                  }}
-                >
-                  <span>Instant Restore to Live Theme</span>
-                </button>
-              </fetcher.Form>
+              <button
+                type="button"
+                disabled={selectedFiles.length === 0 || isRestoring}
+                className="rv-btn rv-btn-secondary rv-btn-lg"
+                style={{ color: "var(--rv-critical)" }}
+                onClick={() => setShowLiveRestoreModal(true)}
+              >
+                <span>Instant Restore to Live Theme</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1276,6 +1275,31 @@ export default function RestorePointDetail() {
           </div>
         </div>
       )}
+
+      {/* ── Live Theme Restore Confirmation Modal ── */}
+      <ConfirmModal
+        isOpen={showLiveRestoreModal}
+        title="Restore Directly to Live Storefront"
+        message="Are you sure you want to restore the selected theme files directly to your live storefront theme?"
+        dangerNote="A safety backup will automatically be captured before changes are applied, allowing you to rollback if needed."
+        confirmLabel="Confirm Live Restore"
+        submittingLabel="Restoring..."
+        tone="critical"
+        isSubmitting={isRestoring}
+        onConfirm={() => {
+          fetcher.submit(
+            {
+              intent: "restore_theme",
+              mode: "live",
+              selectedFiles: JSON.stringify(selectedFiles),
+            },
+            { method: "POST" }
+          );
+        }}
+        onClose={() => {
+          if (!isRestoring) setShowLiveRestoreModal(false);
+        }}
+      />
     </s-page>
   );
 }

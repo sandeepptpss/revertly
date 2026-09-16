@@ -29,6 +29,7 @@ import {
   ArrowRightIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
+import ConfirmModal from "../components/ConfirmModal.jsx";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -503,18 +504,19 @@ export default function Settings() {
     setCloudSyncAutoUpload(saved.cloudSyncAutoUpload);
   }, [result?.savedAt, saved]);
 
+  const [showDisconnectCloudModal, setShowDisconnectCloudModal] = useState(false);
+
+  // Auto-close disconnect modal when action finishes
+  useEffect(() => {
+    if (result && !isDisconnecting) {
+      setShowDisconnectCloudModal(false);
+    }
+  }, [result, isDisconnecting]);
+
   // Warn before leaving with unsaved edits (in-app and full page unload).
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
     isDirty && !isSaving && currentLocation.pathname !== nextLocation.pathname,
   );
-  useEffect(() => {
-    if (blocker.state !== "blocked") return;
-    if (window.confirm("You have unsaved settings changes. Leave without saving?")) {
-      blocker.proceed();
-    } else {
-      blocker.reset();
-    }
-  }, [blocker]);
   useEffect(() => {
     if (!isDirty) return undefined;
     const onBeforeUnload = (e) => {
@@ -1132,17 +1134,10 @@ export default function Settings() {
                             <span>{isTestingCloud ? "Testing..." : "Test Sync"}</span>
                           </button>
                           <button
-                            type="submit"
-                            name="intent"
-                            value="disconnectCloud"
-                            formNoValidate
+                            type="button"
                             disabled={fetcher.state !== "idle"}
                             className="rv-btn rv-btn-critical rv-btn-sm"
-                            onClick={(e) => {
-                              if (!window.confirm("Disconnect cloud storage? Stored access credentials will be deleted. Backups remain in the Revertly database.")) {
-                                e.preventDefault();
-                              }
-                            }}
+                            onClick={() => setShowDisconnectCloudModal(true)}
                           >
                             {isDisconnecting ? "Disconnecting..." : "Disconnect"}
                           </button>
@@ -2217,6 +2212,37 @@ export default function Settings() {
         </fetcher.Form>
 
       </div>
+
+      {/* ── Disconnect Cloud Storage Modal ── */}
+      <ConfirmModal
+        isOpen={showDisconnectCloudModal}
+        title="Disconnect Cloud Storage"
+        message="Are you sure you want to disconnect your external cloud storage integration?"
+        dangerNote="Stored cloud access credentials and tokens will be permanently deleted. Backups remain in your Revertly database, but automated cloud synchronization will be disabled."
+        confirmLabel="Disconnect Cloud Storage"
+        submittingLabel="Disconnecting..."
+        tone="critical"
+        isSubmitting={isDisconnecting}
+        onConfirm={() => {
+          fetcher.submit({ intent: "disconnectCloud" }, { method: "POST" });
+        }}
+        onClose={() => {
+          if (!isDisconnecting) setShowDisconnectCloudModal(false);
+        }}
+      />
+
+      {/* ── Unsaved Changes Modal (replaces browser window.confirm) ── */}
+      <ConfirmModal
+        isOpen={blocker.state === "blocked"}
+        title="Unsaved Settings Changes"
+        message="You have unsaved settings changes. Are you sure you want to leave without saving?"
+        dangerNote="Any adjustments to alert preferences, thresholds, or schedules will not be saved."
+        confirmLabel="Leave Without Saving"
+        cancelLabel="Stay & Continue Editing"
+        tone="warning"
+        onConfirm={() => blocker.proceed()}
+        onClose={() => blocker.reset()}
+      />
     </s-page>
   );
 }

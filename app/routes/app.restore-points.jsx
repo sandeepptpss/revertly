@@ -22,6 +22,7 @@ import {
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import ConfirmModal from "../components/ConfirmModal.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -210,12 +211,26 @@ export default function RestorePoints() {
   const result = fetcher.data;
   const isCreating = fetcher.state !== "idle";
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const isDeleting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "delete";
 
   useEffect(() => {
     if (result?.success) {
       setShowCreateForm(false);
     }
-  }, [result]);
+    if (result && !isDeleting) {
+      setDeleteTarget(null);
+    }
+  }, [result, isDeleting]);
+
+  const handleDeleteConfirm = () => {
+    if (!deleteTarget) return;
+    fetcher.submit(
+      { intent: "delete", rpId: String(deleteTarget.id) },
+      { method: "POST" }
+    );
+  };
 
   const usedCount = limitInfo?.currentCount ?? restorePoints.length;
   const maxLimit = limitInfo?.limit ?? Infinity;
@@ -558,29 +573,44 @@ export default function RestorePoints() {
                     <span>JSON</span>
                   </a>
 
-                  <fetcher.Form method="POST" style={{ display: "inline" }}>
-                    <input type="hidden" name="intent" value="delete" />
-                    <input type="hidden" name="rpId" value={rp.id} />
-                    <button
-                      type="submit"
-                      onClick={(e) => {
-                        if (!confirm(`Delete restore point "${rp.name}"? This cannot be undone.`)) {
-                          e.preventDefault();
-                        }
-                      }}
-                      className="rv-btn rv-btn-subtle rv-btn-sm"
-                      style={{ color: "var(--rv-critical)" }}
-                    >
-                      <Trash2Icon size={13} />
-                      <span>Delete</span>
-                    </button>
-                  </fetcher.Form>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTarget(rp)}
+                    className="rv-btn rv-btn-subtle rv-btn-sm"
+                    style={{ color: "var(--rv-critical)" }}
+                  >
+                    <Trash2Icon size={13} />
+                    <span>Delete</span>
+                  </button>
                 </div>
               </div>
             </div>
           ))}
         </div>
       )}
+
+      {/* ── Delete Confirmation Modal ── */}
+      <ConfirmModal
+        isOpen={Boolean(deleteTarget)}
+        title="Delete Restore Point"
+        message={
+          deleteTarget ? (
+            <>
+              Are you sure you want to permanently delete restore point{" "}
+              <strong>&ldquo;{deleteTarget.name}&rdquo;</strong>?
+            </>
+          ) : null
+        }
+        dangerNote="This action cannot be undone. All snapshots, product backups, and theme files saved in this restore point will be permanently erased."
+        confirmLabel="Delete Restore Point"
+        submittingLabel="Deleting..."
+        tone="critical"
+        isSubmitting={isDeleting}
+        onConfirm={handleDeleteConfirm}
+        onClose={() => {
+          if (!isDeleting) setDeleteTarget(null);
+        }}
+      />
 
     </s-page>
   );

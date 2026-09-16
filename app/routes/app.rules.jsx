@@ -11,6 +11,7 @@ import {
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import ConfirmModal from "../components/ConfirmModal.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -146,12 +147,26 @@ export default function Rules() {
   const result = fetcher.data;
   const isSaving = fetcher.state !== "idle";
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [deleteRuleTarget, setDeleteRuleTarget] = useState(null);
+
+  const isDeletingRule = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "delete";
 
   useEffect(() => {
     if (result?.success && showCreateForm) {
       setShowCreateForm(false);
     }
-  }, [result, showCreateForm]);
+    if (result && !isDeletingRule) {
+      setDeleteRuleTarget(null);
+    }
+  }, [result, showCreateForm, isDeletingRule]);
+
+  const handleDeleteRuleConfirm = () => {
+    if (!deleteRuleTarget) return;
+    fetcher.submit(
+      { intent: "delete", ruleId: String(deleteRuleTarget.id) },
+      { method: "POST" }
+    );
+  };
 
   const activeCount = limitInfo?.activeCount ?? 0;
   const maxLimit = limitInfo?.limit ?? Infinity;
@@ -439,23 +454,15 @@ export default function Rules() {
                       </button>
                     </fetcher.Form>
 
-                    <fetcher.Form method="POST" style={{ display: "inline" }}>
-                      <input type="hidden" name="intent" value="delete" />
-                      <input type="hidden" name="ruleId" value={rule.id} />
-                      <button
-                        type="submit"
-                        onClick={(e) => {
-                          if (!confirm(`Delete rule "${rule.name}"?`)) {
-                            e.preventDefault();
-                          }
-                        }}
-                        className="rv-btn rv-btn-subtle rv-btn-sm"
-                        style={{ color: "var(--rv-critical)" }}
-                      >
-                        <Trash2Icon size={14} />
-                        <span>Delete</span>
-                      </button>
-                    </fetcher.Form>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteRuleTarget(rule)}
+                      className="rv-btn rv-btn-subtle rv-btn-sm"
+                      style={{ color: "var(--rv-critical)" }}
+                    >
+                      <Trash2Icon size={14} />
+                      <span>Delete</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -463,6 +470,29 @@ export default function Rules() {
           })}
         </div>
       )}
+
+      {/* ── Delete Detection Rule Modal ── */}
+      <ConfirmModal
+        isOpen={Boolean(deleteRuleTarget)}
+        title="Delete Detection Rule"
+        message={
+          deleteRuleTarget ? (
+            <>
+              Are you sure you want to delete the detection rule{" "}
+              <strong>&ldquo;{deleteRuleTarget.name}&rdquo;</strong>?
+            </>
+          ) : null
+        }
+        dangerNote="Automated anomaly checks for this rule will immediately stop running. Any previously logged incidents will remain in your activity feed."
+        confirmLabel="Delete Rule"
+        submittingLabel="Deleting..."
+        tone="critical"
+        isSubmitting={isDeletingRule}
+        onConfirm={handleDeleteRuleConfirm}
+        onClose={() => {
+          if (!isDeletingRule) setDeleteRuleTarget(null);
+        }}
+      />
 
     </s-page>
   );
