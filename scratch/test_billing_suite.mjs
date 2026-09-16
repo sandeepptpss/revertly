@@ -150,7 +150,7 @@ it("webhooks.app_subscriptions.update.jsx exists and exports an action", () => {
 // ── Test 5: End-to-End Entitlement & Database Enforcements ────────────────────
 console.log("\n5. Database Entitlements & Gating Checks:");
 async function runAsyncTests() {
-  const testShop = "quickstart-749ac396.myshopify.com";
+  const testShop = "billing-simulation-store.myshopify.com";
 
   // Test with Free plan
   await prisma.appSettings.upsert({

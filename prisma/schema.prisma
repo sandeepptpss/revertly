@@ -264,16 +264,24 @@ model AppSettings {
   updatedAt           DateTime @updatedAt
 }
 
-// Support tickets submitted by merchants
 // A platform-admin-granted discount on a single merchant's subscription.
 // Always "yearly": every set/update pushes expiresAt to one year out, and the
 // checkout-time Shopify discount is applied for 12 billing intervals to match.
+// `tier` is a label on the same grant, not a second discount: a store has at
+// most one store-level discount, which is either STANDARD or VIP.
+//
+// STANDARD applies as soon as it is granted. VIP is an *offer* the merchant
+// must accept: it discounts nothing until they claim it, and `expiresAt` is
+// recomputed from the claim date so the merchant gets a full year from the day
+// they actually take it up.
 model StoreDiscount {
   id               Int       @id @default(autoincrement())
   shop             String    @unique @db.VarChar(255)
+  tier             String    @default("STANDARD") @db.VarChar(20) // STANDARD | VIP
   discountPercent  Int // 1-100
   note             String?   @db.VarChar(500)
   isActive         Boolean   @default(true)
+  claimedAt        DateTime? // VIP only: null means the offer is still unclaimed
   expiresAt        DateTime
   createdByEmail   String?   @db.VarChar(255)
   updatedByEmail   String?   @db.VarChar(255)
@@ -283,6 +291,36 @@ model StoreDiscount {
   @@index([shop, isActive])
 }
 
+// Single-row table (id is always 1) holding platform-wide operator settings:
+// the global yearly discount offered to every store, and the free-Growth
+// promotion's configuration.
+model PlatformSettings {
+  id                      Int       @id @default(1)
+  globalDiscountPercent   Int? // 1-100; null when no global discount is set
+  globalDiscountNote      String?   @db.VarChar(500)
+  globalDiscountActive    Boolean   @default(false)
+  globalDiscountExpiresAt DateTime?
+  freeGrowthEnabled       Boolean   @default(true)
+  freeGrowthSeatLimit     Int       @default(20)
+  updatedByEmail          String?   @db.VarChar(255)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+}
+
+// A seat in the "Growth plan free for the first N stores" promotion.
+// Seats are released when a store uninstalls (the row is deleted), so the
+// count always reflects currently-installed stores and the next installer
+// takes the freed seat.
+model FreeGrowthGrant {
+  id        Int      @id @default(autoincrement())
+  shop      String   @unique @db.VarChar(255)
+  expiresAt DateTime
+  grantedAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+// Support tickets submitted by merchants
 model SupportTicket {
   id          Int      @id @default(autoincrement())
   shop        String   @db.VarChar(255)

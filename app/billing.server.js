@@ -147,11 +147,31 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
     }
   }
 
+  // A promotional free-Growth seat grants Growth entitlements with no
+  // subscription behind them, so it is applied to the *effective* plan only
+  // and never written back to AppSettings. It can only ever promote: a
+  // merchant already paying for Business keeps Business.
+  const { getActiveFreeGrowthGrant } = await import("./freeGrowth.server.js");
+  const freeGrowthGrant = await getActiveFreeGrowthGrant(shop);
+  const promotedByFreeGrowth =
+    Boolean(freeGrowthGrant) && planRank(currentPlan) < planRank("growth");
+  const effectivePlan = promotedByFreeGrowth ? "growth" : currentPlan;
+
   return {
-    currentPlan,
-    limits: getPlanLimits(currentPlan),
+    currentPlan: effectivePlan,
+    // What the merchant actually pays for, ignoring the promotion.
+    paidPlan: currentPlan,
+    limits: getPlanLimits(effectivePlan),
     subscriptionDiscountPercent,
+    freeGrowth: freeGrowthGrant
+      ? { expiresAt: freeGrowthGrant.expiresAt, promoted: promotedByFreeGrowth }
+      : null,
   };
+}
+
+/** Ordering of the plan ladder, used to compare entitlement levels. */
+function planRank(planId) {
+  return PLAN_TIERS[normalizePlanId(planId)]?.order ?? 0;
 }
 
 /**

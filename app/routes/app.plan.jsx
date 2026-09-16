@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import {
   authenticate,
@@ -15,9 +15,11 @@ import {
   getStorePlan,
   normalizePlanId,
 } from "../billing.server.js";
-import { getActiveStoreDiscount, DISCOUNT_DURATION_MONTHS } from "../storeDiscount.server.js";
+import { resolveBestDiscount, getClaimableVipOffer, claimVipOffer } from "../storeDiscount.server.js";
+import { getFreeGrowthOffer, claimFreeGrowthSeat } from "../freeGrowth.server.js";
+import { DISCOUNT_DURATION_MONTHS } from "../discount.constants.js";
 import { Banner } from "../components/Banner.jsx";
-import { SparklesIcon } from "../components/Icons.jsx";
+import { SparklesIcon, ShieldCheckIcon } from "../components/Icons.jsx";
 
 /** Rounds to cents and drops a trailing ".00" for a cleaner price tag. */
 function formatPrice(amount) {
@@ -130,19 +132,27 @@ export const loader = async ({ request }) => {
   const shop = session.shop;
   const isTest = process.env.NODE_ENV !== "production";
 
-  const { currentPlan, limits, subscriptionDiscountPercent } = await getStorePlan(shop, billing, isTest);
+  const { currentPlan, paidPlan, limits, subscriptionDiscountPercent, freeGrowth } = await getStorePlan(
+    shop,
+    billing,
+    isTest,
+  );
 
-  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, activeDiscount] = await Promise.all([
+  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, bestDiscount, vipOffer, freeGrowthOffer] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
     prisma.changeEvent.count({ where: { shop } }),
     prisma.restorePoint.count({ where: { shop } }),
     prisma.detectionRule.count({ where: { shop } }),
     prisma.orderArchive.count({ where: { shop } }),
     prisma.appSettings.findUnique({ where: { shop } }),
-    // Platform-admin-granted discount, if the admin has set one for this
-    // store. Read fresh on every load so a change made in the Admin Panel
-    // shows up here without the merchant needing to do anything.
-    getActiveStoreDiscount(shop),
+    // The single best discount this store qualifies for — its own VIP or
+    // standard grant, or the global offer. Read fresh on every load so a
+    // change made in the Admin Panel shows up with no action by the merchant.
+    resolveBestDiscount(shop),
+    // A VIP offer discounts nothing until the merchant accepts it.
+    getClaimableVipOffer(shop),
+    // A free Growth seat is likewise claimed, not handed out at install.
+    getFreeGrowthOffer(shop),
   ]);
 
   if (settings?.productLimitReachedAt && (limits.products === Infinity || productCount < limits.products)) {
@@ -161,19 +171,29 @@ export const loader = async ({ request }) => {
     hasUsedTrial: Boolean(settings?.hasUsedTrial),
     trialEndsAt: settings?.trialEndsAt || null,
     productLimitReachedAt: settings?.productLimitReachedAt || null,
-    discount: activeDiscount
+    // A promotional Growth seat: full Growth features, no subscription, no charge.
+    freeGrowth: freeGrowth?.promoted ? { expiresAt: freeGrowth.expiresAt } : null,
+    // An unclaimed VIP offer. Nothing is discounted while this is showing.
+    vipOffer: vipOffer ? { percent: vipOffer.discountPercent, note: vipOffer.note } : null,
+    // An unclaimed free Growth seat. Only worth offering if Growth would
+    // actually be an upgrade on what they already pay for.
+    freeGrowthOffer:
+      freeGrowthOffer && PLAN_TIERS[paidPlan]?.order < PLAN_TIERS.growth.order ? freeGrowthOffer : null,
+    discount: bestDiscount
       ? {
-          percent: activeDiscount.discountPercent,
-          note: activeDiscount.note,
-          expiresAt: activeDiscount.expiresAt,
+          percent: bestDiscount.percent,
+          source: bestDiscount.source,
+          label: bestDiscount.label,
+          note: bestDiscount.note,
+          expiresAt: bestDiscount.expiresAt,
           // A discount only reduces a real charge once it is attached to a
           // subscription. Granting one to a merchant who is already paying
           // leaves their existing subscription untouched, so offer them a way
-          // to move onto a discounted one. Simulated subscriptions have no
-          // real charge behind them, so there is nothing to re-issue.
+          // to move onto a discounted one. A promotional Growth seat has no
+          // subscription to re-issue, and nor does a simulated one.
           needsApply:
-            currentPlan !== "free" &&
-            subscriptionDiscountPercent !== activeDiscount.discountPercent &&
+            paidPlan !== "free" &&
+            subscriptionDiscountPercent !== bestDiscount.percent &&
             !isSimulatedSubscription(settings?.subscriptionId),
         }
       : null,
@@ -193,13 +213,78 @@ export const action = async ({ request }) => {
   const targetPlanId = normalizePlanId(rawPlanId);
   const isTest = process.env.NODE_ENV !== "production";
 
+  // ── Claiming a free Growth seat ──────────────────────────────────────────
+  if (formData.get("intent") === "claimFreeGrowth") {
+    const grant = await claimFreeGrowthSeat(shop);
+    if (!grant) {
+      return {
+        success: false,
+        message:
+          "Those free Growth seats have all been taken. Refresh the page to see your current options.",
+      };
+    }
+
+    await prisma.auditLog
+      .create({
+        data: {
+          shop,
+          userEmail: null,
+          userName: "Merchant",
+          action: "FREE_GROWTH_CLAIMED",
+          resourceType: "FreeGrowthGrant",
+          details: { expiresAt: grant.expiresAt, durationMonths: DISCOUNT_DURATION_MONTHS },
+        },
+      })
+      .catch(() => {});
+
+    return {
+      success: true,
+      planId: "growth",
+      message: `Growth plan activated free of charge through ${new Date(grant.expiresAt).toLocaleDateString()}. There is no subscription and nothing to pay.`,
+    };
+  }
+
+  // ── Accepting a VIP offer ────────────────────────────────────────────────
+  if (formData.get("intent") === "claimVip") {
+    const claimed = await claimVipOffer(shop);
+    if (!claimed) {
+      return {
+        success: false,
+        message: "That VIP offer is no longer available. Refresh the page to see your current pricing.",
+      };
+    }
+
+    await prisma.auditLog
+      .create({
+        data: {
+          shop,
+          userEmail: null,
+          userName: "Merchant",
+          action: "VIP_DISCOUNT_CLAIMED",
+          resourceType: "StoreDiscount",
+          details: {
+            discountPercent: claimed.discountPercent,
+            claimedAt: claimed.claimedAt,
+            expiresAt: claimed.expiresAt,
+            durationMonths: DISCOUNT_DURATION_MONTHS,
+          },
+        },
+      })
+      .catch(() => {});
+
+    return {
+      success: true,
+      message: `VIP discount activated — ${claimed.discountPercent}% off for the next ${DISCOUNT_DURATION_MONTHS} months, through ${new Date(claimed.expiresAt).toLocaleDateString()}.`,
+    };
+  }
+
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
   const currentPlan = normalizePlanId(settings?.planId);
 
-  // If the platform admin has granted this store an active yearly discount,
-  // apply it to the real Shopify charge — not just the price shown on this
-  // page — for the same number of billing cycles the discount is valid for.
-  const activeDiscount = await getActiveStoreDiscount(shop);
+  // The single best discount this store qualifies for, applied to the real
+  // Shopify charge — not just the price shown on this page — for the same
+  // number of billing cycles the discount is valid for.
+  const activeDiscount = await resolveBestDiscount(shop);
 
   if (targetPlanId === currentPlan) {
     // Re-requesting the current plan is normally a no-op, but it is the only
@@ -215,39 +300,44 @@ export const action = async ({ request }) => {
 
   if (targetPlanId === "free") {
     let allCancelled = true;
+    const isSimulated = isSimulatedSubscription(settings?.subscriptionId);
 
-    try {
-      const billingCheck = await billing.check({
-        plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
-        isTest,
-      });
+    if (!isSimulated) {
+      try {
+        const billingCheck = await billing.check({
+          plans: [PLAN_STARTER, PLAN_GROWTH, PLAN_BUSINESS, PLAN_ENTERPRISE],
+          isTest,
+        });
 
-      if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
-        for (const sub of billingCheck.appSubscriptions) {
-          if (sub.id) {
-            try {
-              await billing.cancel({
-                subscriptionId: sub.id,
-                isTest,
-                prorate: true,
-              });
-            } catch (cancelErr) {
-              allCancelled = false;
-              console.error("[Revertly Billing] Failed to cancel subscription", sub.id, cancelErr?.message || cancelErr);
+        if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
+          for (const sub of billingCheck.appSubscriptions) {
+            if (sub.id) {
+              try {
+                await billing.cancel({
+                  subscriptionId: sub.id,
+                  isTest,
+                  prorate: true,
+                });
+              } catch (cancelErr) {
+                allCancelled = false;
+                console.error("[Revertly Billing] Failed to cancel subscription", sub.id, cancelErr?.message || cancelErr);
+              }
             }
           }
         }
+      } catch (err) {
+        if (!isTest) {
+          allCancelled = false;
+        }
+        console.warn("[Revertly Billing] Shopify billing cancel warning:", err?.message || err);
       }
-    } catch (err) {
-      allCancelled = false;
-      console.warn("[Revertly Billing] Shopify billing cancel warning:", err?.message || err);
-    }
 
-    if (!allCancelled) {
-      return {
-        success: false,
-        message: "We couldn't cancel your active subscription with Shopify. Your plan has not been changed — please try again, or contact support.",
-      };
+      if (!allCancelled) {
+        return {
+          success: false,
+          message: "We couldn't cancel your active subscription with Shopify. Your plan has not been changed — please try again, or contact support.",
+        };
+      }
     }
 
     await prisma.appSettings.upsert({
@@ -280,7 +370,7 @@ export const action = async ({ request }) => {
             interval: BillingInterval.Every30Days,
             discount: {
               durationLimitInIntervals: DISCOUNT_DURATION_MONTHS,
-              value: { percentage: activeDiscount.discountPercent / 100 },
+              value: { percentage: activeDiscount.percent / 100 },
             },
           },
         ],
@@ -331,12 +421,20 @@ export const action = async ({ request }) => {
         },
       });
 
+      const currentOrder = PLAN_TIERS[currentPlan]?.order ?? 0;
+      const targetOrder = PLAN_TIERS[targetPlanId]?.order ?? 0;
+      const isDowngrade = targetOrder < currentOrder;
+
+      let successMessage = isDistributionError
+        ? `Switched to ${PLAN_TIERS[targetPlanId]?.name} plan in Test Mode. (Partner Note: To test live Shopify billing screens, select 'Public distribution' in Partner Dashboard > Apps > Distribution).`
+        : isDowngrade
+          ? `Successfully downgraded to ${PLAN_TIERS[targetPlanId]?.name} plan.`
+          : `Successfully upgraded to ${PLAN_TIERS[targetPlanId]?.name} (14-day trial active).`;
+
       return {
         success: true,
         planId: targetPlanId,
-        message: isDistributionError
-          ? `Switched to ${PLAN_TIERS[targetPlanId]?.name} plan in Test Mode. (Partner Note: To test live Shopify billing screens, select 'Public distribution' in Partner Dashboard > Apps > Distribution).`
-          : `Successfully upgraded to ${PLAN_TIERS[targetPlanId]?.name} (14-day trial active).`,
+        message: successMessage,
       };
     }
 
@@ -348,13 +446,20 @@ export const action = async ({ request }) => {
 };
 
 export default function Plan() {
-  const { currentPlan, usage, limits, trialEndsAt, productLimitReachedAt, discount } = useLoaderData();
+  const { currentPlan, usage, limits, trialEndsAt, productLimitReachedAt, discount, freeGrowth, vipOffer, freeGrowthOffer } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activePlan = result?.planId || currentPlan;
   const isSubmitting = fetcher.state !== "idle";
 
   const [confirmModal, setConfirmModal] = useState(null);
+
+  // Auto-close confirmation modal once an action result returns
+  useEffect(() => {
+    if (result) {
+      setConfirmModal(null);
+    }
+  }, [result]);
 
   const activeOrder = PLAN_TIERS[activePlan]?.order ?? 0;
   const trialStillActive = trialEndsAt && new Date(trialEndsAt) > new Date();
@@ -390,6 +495,99 @@ export default function Plan() {
         </Banner>
       )}
 
+      {/* ── Unclaimed Free Growth Seat ──
+          Seats are consumed on claim, not at install, so this is a live
+          first-come offer and the remaining count is real. */}
+      {freeGrowthOffer && (
+        <div
+          className="rv-card rv-fade-in"
+          style={{ marginBottom: "20px", borderColor: "var(--rv-primary-border)" }}
+        >
+          <div className="rv-card-body" style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
+            <div className="rv-card-icon-badge success">
+              <ShieldCheckIcon size={22} />
+            </div>
+            <div style={{ flex: 1, minWidth: "260px" }}>
+              <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 800, color: "var(--rv-text)" }}>
+                Get the Growth plan free — {freeGrowthOffer.remaining} of {freeGrowthOffer.limit} places left
+              </h3>
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                Claim your place to unlock every Growth feature at no charge for{" "}
+                {freeGrowthOffer.durationMonths} months. No subscription is created and there is nothing to
+                pay. Places are first come, first served — your {freeGrowthOffer.durationMonths} months start
+                the day you claim.
+              </p>
+            </div>
+            <fetcher.Form method="POST">
+              <input type="hidden" name="intent" value="claimFreeGrowth" />
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="rv-btn rv-btn-primary rv-btn-lg"
+                style={{ fontWeight: 700, whiteSpace: "nowrap" }}
+              >
+                <ShieldCheckIcon size={16} />
+                <span>{isSubmitting ? "Activating..." : "Claim free Growth plan"}</span>
+              </button>
+            </fetcher.Form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Unclaimed VIP Offer ──
+          A VIP discount does nothing until the merchant accepts it, and the
+          12-month term starts from the claim, so this is an explicit action
+          rather than a passive banner. */}
+      {vipOffer && (
+        <div
+          className="rv-card rv-fade-in"
+          style={{ marginBottom: "20px", borderColor: "var(--rv-primary-border)" }}
+        >
+          <div className="rv-card-body" style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
+            <div className="rv-card-icon-badge success">
+              <SparklesIcon size={22} />
+            </div>
+            <div style={{ flex: 1, minWidth: "260px" }}>
+              <h3 style={{ margin: "0 0 4px", fontSize: "16px", fontWeight: 800, color: "var(--rv-text)" }}>
+                You have a VIP offer: {vipOffer.percent}% off
+              </h3>
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                Claim it to lock in {vipOffer.percent}% off any paid plan for the next {DISCOUNT_DURATION_MONTHS}{" "}
+                months. Your {DISCOUNT_DURATION_MONTHS} months start the day you claim, so nothing is lost by
+                deciding later — but the discount does not apply until you do.
+              </p>
+              {vipOffer.note && (
+                <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)", fontStyle: "italic" }}>
+                  {vipOffer.note}
+                </p>
+              )}
+            </div>
+            <fetcher.Form method="POST">
+              <input type="hidden" name="intent" value="claimVip" />
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="rv-btn rv-btn-primary rv-btn-lg"
+                style={{ fontWeight: 700, whiteSpace: "nowrap" }}
+              >
+                <SparklesIcon size={16} />
+                <span>{isSubmitting ? "Activating..." : `Claim ${vipOffer.percent}% VIP discount`}</span>
+              </button>
+            </fetcher.Form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Free Growth Promotion Banner ──
+          A founding-member seat: Growth features at no charge, no subscription. */}
+      {freeGrowth && (
+        <Banner tone="success" title="🎉 Growth plan, free — founding member" className="rv-fade-in">
+          You were one of the first stores to install Revertly, so every Growth feature is unlocked on your
+          account at no charge until {new Date(freeGrowth.expiresAt).toLocaleDateString()}. There is no
+          subscription and nothing to pay. You can still upgrade to Business or Enterprise at any time.
+        </Banner>
+      )}
+
       {/* ── Admin-Granted Discount Banner ──
           Shown whenever the platform admin has an active discount on file.
           It reads differently depending on whether the discount is already
@@ -399,22 +597,24 @@ export default function Plan() {
           tone={discount.needsApply ? "warning" : "success"}
           title={
             discount.needsApply
-              ? `${discount.percent}% discount ready to apply`
-              : `🎉 ${discount.percent}% discount applied`
+              ? `${discount.label}: ${discount.percent}% ready to apply`
+              : `🎉 ${discount.label}: ${discount.percent}% off`
           }
           className="rv-fade-in"
         >
           {discount.needsApply ? (
             <>
-              You have a special {discount.percent}% discount, valid through{" "}
-              {new Date(discount.expiresAt).toLocaleDateString()}, but your current subscription is still
-              being charged at full price. Use <strong>Apply my {discount.percent}% discount</strong> on your
-              active plan below to switch to the discounted price.
+              Your {discount.percent}% {discount.source === "VIP" ? "VIP " : ""}discount
+              {discount.expiresAt && <> is valid through {new Date(discount.expiresAt).toLocaleDateString()}</>},
+              but your current subscription is still being charged at full price. Use{" "}
+              <strong>Apply my {discount.percent}% discount</strong> on your active plan below to switch to
+              the discounted price.
             </>
           ) : (
             <>
-              Your special {discount.percent}% discount is active and reflected in the prices below, valid
-              through {new Date(discount.expiresAt).toLocaleDateString()}.
+              Your {discount.percent}% {discount.source === "VIP" ? "VIP " : ""}discount is active and
+              reflected in the prices below
+              {discount.expiresAt && <>, valid through {new Date(discount.expiresAt).toLocaleDateString()}</>}.
             </>
           )}
         </Banner>
@@ -559,25 +759,28 @@ export default function Plan() {
 
                   {(() => {
                     const basePrice = PLAN_TIERS[plan.id]?.price ?? 0;
-                    const hasDiscount = discount && basePrice > 0;
+                    // A promotional seat makes Growth free outright, which
+                    // beats any percentage discount on that card.
+                    const isFreeGrowthCard = Boolean(freeGrowth) && plan.id === "growth";
+                    const hasDiscount = !isFreeGrowthCard && discount && basePrice > 0;
                     const discountedPrice = hasDiscount ? basePrice * (1 - discount.percent / 100) : basePrice;
                     return (
                       <div style={{ marginBottom: "4px" }}>
-                        {hasDiscount && (
+                        {(hasDiscount || isFreeGrowthCard) && (
                           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
                             <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
                               {plan.price}
                             </span>
                             <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                              <SparklesIcon size={10} /> {discount.percent}% OFF
+                              <SparklesIcon size={10} /> {isFreeGrowthCard ? "FOUNDING MEMBER" : `${discount.percent}% OFF`}
                             </span>
                           </div>
                         )}
                         <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
                           <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
-                            {hasDiscount ? formatPrice(discountedPrice) : plan.price}
+                            {isFreeGrowthCard ? "$0" : hasDiscount ? formatPrice(discountedPrice) : plan.price}
                           </span>
-                          {plan.period && (
+                          {plan.period && !isFreeGrowthCard && (
                             <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
                               {plan.period}
                             </span>
@@ -673,6 +876,11 @@ export default function Plan() {
       {/* ── Downgrade Confirmation Modal ── */}
       {confirmModal && (
         <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isSubmitting) {
+              setConfirmModal(null);
+            }
+          }}
           style={{
             position: "fixed",
             inset: 0,
@@ -729,7 +937,6 @@ export default function Plan() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  onClick={() => setConfirmModal(null)}
                   className="rv-btn rv-btn-critical"
                   style={{ fontWeight: 600 }}
                 >
