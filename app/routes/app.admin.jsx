@@ -97,15 +97,29 @@ export const loader = async ({ request }) => {
     const seat = freeGrowthByShop.get(m.shop) || null;
     const seatActive = Boolean(seat && new Date(seat.expiresAt).getTime() > now);
 
-    // Mirrors resolveBestDiscount(): largest wins, store-specific breaks ties.
+    // Mirrors resolveBestDiscount(): store discount applies to monthly & yearly, global discount applies to yearly.
     const storePercent = discountActive ? discount.discountPercent : 0;
     const globalPercent = globalDiscount ? globalDiscount.percent : 0;
-    const effective =
+    const storeTier = normalizeTier(discount?.tier);
+    const yearlyEffective =
       storePercent === 0 && globalPercent === 0
         ? null
         : storePercent >= globalPercent
-          ? { percent: storePercent, source: normalizeTier(discount?.tier) }
+          ? { percent: storePercent, source: storeTier }
           : { percent: globalPercent, source: "GLOBAL" };
+    const monthlyEffective =
+      storePercent > 0
+        ? { percent: storePercent, source: storeTier }
+        : null;
+
+    const effective = yearlyEffective
+      ? {
+          percent: yearlyEffective.percent,
+          source: yearlyEffective.source,
+          yearly: yearlyEffective,
+          monthly: monthlyEffective,
+        }
+      : null;
 
     const normPlan = normalizePlanId(m.planId);
     const planOrder = PLAN_TIERS[normPlan]?.order ?? 0;
@@ -748,12 +762,31 @@ export default function AdminPanel() {
                           </td>
                           <td>
                             {row.effectiveDiscount ? (
-                              <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
-                                {row.effectiveDiscount.percent}%
-                                <span style={{ fontWeight: 500, marginLeft: "4px" }}>
-                                  ({EFFECTIVE_LABELS[row.effectiveDiscount.source]})
+                              row.effectiveDiscount.monthly &&
+                              row.effectiveDiscount.yearly &&
+                              row.effectiveDiscount.monthly.percent !== row.effectiveDiscount.yearly.percent ? (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                  <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
+                                    {row.effectiveDiscount.yearly.percent}%
+                                    <span style={{ fontWeight: 500, marginLeft: "4px" }}>
+                                      ({EFFECTIVE_LABELS[row.effectiveDiscount.yearly.source]} · yr)
+                                    </span>
+                                  </span>
+                                  <span className="rv-badge rv-badge-info" style={{ fontWeight: 700, fontSize: "11px" }}>
+                                    {row.effectiveDiscount.monthly.percent}%
+                                    <span style={{ fontWeight: 500, marginLeft: "4px" }}>
+                                      ({EFFECTIVE_LABELS[row.effectiveDiscount.monthly.source]} · mo)
+                                    </span>
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
+                                  {row.effectiveDiscount.percent}%
+                                  <span style={{ fontWeight: 500, marginLeft: "4px" }}>
+                                    ({EFFECTIVE_LABELS[row.effectiveDiscount.source]})
+                                  </span>
                                 </span>
-                              </span>
+                              )
                             ) : (
                               <span className="rv-badge rv-badge-neutral">—</span>
                             )}
@@ -931,7 +964,7 @@ export default function AdminPanel() {
         dangerNote="New merchants and stores without individual discounts will no longer receive a promotional discount when upgrading to annual plans."
         confirmLabel="Turn Off Global Discount"
         submittingLabel="Turning Off..."
-        tone="warning"
+        tone="critical"
         isSubmitting={isClearingGlobal}
         onConfirm={() => {
           globalFetcher.submit({ intent: "clearGlobalDiscount" }, { method: "POST" });

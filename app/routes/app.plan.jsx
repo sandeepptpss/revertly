@@ -19,7 +19,7 @@ import {
   getStorePlan,
   normalizePlanId,
 } from "../billing.server.js";
-import { resolveBestDiscount, getClaimableVipOffer, claimVipOffer } from "../storeDiscount.server.js";
+import { resolveBestDiscount, resolveDiscounts, getClaimableVipOffer, claimVipOffer } from "../storeDiscount.server.js";
 import { getFreeGrowthOffer, claimFreeGrowthSeat, getFreeGrowthStatus } from "../freeGrowth.server.js";
 import { DISCOUNT_DURATION_MONTHS } from "../discount.constants.js";
 import { Banner } from "../components/Banner.jsx";
@@ -148,17 +148,16 @@ export const loader = async ({ request }) => {
     isTest,
   );
 
-  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, bestDiscount, vipOffer, freeGrowthOffer, freeGrowthStatus] = await Promise.all([
+  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, allDiscounts, vipOffer, freeGrowthOffer, freeGrowthStatus] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
     prisma.changeEvent.count({ where: { shop } }),
     prisma.restorePoint.count({ where: { shop } }),
     prisma.detectionRule.count({ where: { shop } }),
     prisma.orderArchive.count({ where: { shop } }),
     prisma.appSettings.findUnique({ where: { shop } }),
-    // The single best discount this store qualifies for — its own VIP or
-    // standard grant, or the global offer. Read fresh on every load so a
-    // change made in the Admin Panel shows up with no action by the merchant.
-    resolveBestDiscount(shop),
+    // Both store-specific grant and global yearly promotion, read fresh
+    // on every load so admin adjustments appear instantly.
+    resolveDiscounts(shop),
     // A VIP offer discounts nothing until the merchant accepts it.
     getClaimableVipOffer(shop),
     // A free Growth seat is likewise claimed, not handed out at install.
@@ -206,23 +205,45 @@ export const loader = async ({ request }) => {
     // actually be an upgrade on what they already pay for.
     freeGrowthOffer:
       freeGrowthOffer && PLAN_TIERS[paidPlan]?.order < PLAN_TIERS.growth.order ? freeGrowthOffer : null,
-    discount: bestDiscount
+    storeDiscount: allDiscounts.storeDiscount
       ? {
-        percent: bestDiscount.percent,
-        source: bestDiscount.source,
-        label: bestDiscount.label,
-        note: bestDiscount.note,
-        expiresAt: bestDiscount.expiresAt,
-        // A discount only reduces a real charge once it is attached to a
-        // subscription. Granting one to a merchant who is already paying
-        // leaves their existing subscription untouched, so offer them a way
-        // to move onto a discounted one. A promotional Growth seat has no
-        // subscription to re-issue, and nor does a simulated one.
+        percent: allDiscounts.storeDiscount.percent,
+        source: allDiscounts.storeDiscount.source,
+        label: allDiscounts.storeDiscount.label,
+        note: allDiscounts.storeDiscount.note,
+        expiresAt: allDiscounts.storeDiscount.expiresAt,
         needsApply:
           paidPlan !== "free" &&
-          subscriptionDiscountPercent !== bestDiscount.percent &&
+          subscriptionDiscountPercent !== allDiscounts.storeDiscount.percent &&
+          !isSimulatedSubscription(settings?.subscriptionId),
+      }
+      : null,
+    globalDiscount: allDiscounts.globalDiscount
+      ? {
+        percent: allDiscounts.globalDiscount.percent,
+        source: allDiscounts.globalDiscount.source,
+        label: allDiscounts.globalDiscount.label,
+        note: allDiscounts.globalDiscount.note,
+        expiresAt: allDiscounts.globalDiscount.expiresAt,
+        needsApply:
+          paidPlan !== "free" &&
+          billingInterval === INTERVAL_ANNUAL &&
+          subscriptionDiscountPercent !== allDiscounts.globalDiscount.percent &&
+          !isSimulatedSubscription(settings?.subscriptionId),
+      }
+      : null,
+    discount: allDiscounts.bestDiscount
+      ? {
+        percent: allDiscounts.bestDiscount.percent,
+        source: allDiscounts.bestDiscount.source,
+        label: allDiscounts.bestDiscount.label,
+        note: allDiscounts.bestDiscount.note,
+        expiresAt: allDiscounts.bestDiscount.expiresAt,
+        needsApply:
+          paidPlan !== "free" &&
+          subscriptionDiscountPercent !== allDiscounts.bestDiscount.percent &&
           !isSimulatedSubscription(settings?.subscriptionId) &&
-          (billingInterval === INTERVAL_ANNUAL || bestDiscount.source !== "GLOBAL"),
+          (billingInterval === INTERVAL_ANNUAL || allDiscounts.bestDiscount.source !== "GLOBAL"),
       }
       : null,
   };
@@ -339,10 +360,9 @@ export const action = async ({ request }) => {
   const currentPlan = normalizePlanId(settings?.planId);
   const currentInterval = settings?.billingInterval || (settings?.subscriptionId?.includes("annual") ? INTERVAL_ANNUAL : INTERVAL_MONTHLY);
 
-  // The single best discount this store qualifies for, applied to the real
-  // Shopify charge — not just the price shown on this page — for the same
-  // number of billing cycles the discount is valid for.
-  const activeDiscount = await resolveBestDiscount(shop);
+  // The single best discount this store qualifies for on the requested interval,
+  // applied to the real Shopify charge — not just the price shown on this page.
+  const activeDiscount = await resolveBestDiscount(shop, isAnnual ? INTERVAL_ANNUAL : INTERVAL_MONTHLY);
 
   const isSamePlan = targetPlanId === currentPlan;
   const isSameInterval = targetInterval === currentInterval;
@@ -440,8 +460,8 @@ export const action = async ({ request }) => {
   const targetTier = PLAN_TIERS[targetPlanId];
   const targetPrice = isAnnual ? targetTier?.yearlyPrice : targetTier?.price;
 
-  // Global Yearly Discount applies only to Annual plans. Store-specific discounts (VIP/Account) apply to both.
-  const isDiscountEligible = activeDiscount && (isAnnual || activeDiscount.source !== "GLOBAL");
+  // Active discount resolved for the selected billing interval.
+  const isDiscountEligible = Boolean(activeDiscount && activeDiscount.percent > 0);
 
   const lineItemOverrides = isDiscountEligible
     ? {
@@ -552,6 +572,8 @@ export default function Plan() {
     trialEndsAt,
     productLimitReachedAt,
     discount,
+    storeDiscount,
+    globalDiscount,
     freeGrowth,
     freeGrowthStatus,
     vipOffer,
@@ -720,41 +742,48 @@ export default function Plan() {
         </Banner>
       )}
 
-      {/* ── Admin-Granted Discount Banner ──
-          Shown whenever the platform admin has an active discount on file.
-          It reads differently depending on whether the discount is already
-          attached to the live subscription or still needs to be applied. */}
-      {discount && (
+      {/* ── Store-Specific Discount Banner ──
+          Shown whenever the platform admin has granted an individual discount to this store. */}
+      {storeDiscount && (
         <Banner
-          tone={discount.needsApply ? "warning" : "success"}
+          tone={storeDiscount.needsApply ? "warning" : "success"}
           title={
-            discount.needsApply
-              ? `${discount.label}: ${discount.percent}% ready to apply`
-              : `🎉 ${discount.label}: ${discount.percent}% off`
+            storeDiscount.needsApply
+              ? `${storeDiscount.label}: ${storeDiscount.percent}% ready to apply`
+              : `🎉 ${storeDiscount.label}: ${storeDiscount.percent}% off`
           }
           className="rv-fade-in"
         >
-          {discount.needsApply ? (
+          {storeDiscount.needsApply ? (
             <>
-              Your {discount.percent}% {discount.source === "VIP" ? "VIP " : ""}discount
-              {discount.expiresAt && <> is valid through {new Date(discount.expiresAt).toLocaleDateString()}</>},
+              Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount
+              {storeDiscount.expiresAt && <> is valid through {new Date(storeDiscount.expiresAt).toLocaleDateString()}</>},
               but your current subscription is still being charged at full price. Use{" "}
-              <strong>Apply my {discount.percent}% discount</strong> on your active plan below to switch to
+              <strong>Apply my {storeDiscount.percent}% discount</strong> on your active plan below to switch to
               the discounted price.
-            </>
-          ) : discount.source === "GLOBAL" ? (
-            <>
-              A {discount.percent}% Global Yearly Discount is active on all yearly plans
-              {discount.expiresAt && <>, valid through {new Date(discount.expiresAt).toLocaleDateString()}</>}.
-              Choose <strong>Yearly Billing</strong> below to lock in {discount.percent}% savings.
             </>
           ) : (
             <>
-              Your {discount.percent}% {discount.source === "VIP" ? "VIP " : ""}discount is active and
-              reflected in the prices below
-              {discount.expiresAt && <>, valid through {new Date(discount.expiresAt).toLocaleDateString()}</>}.
+              Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount is active and
+              applied to your store subscriptions
+              {storeDiscount.expiresAt && <>, valid through {new Date(storeDiscount.expiresAt).toLocaleDateString()}</>}.
+              {storeDiscount.note && <div style={{ marginTop: "4px", fontStyle: "italic" }}>{storeDiscount.note}</div>}
             </>
           )}
+        </Banner>
+      )}
+
+      {/* ── Global Yearly Discount Banner ──
+          Shown whenever a platform-wide annual promotion is active. */}
+      {globalDiscount && (
+        <Banner
+          tone="info"
+          title={`🎉 Global Yearly Discount: ${globalDiscount.percent}% off`}
+          className="rv-fade-in"
+        >
+          A {globalDiscount.percent}% Global Yearly Discount is active on all yearly plans
+          {globalDiscount.expiresAt && <>, valid through {new Date(globalDiscount.expiresAt).toLocaleDateString()}</>}.
+          Choose <strong>Yearly Billing</strong> below to lock in {globalDiscount.percent}% savings.
         </Banner>
       )}
 
@@ -839,75 +868,100 @@ export default function Plan() {
       </div>
 
       {/* ── Monthly / Yearly Billing Toggle ── */}
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", marginBottom: "28px" }}>
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            background: "var(--rv-surface-subdued, #f1f2f4)",
-            padding: "4px",
-            borderRadius: "32px",
-            border: "1px solid var(--rv-border, #e1e3e5)",
-            boxShadow: "inset 0 1px 2px rgba(0,0,0,0.04)",
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => setBillingCycle("monthly")}
-            style={{
-              border: "none",
-              cursor: "pointer",
-              padding: "8px 20px",
-              borderRadius: "24px",
-              fontSize: "13px",
-              fontWeight: billingCycle === "monthly" ? 700 : 500,
-              background: billingCycle === "monthly" ? "#ffffff" : "transparent",
-              color: billingCycle === "monthly" ? "var(--rv-text, #202223)" : "var(--rv-text-subdued, #6d7175)",
-              boxShadow: billingCycle === "monthly" ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
-              transition: "all 0.2s ease",
-            }}
-          >
-            Monthly Billing
-          </button>
-          <button
-            type="button"
-            onClick={() => setBillingCycle("annual")}
-            style={{
-              border: "none",
-              cursor: "pointer",
-              padding: "8px 16px",
-              borderRadius: "24px",
-              fontSize: "13px",
-              fontWeight: billingCycle === "annual" ? 700 : 500,
-              background: billingCycle === "annual" ? "#ffffff" : "transparent",
-              color: billingCycle === "annual" ? "var(--rv-primary, #008060)" : "var(--rv-text-subdued, #6d7175)",
-              boxShadow: billingCycle === "annual" ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
-              transition: "all 0.2s ease",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
-            <span>Yearly Billing</span>
-            {discount && discount.percent > 0 && (
-              <span
+      {(() => {
+        const yearlyDiscountPercent = Math.max(globalDiscount?.percent || 0, storeDiscount?.percent || 0);
+
+        return (
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", marginBottom: "28px" }}>
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                background: "var(--rv-surface-subdued, #f1f2f4)",
+                padding: "4px",
+                borderRadius: "32px",
+                border: "1px solid var(--rv-border, #e1e3e5)",
+                boxShadow: "inset 0 1px 2px rgba(0,0,0,0.04)",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setBillingCycle("monthly")}
                 style={{
-                  background: "linear-gradient(135deg, #10b981, #059669)",
-                  color: "#ffffff",
-                  fontSize: "11px",
-                  fontWeight: 800,
-                  padding: "2px 8px",
-                  borderRadius: "12px",
-                  letterSpacing: "0.3px",
-                  boxShadow: "0 1px 3px rgba(16,185,129,0.3)",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "8px 20px",
+                  borderRadius: "24px",
+                  fontSize: "13px",
+                  fontWeight: billingCycle === "monthly" ? 700 : 500,
+                  background: billingCycle === "monthly" ? "#ffffff" : "transparent",
+                  color: billingCycle === "monthly" ? "var(--rv-text, #202223)" : "var(--rv-text-subdued, #6d7175)",
+                  boxShadow: billingCycle === "monthly" ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                  transition: "all 0.2s ease",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
                 }}
               >
-                {discount.percent}% OFF
-              </span>
-            )}
-          </button>
-        </div>
-      </div>
+                <span>Monthly Billing</span>
+                {storeDiscount && storeDiscount.percent > 0 && (
+                  <span
+                    style={{
+                      background: "linear-gradient(135deg, #10b981, #059669)",
+                      color: "#ffffff",
+                      fontSize: "11px",
+                      fontWeight: 800,
+                      padding: "2px 8px",
+                      borderRadius: "12px",
+                      letterSpacing: "0.3px",
+                      boxShadow: "0 1px 3px rgba(16,185,129,0.3)",
+                    }}
+                  >
+                    {storeDiscount.percent}% OFF
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setBillingCycle("annual")}
+                style={{
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "8px 16px",
+                  borderRadius: "24px",
+                  fontSize: "13px",
+                  fontWeight: billingCycle === "annual" ? 700 : 500,
+                  background: billingCycle === "annual" ? "#ffffff" : "transparent",
+                  color: billingCycle === "annual" ? "var(--rv-primary, #008060)" : "var(--rv-text-subdued, #6d7175)",
+                  boxShadow: billingCycle === "annual" ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                  transition: "all 0.2s ease",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <span>Yearly Billing</span>
+                {yearlyDiscountPercent > 0 && (
+                  <span
+                    style={{
+                      background: "linear-gradient(135deg, #10b981, #059669)",
+                      color: "#ffffff",
+                      fontSize: "11px",
+                      fontWeight: 800,
+                      padding: "2px 8px",
+                      borderRadius: "12px",
+                      letterSpacing: "0.3px",
+                      boxShadow: "0 1px 3px rgba(16,185,129,0.3)",
+                    }}
+                  >
+                    {yearlyDiscountPercent}% OFF
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── 5 Cards Responsive Grid ── */}
       <div className="rv-plan-grid">
@@ -932,12 +986,16 @@ export default function Plan() {
           const isEnterprise = plan.id === "enterprise";
           const isFreeGrowthCard = Boolean(activeFreeGrowth) && isGrowth;
 
+          const yearlyDiscountPercent = Math.max(globalDiscount?.percent || 0, storeDiscount?.percent || 0);
+
           // Applicable discount depends on the selected billing cycle:
           // - Global Yearly Discount applies only to Yearly Billing.
           // - Store-specific discounts (VIP / Account) apply to both Monthly and Yearly.
           const applicableDiscount = isAnnualSelected
-            ? (discount && discount.percent > 0 ? discount : null)
-            : (discount && discount.percent > 0 && discount.source !== "GLOBAL" ? discount : null);
+            ? (yearlyDiscountPercent > 0
+                ? (storeDiscount?.percent >= (globalDiscount?.percent || 0) ? storeDiscount : globalDiscount)
+                : null)
+            : (storeDiscount && storeDiscount.percent > 0 ? storeDiscount : null);
           const hasApplicableDiscount = Boolean(applicableDiscount && applicableDiscount.percent > 0);
 
           let cardBorder = "1px solid var(--rv-border)";
@@ -1118,7 +1176,9 @@ export default function Plan() {
                           </span>
                         </div>
                         <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                          Billed monthly · 14-day trial
+                          {hasApplicableDiscount
+                            ? `Billed monthly · ${applicableDiscount.percent}% discount applied · 14-day trial`
+                            : "Billed monthly · 14-day trial"}
                         </div>
                       </div>
                     );
@@ -1146,7 +1206,7 @@ export default function Plan() {
 
                 {/* Bottom Action Button */}
                 <div style={{ borderTop: "1px solid var(--rv-border-subtle)", paddingTop: "14px", marginTop: "auto" }}>
-                  {isExactCurrent && discount?.needsApply && plan.id !== "free" ? (
+                  {isExactCurrent && applicableDiscount?.needsApply && plan.id !== "free" ? (
                     <fetcher.Form method="POST" style={{ width: "100%" }}>
                       <input type="hidden" name="planId" value={plan.id} />
                       <input type="hidden" name="interval" value={billingCycle} />
@@ -1156,7 +1216,7 @@ export default function Plan() {
                         className="rv-btn rv-btn-primary"
                         style={{ width: "100%", fontWeight: 700 }}
                       >
-                        {isSubmitting ? "Applying..." : `Apply my ${discount.percent}% discount`}
+                        {isSubmitting ? "Applying..." : `Apply my ${applicableDiscount.percent}% discount`}
                       </button>
                     </fetcher.Form>
                   ) : isExactCurrent ? (
