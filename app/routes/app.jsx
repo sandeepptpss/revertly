@@ -2,21 +2,42 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server.js";
+import prisma from "../db.server.js";
 import { isPlatformAdmin } from "../platformAdmin.server.js";
+import { GlobalSupportWidget } from "../components/GlobalSupportWidget.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+
+  let defaultEmail = "";
+  let planTier = "Free";
+
+  try {
+    const settings = await prisma.appSettings.findUnique({
+      where: { shop },
+      select: { alertEmail: true, planId: true },
+    });
+    if (settings?.alertEmail) defaultEmail = settings.alertEmail;
+    if (settings?.planId) planTier = settings.planId;
+  } catch {
+    // Graceful fallback
+  }
+
   // eslint-disable-next-line no-undef
   return {
     apiKey: process.env.SHOPIFY_API_KEY || "",
     // The nav link is just a convenience — access is enforced by the admin
     // route's own loader/action, not by hiding the link.
     showAdminLink: isPlatformAdmin(session.shop, session),
+    shop,
+    defaultEmail,
+    planTier,
   };
 };
 
 export default function App() {
-  const { apiKey, showAdminLink } = useLoaderData();
+  const { apiKey, showAdminLink, shop, defaultEmail, planTier } = useLoaderData();
 
   return (
     <AppProvider embedded apiKey={apiKey}>
@@ -37,6 +58,7 @@ export default function App() {
         {showAdminLink && <s-link href="/app/admin">Admin Panel</s-link>}
       </s-app-nav>
       <Outlet />
+      <GlobalSupportWidget shop={shop} defaultEmail={defaultEmail} planTier={planTier} />
     </AppProvider>
   );
 }

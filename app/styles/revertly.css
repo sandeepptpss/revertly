@@ -1877,3 +1877,389 @@ s-page {
   margin-top: 24px;
 }
 
+/* Spinner & Support Ticket Form Utilities */
+@keyframes rvSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.rv-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  border-top-color: #ffffff;
+  animation: rvSpin 0.75s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.rv-ticket-success-box {
+  background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
+  border: 1px solid #bbf7d0;
+  border-radius: var(--rv-radius-md);
+  padding: 24px 20px;
+  text-align: center;
+}
+
+/* ==========================================================================
+   Global Support Widget & Floating Action Button
+   ========================================================================== */
+
+:root {
+  --rv-support-blue: #0084ff;
+  --rv-support-blue-hover: #0073e6;
+  --rv-support-blue-active: #0062c4;
+  --rv-support-blue-shadow: rgba(0, 132, 255, 0.42);
+}
+
+/* Floating Action Button Container */
+.rv-support-fab-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@media (max-width: 640px) {
+  .rv-support-fab-container {
+    bottom: 20px;
+    right: 20px;
+  }
+}
+
+/* Floating Action Button */
+.rv-support-fab {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--rv-support-blue);
+  background: linear-gradient(135deg, #0084ff 0%, #0070eb 100%);
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px var(--rv-support-blue-shadow), 0 2px 6px rgba(0, 0, 0, 0.12);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.2s ease;
+  outline: none;
+  position: relative;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.rv-support-fab:hover {
+  transform: scale(1.06);
+  background: linear-gradient(135deg, #0a8aff 0%, #0078f5 100%);
+  box-shadow: 0 6px 20px rgba(0, 132, 255, 0.52), 0 3px 8px rgba(0, 0, 0, 0.16);
+}
+
+.rv-support-fab:active {
+  transform: scale(0.95);
+  box-shadow: 0 2px 8px var(--rv-support-blue-shadow);
+}
+
+.rv-support-fab:focus-visible {
+  box-shadow: 0 0 0 3px rgba(0, 132, 255, 0.4), 0 4px 14px var(--rv-support-blue-shadow);
+}
+
+.rv-support-fab-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.rv-support-fab.is-open .rv-support-fab-icon {
+  transform: rotate(90deg);
+}
+
+/* Tooltip on Hover */
+.rv-support-tooltip {
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) translateX(6px);
+  background: #1e293b;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+              visibility 0.18s;
+  z-index: 100000;
+}
+
+.rv-support-tooltip::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  transform: translateY(-50%);
+  border-width: 5px;
+  border-style: solid;
+  border-color: transparent transparent transparent #1e293b;
+}
+
+.rv-support-fab-container:hover .rv-support-tooltip,
+.rv-support-fab:focus-visible ~ .rv-support-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* Hide tooltip when drawer is already open */
+.rv-support-fab.is-open ~ .rv-support-tooltip {
+  display: none !important;
+}
+
+/* Support Drawer / Panel */
+@keyframes rvSupportSlideUp {
+  0% {
+    opacity: 0;
+    transform: translateY(16px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.rv-support-drawer {
+  position: fixed;
+  right: 24px;
+  bottom: 92px;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  height: 600px;
+  max-height: calc(100vh - 116px);
+  background: #ffffff;
+  border: 1px solid var(--rv-border);
+  border-radius: 16px;
+  box-shadow: 0 16px 40px -6px rgba(0, 0, 0, 0.18), 0 4px 16px -2px rgba(0, 0, 0, 0.08);
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: rvSupportSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (max-width: 640px) {
+  .rv-support-drawer {
+    right: 16px;
+    left: 16px;
+    bottom: 86px;
+    width: auto;
+    max-width: none;
+    height: auto;
+    max-height: calc(100vh - 106px);
+  }
+}
+
+/* Drawer Header */
+.rv-support-drawer-header {
+  background: linear-gradient(135deg, #0084ff 0%, #0066d6 100%);
+  color: #ffffff;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.rv-support-drawer-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rv-support-drawer-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rv-support-drawer-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rv-support-drawer-close-btn {
+  background: rgba(255, 255, 255, 0.16);
+  border: none;
+  color: #ffffff;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, transform 0.15s ease;
+  padding: 0;
+}
+
+.rv-support-drawer-close-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: scale(1.05);
+}
+
+.rv-support-drawer-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.rv-support-online-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.18);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.rv-support-online-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #4ade80;
+  box-shadow: 0 0 6px #4ade80;
+}
+
+/* Drawer Tabs */
+.rv-support-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--rv-border);
+  background: #f8fafc;
+  flex-shrink: 0;
+}
+
+.rv-support-tab-btn {
+  flex: 1;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--rv-text-subdued);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.rv-support-tab-btn:hover {
+  color: var(--rv-text);
+  background: #f1f5f9;
+}
+
+.rv-support-tab-btn.is-active {
+  color: var(--rv-support-blue);
+  border-bottom-color: var(--rv-support-blue);
+  background: #ffffff;
+}
+
+/* Drawer Content Body */
+.rv-support-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  background: #ffffff;
+}
+
+/* Drawer Footer */
+.rv-support-drawer-footer {
+  padding: 10px 18px;
+  border-top: 1px solid var(--rv-border);
+  background: #fafbfb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--rv-text-subdued);
+  flex-shrink: 0;
+}
+
+.rv-support-drawer-footer a {
+  color: var(--rv-support-blue);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.rv-support-drawer-footer a:hover {
+  text-decoration: underline;
+}
+
+/* FAQs inside drawer */
+.rv-support-faq-item {
+  border: 1px solid var(--rv-border-subtle);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.rv-support-faq-item:hover {
+  border-color: var(--rv-border);
+}
+
+.rv-support-faq-q {
+  width: 100%;
+  text-align: left;
+  background: #ffffff;
+  border: none;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--rv-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rv-support-faq-q:hover {
+  background: #f8fafc;
+}
+
+.rv-support-faq-ans {
+  padding: 10px 12px 12px;
+  font-size: 12px;
+  color: var(--rv-text-subdued);
+  line-height: 1.5;
+  background: #fafbfb;
+  border-top: 1px solid var(--rv-border-subtle);
+}
+
+
+
