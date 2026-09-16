@@ -11,6 +11,7 @@
   const shop = rootEl ? rootEl.getAttribute('data-shop') : null;
   const themeId = rootEl ? rootEl.getAttribute('data-theme-id') : null;
 
+
   window.Revertly = {
     version: '1.0.0',
     shop: shop,
