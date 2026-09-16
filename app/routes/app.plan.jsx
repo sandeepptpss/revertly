@@ -7,6 +7,7 @@ import {
   PLAN_BUSINESS,
   PLAN_ENTERPRISE,
 } from "../shopify.server.js";
+import { BillingInterval } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { PLAN_TIERS } from "../billing.constants.js";
@@ -14,7 +15,15 @@ import {
   getStorePlan,
   normalizePlanId,
 } from "../billing.server.js";
+import { getActiveStoreDiscount, DISCOUNT_DURATION_MONTHS } from "../storeDiscount.server.js";
 import { Banner } from "../components/Banner.jsx";
+import { SparklesIcon } from "../components/Icons.jsx";
+
+/** Rounds to cents and drops a trailing ".00" for a cleaner price tag. */
+function formatPrice(amount) {
+  const rounded = Math.round(amount * 100) / 100;
+  return Number.isInteger(rounded) ? `$${rounded}` : `$${rounded.toFixed(2)}`;
+}
 
 // ── Plan definitions ────────────────────────────────────────────────────────
 const PLANS = [
@@ -123,13 +132,17 @@ export const loader = async ({ request }) => {
 
   const { currentPlan, limits } = await getStorePlan(shop, billing, isTest);
 
-  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings] = await Promise.all([
+  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, activeDiscount] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
     prisma.changeEvent.count({ where: { shop } }),
     prisma.restorePoint.count({ where: { shop } }),
     prisma.detectionRule.count({ where: { shop } }),
     prisma.orderArchive.count({ where: { shop } }),
     prisma.appSettings.findUnique({ where: { shop } }),
+    // Platform-admin-granted discount, if the admin has set one for this
+    // store. Read fresh on every load so a change made in the Admin Panel
+    // shows up here without the merchant needing to do anything.
+    getActiveStoreDiscount(shop),
   ]);
 
   if (settings?.productLimitReachedAt && (limits.products === Infinity || productCount < limits.products)) {
@@ -148,6 +161,9 @@ export const loader = async ({ request }) => {
     hasUsedTrial: Boolean(settings?.hasUsedTrial),
     trialEndsAt: settings?.trialEndsAt || null,
     productLimitReachedAt: settings?.productLimitReachedAt || null,
+    discount: activeDiscount
+      ? { percent: activeDiscount.discountPercent, note: activeDiscount.note, expiresAt: activeDiscount.expiresAt }
+      : null,
   };
 };
 
@@ -227,11 +243,32 @@ export const action = async ({ request }) => {
   const url = new URL(request.url);
   const returnUrl = `${url.origin}/app/plan`;
 
+  // If the platform admin has granted this store an active yearly discount,
+  // apply it to the real Shopify charge — not just the price shown on this
+  // page — for the same number of billing cycles the discount is valid for.
+  const activeDiscount = await getActiveStoreDiscount(shop);
+  const lineItemOverrides = activeDiscount
+    ? {
+        lineItems: [
+          {
+            amount: PLAN_TIERS[targetPlanId]?.price,
+            currencyCode: "USD",
+            interval: BillingInterval.Every30Days,
+            discount: {
+              durationLimitInIntervals: DISCOUNT_DURATION_MONTHS,
+              value: { percentage: activeDiscount.discountPercent / 100 },
+            },
+          },
+        ],
+      }
+    : {};
+
   try {
     return await billing.request({
       plan: targetShopifyPlan,
       isTest,
       returnUrl,
+      ...lineItemOverrides,
     });
   } catch (err) {
     if (err instanceof Response) {
@@ -287,7 +324,7 @@ export const action = async ({ request }) => {
 };
 
 export default function Plan() {
-  const { currentPlan, usage, limits, trialEndsAt, productLimitReachedAt } = useLoaderData();
+  const { currentPlan, usage, limits, trialEndsAt, productLimitReachedAt, discount } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activePlan = result?.planId || currentPlan;
@@ -326,6 +363,18 @@ export default function Plan() {
           title="Monitored Product Capacity Reached"
         >
           You&apos;ve reached your plan&apos;s monitored product limit — newly added products are no longer being tracked. Upgrade below to resume 24/7 protection across all products.
+        </Banner>
+      )}
+
+      {/* ── Admin-Granted Discount Banner ──
+          Shown automatically whenever the platform admin has an active
+          discount on file for this store — no action needed on the
+          merchant's side, this just reflects what the admin set. */}
+      {discount && (
+        <Banner tone="success" title={`🎉 ${discount.percent}% yearly discount applied`} className="rv-fade-in">
+          Your account has a special {discount.percent}% discount on paid plans, valid through{" "}
+          {new Date(discount.expiresAt).toLocaleDateString()}. Prices below already reflect it — it will
+          also be applied automatically to your Shopify subscription charge when you upgrade or renew.
         </Banner>
       )}
 
@@ -466,16 +515,35 @@ export default function Plan() {
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "baseline", gap: "4px", marginBottom: "4px" }}>
-                    <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
-                      {plan.price}
-                    </span>
-                    {plan.period && (
-                      <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                        {plan.period}
-                      </span>
-                    )}
-                  </div>
+                  {(() => {
+                    const basePrice = PLAN_TIERS[plan.id]?.price ?? 0;
+                    const hasDiscount = discount && basePrice > 0;
+                    const discountedPrice = hasDiscount ? basePrice * (1 - discount.percent / 100) : basePrice;
+                    return (
+                      <div style={{ marginBottom: "4px" }}>
+                        {hasDiscount && (
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
+                            <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
+                              {plan.price}
+                            </span>
+                            <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
+                              <SparklesIcon size={10} /> {discount.percent}% OFF
+                            </span>
+                          </div>
+                        )}
+                        <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
+                          <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
+                            {hasDiscount ? formatPrice(discountedPrice) : plan.price}
+                          </span>
+                          {plan.period && (
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                              {plan.period}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "6px" }}>
                     {plan.footerText}

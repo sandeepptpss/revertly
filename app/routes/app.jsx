@@ -2,15 +2,21 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server.js";
+import { isPlatformAdmin } from "../platformAdmin.server.js";
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  return {
+    apiKey: process.env.SHOPIFY_API_KEY || "",
+    // The nav link is just a convenience — access is enforced by the admin
+    // route's own loader/action, not by hiding the link.
+    showAdminLink: isPlatformAdmin(session.shop, session),
+  };
 };
 
 export default function App() {
-  const { apiKey } = useLoaderData();
+  const { apiKey, showAdminLink } = useLoaderData();
 
   return (
     <AppProvider embedded apiKey={apiKey}>
@@ -28,6 +34,7 @@ export default function App() {
         <s-link href="/app/settings">Settings</s-link>
         <s-link href="/app/plan">Plans &amp; Billing</s-link>
         <s-link href="/app/support">Support</s-link>
+        {showAdminLink && <s-link href="/app/admin">Admin Panel</s-link>}
       </s-app-nav>
       <Outlet />
     </AppProvider>

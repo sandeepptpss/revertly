@@ -265,6 +265,24 @@ model AppSettings {
 }
 
 // Support tickets submitted by merchants
+// A platform-admin-granted discount on a single merchant's subscription.
+// Always "yearly": every set/update pushes expiresAt to one year out, and the
+// checkout-time Shopify discount is applied for 12 billing intervals to match.
+model StoreDiscount {
+  id               Int       @id @default(autoincrement())
+  shop             String    @unique @db.VarChar(255)
+  discountPercent  Int // 1-100
+  note             String?   @db.VarChar(500)
+  isActive         Boolean   @default(true)
+  expiresAt        DateTime
+  createdByEmail   String?   @db.VarChar(255)
+  updatedByEmail   String?   @db.VarChar(255)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([shop, isActive])
+}
+
 model SupportTicket {
   id          Int      @id @default(autoincrement())
   shop        String   @db.VarChar(255)
