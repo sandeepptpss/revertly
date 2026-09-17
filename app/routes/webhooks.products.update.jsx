@@ -4,6 +4,8 @@ import {
   compareSnapshots,
   sendIncidentAlert,
   triggerCircuitBreaker,
+  isFieldMatch,
+  isConditionMet,
 } from "../monitor.server.js";
 import { getEffectiveLimits } from "../billing.server.js";
 
@@ -17,7 +19,13 @@ function buildSnapshotFromPayload(product) {
     tags: Array.isArray(product.tags) ? product.tags.join(", ") : (product.tags || ""),
     handle: product.handle || "",
     bodyHtml: product.body_html || "",
+    templateSuffix: product.template_suffix || product.templateSuffix || "",
     publishedAt: product.published_at || null,
+    images: (product.images || []).map((img) => ({
+      id: String(img.id),
+      url: img.src,
+      altText: img.alt || "",
+    })),
     variants: (product.variants || []).map((v) => ({
       id: `gid://shopify/ProductVariant/${v.id}`,
       title: v.title,
@@ -198,28 +206,29 @@ export const action = async ({ request }) => {
     // Check detection rules
     const rules = await prisma.detectionRule.findMany({ where: { shop, isActive: true } });
     for (const rule of rules) {
-      const match = changes.find((c) => c.fieldName === rule.field || c.fieldName.endsWith(`.${rule.field}`));
+      const match = changes.find((c) => isFieldMatch(c.fieldName, rule.field));
       if (!match) continue;
-      let met = false;
-      if (rule.condition === "CHANGED") met = true;
-      else if (rule.condition === "DECREASE_BY_PERCENT" && rule.threshold != null) {
-        const old = parseFloat(match.oldValue), nw = parseFloat(match.newValue);
-        if (!isNaN(old) && !isNaN(nw) && old > 0) met = ((old - nw) / old) * 100 >= rule.threshold;
-      } else if (rule.condition === "INCREASE_BY_PERCENT" && rule.threshold != null) {
-        const old = parseFloat(match.oldValue), nw = parseFloat(match.newValue);
-        if (!isNaN(old) && !isNaN(nw) && old > 0) met = ((nw - old) / old) * 100 >= rule.threshold;
+
+      if (!isConditionMet(rule.condition, rule.threshold, match.oldValue, match.newValue)) {
+        continue;
       }
 
-      if (!met) continue;
-
-      // Check min products window
-      if (rule.minProducts && rule.windowMinutes) {
-        const ws = new Date(Date.now() - rule.windowMinutes * 60 * 1000);
-        const cnt = await prisma.changeEvent.groupBy({
-          by: ["productId"],
-          where: { shop, fieldName: { contains: rule.field }, changedAt: { gte: ws } }
+      // Check min products window (if minProducts > 1)
+      const minRequired = rule.minProducts && rule.minProducts > 1 ? rule.minProducts : 1;
+      if (minRequired > 1) {
+        const windowMinutes = rule.windowMinutes || 10;
+        const ws = new Date(Date.now() - windowMinutes * 60 * 1000);
+        const pastEvents = await prisma.changeEvent.findMany({
+          where: { shop, changedAt: { gte: ws } },
+          select: { productId: true, fieldName: true },
         });
-        if (cnt.length < rule.minProducts) continue;
+        const matchingProductIds = new Set(
+          pastEvents
+            .filter((e) => isFieldMatch(e.fieldName, rule.field))
+            .map((e) => e.productId)
+        );
+        matchingProductIds.add(numericId);
+        if (matchingProductIds.size < minRequired) continue;
       }
 
       // Check if there is an active open incident for this rule created within the last 10 minutes
@@ -245,7 +254,10 @@ export const action = async ({ request }) => {
         });
         const updated = await prisma.incident.update({
           where: { id: activeIncident.id },
-          data: { affectedCount: uniqueProducts.length },
+          data: {
+            affectedCount: uniqueProducts.length,
+            ...(circuitBreakerInfo?.message ? { notes: circuitBreakerInfo.message } : {}),
+          },
         });
         await sendIncidentAlert(shop, updated, settings);
         return new Response(`Event linked to active incident ${activeIncident.id}`, { status: 200 });
@@ -256,14 +268,14 @@ export const action = async ({ request }) => {
         ? new Date(Date.now() - rule.windowMinutes * 60 * 1000)
         : new Date(Date.now() - 10 * 60 * 1000);
 
-      const unlinkedEvents = await prisma.changeEvent.findMany({
+      const candidateEvents = await prisma.changeEvent.findMany({
         where: {
           shop,
-          fieldName: { contains: rule.field },
           changedAt: { gte: ws },
           incidentId: null,
         },
       });
+      const unlinkedEvents = candidateEvents.filter((e) => isFieldMatch(e.fieldName, rule.field));
 
       const uniqueProductIds = new Set([numericId, ...unlinkedEvents.map((e) => e.productId)]);
       const affectedCount = uniqueProductIds.size;
@@ -271,7 +283,7 @@ export const action = async ({ request }) => {
       const incident = await prisma.incident.create({
         data: {
           shop,
-          name: `${rule.name}: ${affectedCount} products affected`,
+          name: `${rule.name}: ${affectedCount} product${affectedCount > 1 ? "s" : ""} affected`,
           severity: rule.severity,
           affectedCount,
           triggeredRuleId: rule.id,
@@ -279,7 +291,7 @@ export const action = async ({ request }) => {
         },
       });
 
-      const allEventIds = [...eventIds, ...unlinkedEvents.map((e) => e.id)];
+      const allEventIds = Array.from(new Set([...eventIds, ...unlinkedEvents.map((e) => e.id)]));
       if (allEventIds.length > 0) {
         await prisma.changeEvent.updateMany({
           where: { id: { in: allEventIds } },

@@ -13,6 +13,7 @@ export const MONITORED_PRODUCT_FIELDS = [
   "tags",
   "handle",
   "bodyHtml",
+  "templateSuffix",
   "publishedAt",
 ];
 
@@ -118,6 +119,16 @@ export function buildSnapshot(product) {
     type: e.node.type,
   }));
 
+  const rawImages = (
+    product.images?.nodes ||
+    product.images?.edges?.map((e) => e.node) ||
+    (Array.isArray(product.images) ? product.images : [])
+  ).map((img) => ({
+    id: img.id,
+    url: img.url || img.src,
+    altText: img.altText || img.alt || "",
+  }));
+
   return {
     id: product.id,
     title: product.title,
@@ -129,7 +140,9 @@ export function buildSnapshot(product) {
       : product.tags || "",
     handle: product.handle,
     bodyHtml: product.bodyHtml,
+    templateSuffix: product.templateSuffix || "",
     publishedAt: product.publishedAt,
+    images: rawImages,
     variants,
     metafields,
   };
@@ -317,6 +330,120 @@ export async function saveChangeEvents(shop, product, changes, incidentId) {
 }
 
 /**
+ * Helper to match a changeEvent fieldName with a rule's field
+ * Supports variant prefixes and common aliases (e.g. inventory -> variant.inventoryQuantity)
+ */
+export function isFieldMatch(changeFieldName, ruleField) {
+  if (!changeFieldName || !ruleField) return false;
+  const fn = String(changeFieldName).toLowerCase().trim();
+  const rf = String(ruleField).toLowerCase().trim();
+
+  // Direct exact match
+  if (fn === rf) return true;
+
+  // Ends with .field (e.g. variant.price matches price)
+  if (fn.endsWith(`.${rf}`)) return true;
+
+  // Special alias mappings
+  if ((rf === "inventory" || rf === "inventoryquantity") && (fn === "variant.inventoryquantity" || fn.includes("inventory"))) {
+    return true;
+  }
+  if (rf === "compareatprice" && (fn === "variant.compareatprice" || fn.includes("compareatprice"))) {
+    return true;
+  }
+  if (rf === "sku" && (fn === "variant.sku" || fn.endsWith(".sku"))) {
+    return true;
+  }
+  if (rf === "price" && (fn === "variant.price" || fn === "price")) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Helper to evaluate trigger condition against old and new values
+ */
+export function isConditionMet(condition, threshold, oldValue, newValue) {
+  if (condition === "CHANGED") return true;
+
+  const old = parseFloat(oldValue);
+  const nw = parseFloat(newValue);
+
+  if (Number.isNaN(old) || Number.isNaN(nw)) return false;
+
+  if (condition === "DECREASE_BY_PERCENT") {
+    if (threshold == null) return false;
+    if (old <= 0) return false; // cannot calculate percentage decrease from 0
+    const pct = ((old - nw) / old) * 100;
+    return pct >= threshold;
+  }
+
+  if (condition === "INCREASE_BY_PERCENT") {
+    if (threshold == null) return false;
+    if (old <= 0) {
+      // If previous value was 0 and new value > 0, treat as triggered
+      return nw > 0;
+    }
+    const pct = ((nw - old) / old) * 100;
+    return pct >= threshold;
+  }
+
+  return false;
+}
+
+/**
+ * Seed default detection rules for a store if none exist
+ */
+export async function seedDefaultDetectionRules(shop) {
+  const count = await prisma.detectionRule.count({ where: { shop } });
+  if (count > 0) return [];
+
+  const defaults = [
+    {
+      shop,
+      name: "Severe Price Drop (≥ 30%)",
+      field: "price",
+      condition: "DECREASE_BY_PERCENT",
+      threshold: 30,
+      minProducts: 1,
+      windowMinutes: 10,
+      severity: "CRITICAL",
+      isActive: true,
+    },
+    {
+      shop,
+      name: "Accidental Status Modification",
+      field: "status",
+      condition: "CHANGED",
+      threshold: null,
+      minProducts: 1,
+      windowMinutes: 10,
+      severity: "HIGH",
+      isActive: true,
+    },
+    {
+      shop,
+      name: "Bulk Inventory Drop (≥ 50%)",
+      field: "inventory",
+      condition: "DECREASE_BY_PERCENT",
+      threshold: 50,
+      minProducts: 3,
+      windowMinutes: 10,
+      severity: "HIGH",
+      isActive: true,
+    },
+  ];
+
+  const created = [];
+  for (const rule of defaults) {
+    const r = await prisma.detectionRule.create({ data: rule });
+    created.push(r);
+  }
+  return created;
+}
+
+/**
  * Check detection rules and create an incident if needed
  */
 export async function checkDetectionRules(shop, changes) {
@@ -329,59 +456,32 @@ export async function checkDetectionRules(shop, changes) {
   const now = new Date();
 
   for (const rule of rules) {
-    const matchingChange = changes.find((c) => {
-      // Match field (support "price" matching "variant.price")
-      return (
-        c.fieldName === rule.field || c.fieldName.endsWith(`.${rule.field}`)
-      );
-    });
-
+    const matchingChange = changes.find((c) => isFieldMatch(c.fieldName, rule.field));
     if (!matchingChange) continue;
 
-    // Check condition
-    let conditionMet = false;
-    if (rule.condition === "CHANGED") {
-      conditionMet = true;
-    } else if (
-      rule.condition === "DECREASE_BY_PERCENT" &&
-      rule.threshold != null
-    ) {
-      const old = parseFloat(matchingChange.oldValue);
-      const nw = parseFloat(matchingChange.newValue);
-      if (!isNaN(old) && !isNaN(nw) && old > 0) {
-        const pct = ((old - nw) / old) * 100;
-        conditionMet = pct >= rule.threshold;
-      }
-    } else if (
-      rule.condition === "INCREASE_BY_PERCENT" &&
-      rule.threshold != null
-    ) {
-      const old = parseFloat(matchingChange.oldValue);
-      const nw = parseFloat(matchingChange.newValue);
-      if (!isNaN(old) && !isNaN(nw) && old > 0) {
-        const pct = ((nw - old) / old) * 100;
-        conditionMet = pct >= rule.threshold;
-      }
+    if (!isConditionMet(rule.condition, rule.threshold, matchingChange.oldValue, matchingChange.newValue)) {
+      continue;
     }
 
-    if (!conditionMet) continue;
-
     // Check min products in time window
-    if (rule.minProducts && rule.windowMinutes) {
+    const minRequired = rule.minProducts && rule.minProducts > 1 ? rule.minProducts : 1;
+    if (minRequired > 1 && rule.windowMinutes) {
       const windowStart = new Date(
         now.getTime() - rule.windowMinutes * 60 * 1000,
       );
-      const recentCount = await prisma.changeEvent.groupBy({
-        by: ["productId"],
+      const recentEvents = await prisma.changeEvent.findMany({
         where: {
           shop,
-          fieldName: {
-            contains: rule.field,
-          },
           changedAt: { gte: windowStart },
         },
+        select: { productId: true, fieldName: true },
       });
-      if (recentCount.length < rule.minProducts) continue;
+      const matchingProductIds = new Set(
+        recentEvents
+          .filter((e) => isFieldMatch(e.fieldName, rule.field))
+          .map((e) => e.productId)
+      );
+      if (matchingProductIds.size < minRequired) continue;
     }
 
     return rule;
@@ -488,10 +588,12 @@ export async function rollbackProductFields(admin, shop, productId, changeEventI
         productInput.vendor = restoredFields.vendor;
       if (restoredFields.tags !== undefined)
         productInput.tags = restoredFields.tags.split(", ").filter(Boolean);
-      if (restoredFields.bodyHtml !== undefined)
-        productInput.bodyHtml = restoredFields.bodyHtml;
+      if (restoredFields.bodyHtml !== undefined || restoredFields.descriptionHtml !== undefined)
+        productInput.descriptionHtml = restoredFields.descriptionHtml !== undefined ? restoredFields.descriptionHtml : restoredFields.bodyHtml;
       if (restoredFields.handle !== undefined)
         productInput.handle = restoredFields.handle;
+      if (restoredFields.templateSuffix !== undefined)
+        productInput.templateSuffix = restoredFields.templateSuffix || "";
 
       const resp = await admin.graphql(
         `#graphql

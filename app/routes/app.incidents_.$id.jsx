@@ -12,8 +12,10 @@ import {
   ArrowLeftIcon,
   HistoryIcon,
   ShieldCheckIcon,
+  RefreshCwIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
+import { logAudit } from "../team.server.js";
 
 export const loader = async ({ request, params }) => {
   const { session } = await authenticate.admin(request);
@@ -65,7 +67,9 @@ export const action = async ({ request, params }) => {
         where: { id: incidentId },
         data: { status: "RESOLVED", resolvedAt: new Date() },
       });
-      return { success: true, message: "Incident resolved." };
+      const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
+      await logAudit(shop, session, "INCIDENT_RESOLVE", { incidentId, name: incident?.name });
+      return { success: true, message: "Incident marked as resolved." };
     }
 
     if (intent === "ignore") {
@@ -73,7 +77,19 @@ export const action = async ({ request, params }) => {
         where: { id: incidentId },
         data: { status: "IGNORED", resolvedAt: new Date() },
       });
-      return { success: true, message: "Incident ignored." };
+      const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
+      await logAudit(shop, session, "INCIDENT_IGNORE", { incidentId, name: incident?.name });
+      return { success: true, message: "Incident marked as ignored." };
+    }
+
+    if (intent === "reopen") {
+      await prisma.incident.update({
+        where: { id: incidentId },
+        data: { status: "OPEN", resolvedAt: null },
+      });
+      const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
+      await logAudit(shop, session, "INCIDENT_REOPEN", { incidentId, name: incident?.name });
+      return { success: true, message: "Incident reopened as Open." };
     }
 
     if (intent === "rollback") {
@@ -315,6 +331,62 @@ export default function IncidentDetail() {
         </div>
       )}
 
+      {/* ── Status Banner if Incident is Not Open ── */}
+      {!canRollback && (
+        <div
+          className="rv-card"
+          style={{
+            borderLeft: `4px solid ${
+              incident.status === "RESOLVED"
+                ? "var(--rv-success)"
+                : incident.status === "ROLLED_BACK"
+                ? "var(--rv-primary)"
+                : "var(--rv-border)"
+            }`,
+            marginBottom: "24px",
+          }}
+        >
+          <div
+            style={{
+              padding: "16px 20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "16px",
+            }}
+          >
+            <div>
+              <strong style={{ fontSize: "15px", color: "var(--rv-text)", display: "flex", alignItems: "center", gap: "8px" }}>
+                <CheckCircleIcon size={16} />
+                <span>Incident Status: {incident.status.replace(/_/g, " ")}</span>
+              </strong>
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                {incident.status === "RESOLVED"
+                  ? `Marked as resolved on ${formatTime(incident.resolvedAt || incident.createdAt)}.`
+                  : incident.status === "ROLLED_BACK"
+                  ? `Catalog restored on ${formatTime(incident.resolvedAt || incident.createdAt)}.`
+                  : `Ignored on ${formatTime(incident.resolvedAt || incident.createdAt)}.`}
+              </p>
+            </div>
+
+            {(incident.status === "RESOLVED" || incident.status === "IGNORED") && (
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="reopen" />
+                <button
+                  type="submit"
+                  disabled={fetcher.state !== "idle"}
+                  className="rv-btn rv-btn-secondary rv-btn-sm"
+                >
+                  <RefreshCwIcon size={14} className={fetcher.state !== "idle" ? "rv-spin" : ""} />
+                  <span>{fetcher.state !== "idle" ? "Reopening..." : "Reopen Incident"}</span>
+                </button>
+              </fetcher.Form>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Affected Products & Granular Diffs ── */}
       <div style={{ marginBottom: "24px" }}>
         <h3 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 6px", color: "var(--rv-text)" }}>
@@ -409,5 +481,8 @@ export function ErrorBoundary() {
 }
 
 export const headers = (headersArgs) => {
-  return boundary.headers(headersArgs);
+  return {
+    ...boundary.headers(headersArgs),
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+  };
 };

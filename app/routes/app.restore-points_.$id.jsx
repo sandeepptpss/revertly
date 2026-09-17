@@ -83,12 +83,26 @@ export const loader = async ({ request, params }) => {
     if (!current) continue;
 
     const fieldDiffs = [];
-    const fieldKeys = ["title", "status", "vendor", "tags", "handle"];
+    const fieldKeys = ["title", "status", "vendor", "tags", "handle", "bodyHtml", "templateSuffix"];
     for (const key of fieldKeys) {
       const sv = String(saved.snapshotData?.[key] ?? saved[key] ?? "");
       const cv = String(current[key] ?? "");
       if (sv !== cv) {
-        fieldDiffs.push({ field: key, saved: sv, current: cv });
+        if (key === "bodyHtml") {
+          fieldDiffs.push({
+            field: "description",
+            saved: sv ? sv.replace(/<[^>]*>/g, "").slice(0, 80) + (sv.length > 80 ? "..." : "") : "(empty)",
+            current: cv ? cv.replace(/<[^>]*>/g, "").slice(0, 80) + (cv.length > 80 ? "..." : "") : "(empty)",
+          });
+        } else if (key === "templateSuffix") {
+          fieldDiffs.push({
+            field: "template",
+            saved: sv || "Default",
+            current: cv || "Default",
+          });
+        } else {
+          fieldDiffs.push({ field: key, saved: sv, current: cv });
+        }
       }
     }
 
@@ -492,7 +506,7 @@ export const action = async ({ request, params }) => {
       if (!current) continue;
 
       const mockEvents = [];
-      const fieldKeys = ["title", "status", "vendor", "tags", "handle"];
+      const fieldKeys = ["title", "status", "vendor", "tags", "handle", "bodyHtml", "templateSuffix"];
       for (const key of fieldKeys) {
         const sv = String(savedSnap[key] ?? "");
         const cv = String(current[key] ?? "");
@@ -1334,43 +1348,70 @@ export default function RestorePointDetail() {
                 <tr>
                   <th>Collection Title</th>
                   <th>Handle</th>
+                  <th>Image &amp; Description</th>
                   <th>Smart Rules Preserved</th>
                   <th style={{ textAlign: "right" }}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {collectionData.map((col, idx) => (
-                  <tr key={col.id || idx}>
-                    <td style={{ fontWeight: 600 }}>{col.title}</td>
-                    <td style={{ color: "var(--rv-text-subdued)" }}>/{col.handle}</td>
-                    <td>
-                      <span className="rv-badge rv-badge-info rv-badge-sm">
-                        {col.ruleSet?.rules?.length || 0} smart rules
-                      </span>
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <button
-                        type="button"
-                        disabled={isRestoring}
-                        onClick={() => {
-                          setConfirmDialog({
-                            title: `Restore Collection: "${col.title}"`,
-                            message: `Are you sure you want to recreate or update collection "${col.title}" in Shopify?`,
-                            dangerNote: "Any manually removed conditions or changes made since the snapshot will be restored.",
-                            confirmLabel: "Restore Collection",
-                            tone: "primary",
-                            onConfirm: () => {
-                              fetcher.submit({ intent: "restore_collection", colIndex: String(idx) }, { method: "POST" });
-                            },
-                          });
-                        }}
-                        className="rv-btn rv-btn-secondary rv-btn-sm"
-                      >
-                        <span>Recreate / Restore</span>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {collectionData.map((col, idx) => {
+                  const descText = (col.descriptionHtml || "").replace(/<[^>]*>/g, "").trim();
+                  return (
+                    <tr key={col.id || idx}>
+                      <td style={{ fontWeight: 600 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          {col.image?.url && (
+                            <img
+                              src={col.image.url}
+                              alt={col.image.altText || col.title}
+                              style={{ width: "28px", height: "28px", objectFit: "cover", borderRadius: "4px", border: "1px solid var(--rv-border-subdued)" }}
+                            />
+                          )}
+                          <span>{col.title}</span>
+                        </div>
+                      </td>
+                      <td style={{ color: "var(--rv-text-subdued)" }}>/{col.handle}</td>
+                      <td>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                          <span style={{ fontSize: "12px", color: descText ? "var(--rv-text)" : "var(--rv-text-subdued)" }}>
+                            {descText ? (descText.length > 50 ? descText.slice(0, 50) + "..." : descText) : "No description"}
+                          </span>
+                          {col.image?.url && (
+                            <span className="rv-badge rv-badge-success rv-badge-sm" style={{ width: "fit-content" }}>
+                              Image Preserved
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <span className="rv-badge rv-badge-info rv-badge-sm">
+                          {col.ruleSet?.rules?.length || 0} smart rules
+                        </span>
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          type="button"
+                          disabled={isRestoring}
+                          onClick={() => {
+                            setConfirmDialog({
+                              title: `Restore Collection: "${col.title}"`,
+                              message: `Are you sure you want to recreate or update collection "${col.title}" in Shopify?`,
+                              dangerNote: "Any manually removed conditions, description, or image changes will be restored.",
+                              confirmLabel: "Restore Collection",
+                              tone: "primary",
+                              onConfirm: () => {
+                                fetcher.submit({ intent: "restore_collection", colIndex: String(idx) }, { method: "POST" });
+                              },
+                            });
+                          }}
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                        >
+                          <span>Recreate / Restore</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1415,37 +1456,77 @@ export default function RestorePointDetail() {
                 <tr>
                   <th>Page Title</th>
                   <th>Handle</th>
+                  <th>Assigned Template</th>
+                  <th>Snapshot Content</th>
                   <th style={{ textAlign: "right" }}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {pageData.map((p, idx) => (
-                  <tr key={p.id || idx}>
-                    <td style={{ fontWeight: 600 }}>{p.title}</td>
-                    <td style={{ color: "var(--rv-text-subdued)" }}>/{p.handle}</td>
-                    <td style={{ textAlign: "right" }}>
-                      <button
-                        type="button"
-                        disabled={isRestoring}
-                        onClick={() => {
-                          setConfirmDialog({
-                            title: `Restore Page: "${p.title}"`,
-                            message: `Are you sure you want to restore content page "${p.title}" in Shopify?`,
-                            dangerNote: "Page content and settings will be restored to their snapshot state.",
-                            confirmLabel: "Restore Page",
-                            tone: "primary",
-                            onConfirm: () => {
-                              fetcher.submit({ intent: "restore_page", pageIndex: String(idx) }, { method: "POST" });
-                            },
-                          });
-                        }}
-                        className="rv-btn rv-btn-secondary rv-btn-sm"
-                      >
-                        <span>Restore Page</span>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {pageData.map((p, idx) => {
+                  const plainText = (p.body || p.bodyHtml || "").replace(/<[^>]*>/g, "").trim();
+                  const hasContent = Boolean(plainText || p.body || p.bodyHtml);
+
+                  return (
+                    <tr key={p.id || idx}>
+                      <td style={{ fontWeight: 600 }}>{p.title}</td>
+                      <td style={{ color: "var(--rv-text-subdued)" }}>/{p.handle}</td>
+                      <td>
+                        <span className={`rv-badge rv-badge-sm ${p.templateSuffix ? "rv-badge-info" : "rv-badge-neutral"}`}>
+                          {p.templateSuffix ? p.templateSuffix : "Default page"}
+                        </span>
+                      </td>
+                      <td>
+                        {hasContent ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span className="rv-badge rv-badge-success rv-badge-sm">
+                              Saved ({plainText.length} chars)
+                            </span>
+                            <span
+                              style={{
+                                maxWidth: "260px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                fontSize: "12px",
+                                color: "var(--rv-text-subdued)",
+                              }}
+                              title={plainText}
+                            >
+                              {plainText || "HTML content"}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ opacity: 0.7 }}>
+                            Empty (No Content in Snapshot)
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          type="button"
+                          disabled={isRestoring}
+                          onClick={() => {
+                            setConfirmDialog({
+                              title: `Restore Page: "${p.title}"`,
+                              message: `Are you sure you want to restore content page "${p.title}" in Shopify?`,
+                              dangerNote: hasContent
+                                ? "Page content and settings will be restored to their snapshot state."
+                                : "Warning: This snapshot has empty content for this page.",
+                              confirmLabel: "Restore Page",
+                              tone: "primary",
+                              onConfirm: () => {
+                                fetcher.submit({ intent: "restore_page", pageIndex: String(idx) }, { method: "POST" });
+                              },
+                            });
+                          }}
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                        >
+                          <span>Restore Page</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1498,6 +1579,7 @@ export default function RestorePointDetail() {
                   <tr>
                     <th>Article Title</th>
                     <th>Status</th>
+                    <th>Template</th>
                     <th>Blog</th>
                     <th style={{ textAlign: "right" }}>Action</th>
                   </tr>
@@ -1509,6 +1591,11 @@ export default function RestorePointDetail() {
                       <td>
                         <span className={`rv-badge rv-badge-sm ${art.isPublished ? "rv-badge-success" : "rv-badge-neutral"}`}>
                           {art.isPublished ? "Published" : "Draft"}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`rv-badge rv-badge-sm ${art.templateSuffix ? "rv-badge-info" : "rv-badge-neutral"}`}>
+                          {art.templateSuffix ? art.templateSuffix : "Default"}
                         </span>
                       </td>
                       <td style={{ color: "var(--rv-text-subdued)" }}>{art.blogTitle || "Blog"}</td>

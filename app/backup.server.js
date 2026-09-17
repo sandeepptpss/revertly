@@ -602,7 +602,15 @@ export async function fetchLiveProductsBackup(admin, shop = null) {
               tags
               handle
               bodyHtml
+              templateSuffix
               publishedAt
+              images(first: 20) {
+                nodes {
+                  id
+                  url
+                  altText
+                }
+              }
               metafields(first: 50) {
                 nodes { id namespace key value type }
               }
@@ -625,6 +633,11 @@ export async function fetchLiveProductsBackup(admin, shop = null) {
         const numericId = String(p.id).replace("gid://shopify/Product/", "");
         const rawVariants = p.variants?.nodes || [];
         const rawMetafields = p.metafields?.nodes || [];
+        const rawImages = (p.images?.nodes || []).map((img) => ({
+          id: img.id,
+          url: img.url,
+          altText: img.altText || "",
+        }));
         const snap = {
           id: p.id,
           title: p.title,
@@ -634,6 +647,8 @@ export async function fetchLiveProductsBackup(admin, shop = null) {
           tags: p.tags,
           handle: p.handle,
           bodyHtml: p.bodyHtml,
+          templateSuffix: p.templateSuffix || "",
+          images: rawImages,
           variants: rawVariants,
           metafields: rawMetafields,
         };
@@ -692,30 +707,54 @@ export async function fetchLiveProductsBackup(admin, shop = null) {
  */
 export async function fetchCollectionsBackup(admin) {
   try {
-    const res = await admin.graphql(
-      `#graphql
-      query getCollections {
-        collections(first: 100) {
-          nodes {
-            id
-            title
-            handle
-            descriptionHtml
-            sortOrder
-            ruleSet {
-              appliedDisjunctively
-              rules {
-                column
-                relation
-                condition
+    const allCollections = [];
+    let hasNextPage = true;
+    let cursor = null;
+
+    while (hasNextPage && allCollections.length < 250) {
+      const res = await admin.graphql(
+        `#graphql
+        query getCollections($cursor: String) {
+          collections(first: 100, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              title
+              handle
+              descriptionHtml
+              templateSuffix
+              image {
+                id
+                url
+                altText
+              }
+              sortOrder
+              ruleSet {
+                appliedDisjunctively
+                rules {
+                  column
+                  relation
+                  condition
+                }
               }
             }
           }
-        }
-      }`
-    );
-    const json = await res.json();
-    return json.data?.collections?.nodes || [];
+        }`,
+        { variables: { cursor } }
+      );
+      const json = await res.json();
+      const nodes = json.data?.collections?.nodes || [];
+      allCollections.push(...nodes);
+
+      hasNextPage = Boolean(json.data?.collections?.pageInfo?.hasNextPage);
+      cursor = json.data?.collections?.pageInfo?.endCursor || null;
+      if (!cursor) break;
+    }
+
+    return allCollections;
   } catch (err) {
     console.error("fetchCollectionsBackup error:", err?.message || err);
     return [];
@@ -723,7 +762,7 @@ export async function fetchCollectionsBackup(admin) {
 }
 
 /**
- * Restores or recreates a collection from snapshot (tries update first if ID exists, then recreates)
+ * Restores or recreates a collection from snapshot (tries update first if ID exists, then matches by handle, then recreates)
  */
 export async function restoreCollection(admin, col) {
   if (!col || !col.title) {
@@ -736,7 +775,15 @@ export async function restoreCollection(admin, col) {
       handle: col.handle,
       descriptionHtml: col.descriptionHtml || "",
       sortOrder: col.sortOrder || "BEST_SELLING",
+      ...(col.templateSuffix !== undefined ? { templateSuffix: col.templateSuffix || "" } : {}),
     };
+
+    if (col.image?.url) {
+      input.image = {
+        src: col.image.url,
+        altText: col.image.altText || "",
+      };
+    }
 
     if (col.ruleSet && col.ruleSet.rules?.length > 0) {
       input.ruleSet = {
@@ -760,6 +807,8 @@ export async function restoreCollection(admin, col) {
                 id
                 title
                 handle
+                descriptionHtml
+                image { url altText }
               }
               userErrors {
                 field
@@ -775,11 +824,67 @@ export async function restoreCollection(admin, col) {
           return { success: true, mode: "updated", collection: updateJson.data.collectionUpdate.collection };
         }
       } catch (updateErr) {
-        // Fallback to recreate if collection was deleted
+        // Fallback to match by handle or recreate
       }
     }
 
-    // 2. Recreate collection if update not possible or deleted
+    // 2. If update by ID was not possible, look for existing collection with same handle
+    if (col.handle) {
+      try {
+        const searchRes = await admin.graphql(
+          `#graphql
+          query findCollectionByHandle($query: String!) {
+            collections(first: 5, query: $query) {
+              nodes {
+                id
+                title
+                handle
+              }
+            }
+          }`,
+          { variables: { query: `handle:${col.handle}` } }
+        );
+        const searchJson = await searchRes.json();
+        const liveCol = searchJson.data?.collections?.nodes?.find(
+          (n) => n.handle === col.handle
+        );
+
+        if (liveCol?.id) {
+          const updateRes = await admin.graphql(
+            `#graphql
+            mutation collectionUpdateByHandle($input: CollectionInput!) {
+              collectionUpdate(input: $input) {
+                collection {
+                  id
+                  title
+                  handle
+                  descriptionHtml
+                  image { url altText }
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }`,
+            { variables: { input: { id: liveCol.id, ...input } } }
+          );
+          const updateJson = await updateRes.json();
+          const updateErrors = updateJson.data?.collectionUpdate?.userErrors || [];
+          if (updateErrors.length === 0 && updateJson.data?.collectionUpdate?.collection?.id) {
+            return {
+              success: true,
+              mode: "updated_by_handle",
+              collection: updateJson.data.collectionUpdate.collection,
+            };
+          }
+        }
+      } catch (handleErr) {
+        console.warn("findCollectionByHandle warning:", handleErr?.message || handleErr);
+      }
+    }
+
+    // 3. Recreate collection if update not possible or deleted
     const res = await admin.graphql(
       `#graphql
       mutation collectionCreate($input: CollectionInput!) {
@@ -788,6 +893,8 @@ export async function restoreCollection(admin, col) {
             id
             title
             handle
+            descriptionHtml
+            image { url altText }
           }
           userErrors {
             field
@@ -819,22 +926,42 @@ export async function restoreCollection(admin, col) {
  */
 export async function fetchPagesBackup(admin) {
   try {
-    const res = await admin.graphql(
-      `#graphql
-      query getPages {
-        pages(first: 50) {
-          nodes {
-            id
-            title
-            handle
-            body
-            isPublished
+    let allPages = [];
+    let hasNextPage = true;
+    let cursor = null;
+
+    while (hasNextPage && allPages.length < 250) {
+      const res = await admin.graphql(
+        `#graphql
+        query getPages($cursor: String) {
+          pages(first: 50, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              title
+              handle
+              body
+              bodySummary
+              templateSuffix
+              isPublished
+            }
           }
-        }
-      }`
-    );
-    const json = await res.json();
-    return json.data?.pages?.nodes || [];
+        }`,
+        { variables: { cursor } }
+      );
+      const json = await res.json();
+      const nodes = json.data?.pages?.nodes || [];
+      allPages.push(...nodes);
+
+      hasNextPage = Boolean(json.data?.pages?.pageInfo?.hasNextPage);
+      cursor = json.data?.pages?.pageInfo?.endCursor || null;
+      if (!cursor) break;
+    }
+
+    return allPages;
   } catch (err) {
     console.warn("fetchPagesBackup warning (check scopes):", err?.message || err);
     return [];
@@ -842,7 +969,7 @@ export async function fetchPagesBackup(admin) {
 }
 
 /**
- * Restores/recreates a deleted or modified content page (tries update first if ID exists, then recreates)
+ * Restores/recreates a deleted or modified content page (tries update first if ID exists, then matches by handle, then recreates)
  */
 export async function restorePage(admin, p) {
   if (!p || !p.title) {
@@ -853,8 +980,9 @@ export async function restorePage(admin, p) {
     const pageInput = {
       title: p.title,
       handle: p.handle,
-      body: p.body || p.bodyHtml || "",
+      body: p.body ?? p.bodyHtml ?? "",
       isPublished: p.isPublished ?? true,
+      ...(p.templateSuffix !== undefined ? { templateSuffix: p.templateSuffix || "" } : {}),
     };
 
     // 1. Try updating page in-place if ID exists
@@ -868,6 +996,7 @@ export async function restorePage(admin, p) {
                 id
                 title
                 handle
+                body
               }
               userErrors {
                 field
@@ -883,11 +1012,66 @@ export async function restorePage(admin, p) {
           return { success: true, mode: "updated", page: updateJson.data.pageUpdate.page };
         }
       } catch (updateErr) {
-        // Fallback to recreate if page was deleted
+        // Fallback to match by handle or recreate
       }
     }
 
-    // 2. Recreate page if update not possible or deleted
+    // 2. If update by ID was not possible, look for existing page with same handle to update
+    if (p.handle) {
+      try {
+        const searchRes = await admin.graphql(
+          `#graphql
+          query findPageByHandle($query: String!) {
+            pages(first: 5, query: $query) {
+              nodes {
+                id
+                title
+                handle
+              }
+            }
+          }`,
+          { variables: { query: `handle:${p.handle}` } }
+        );
+        const searchJson = await searchRes.json();
+        const livePage = searchJson.data?.pages?.nodes?.find(
+          (n) => n.handle === p.handle
+        );
+
+        if (livePage?.id) {
+          const updateRes = await admin.graphql(
+            `#graphql
+            mutation pageUpdateByHandle($id: ID!, $page: PageUpdateInput!) {
+              pageUpdate(id: $id, page: $page) {
+                page {
+                  id
+                  title
+                  handle
+                  body
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }`,
+            { variables: { id: livePage.id, page: pageInput } }
+          );
+          const updateJson = await updateRes.json();
+          const updateErrors = updateJson.data?.pageUpdateByHandle?.userErrors || updateJson.data?.pageUpdate?.userErrors || [];
+          if (updateErrors.length === 0 && (updateJson.data?.pageUpdateByHandle?.page?.id || updateJson.data?.pageUpdate?.page?.id)) {
+            return {
+              success: true,
+              mode: "updated_by_handle",
+              page: updateJson.data?.pageUpdateByHandle?.page || updateJson.data?.pageUpdate?.page,
+            };
+          }
+        }
+      } catch (handleSearchErr) {
+        console.warn("findPageByHandle warning:", handleSearchErr?.message || handleSearchErr);
+      }
+    }
+
+    // 3. Recreate page if page does not exist yet
     const res = await admin.graphql(
       `#graphql
       mutation pageCreate($page: PageCreateInput!) {
@@ -896,6 +1080,7 @@ export async function restorePage(admin, p) {
             id
             title
             handle
+            body
           }
           userErrors {
             field
@@ -962,6 +1147,163 @@ export async function fetchMenusBackup(admin) {
   }
 }
 
+/**
+ * Restores or creates a navigation menu (Header, Footer, etc.)
+ */
+export async function restoreMenu(admin, menu) {
+  try {
+    if (!menu || !menu.title) {
+      return { success: false, message: "Invalid menu payload." };
+    }
+
+    const formatItems = (items) => {
+      if (!Array.isArray(items)) return [];
+      return items.map((item) => {
+        const entry = {
+          title: item.title,
+          type: item.type || "HTTP",
+          url: item.url || "#",
+        };
+        if (Array.isArray(item.items) && item.items.length > 0) {
+          entry.items = formatItems(item.items);
+        }
+        return entry;
+      });
+    };
+
+    const formattedItems = formatItems(menu.items);
+
+    // 1. If menu.id is present, try updating the existing menu
+    if (menu.id) {
+      try {
+        const updateRes = await admin.graphql(
+          `#graphql
+          mutation menuUpdate($id: ID!, $title: String!, $handle: String, $items: [MenuItemUpdateInput!]!) {
+            menuUpdate(id: $id, title: $title, handle: $handle, items: $items) {
+              menu {
+                id
+                title
+                handle
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }`,
+          {
+            variables: {
+              id: menu.id,
+              title: menu.title,
+              handle: menu.handle,
+              items: formattedItems,
+            },
+          }
+        );
+        const updateJson = await updateRes.json();
+        const errors = updateJson.data?.menuUpdate?.userErrors || [];
+        if (errors.length === 0 && updateJson.data?.menuUpdate?.menu?.id) {
+          return { success: true, mode: "updated", menu: updateJson.data.menuUpdate.menu };
+        }
+      } catch (e) {
+        // Fall back to handle matching or create
+      }
+    }
+
+    // 2. Try finding live menu by handle
+    if (menu.handle) {
+      try {
+        const menusRes = await admin.graphql(
+          `#graphql
+          query findMenuByHandle {
+            menus(first: 25) {
+              nodes {
+                id
+                title
+                handle
+              }
+            }
+          }`
+        );
+        const menusJson = await menusRes.json();
+        const liveMenu = menusJson.data?.menus?.nodes?.find((m) => m.handle === menu.handle);
+
+        if (liveMenu?.id) {
+          const updateRes = await admin.graphql(
+            `#graphql
+            mutation menuUpdateByHandle($id: ID!, $title: String!, $handle: String, $items: [MenuItemUpdateInput!]!) {
+              menuUpdate(id: $id, title: $title, handle: $handle, items: $items) {
+                menu {
+                  id
+                  title
+                  handle
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }`,
+            {
+              variables: {
+                id: liveMenu.id,
+                title: menu.title,
+                handle: menu.handle,
+                items: formattedItems,
+              },
+            }
+          );
+          const updateJson = await updateRes.json();
+          const errors = updateJson.data?.menuUpdate?.userErrors || [];
+          if (errors.length === 0 && updateJson.data?.menuUpdate?.menu?.id) {
+            return { success: true, mode: "updated", menu: updateJson.data.menuUpdate.menu };
+          }
+        }
+      } catch (findErr) {
+        // Continue to create
+      }
+    }
+
+    // 3. Create menu if update not possible
+    try {
+      const createRes = await admin.graphql(
+        `#graphql
+        mutation menuCreate($title: String!, $handle: String, $items: [MenuItemCreateInput!]!) {
+          menuCreate(title: $title, handle: $handle, items: $items) {
+            menu {
+              id
+              title
+              handle
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }`,
+        {
+          variables: {
+            title: menu.title,
+            handle: menu.handle,
+            items: formattedItems,
+          },
+        }
+      );
+      const createJson = await createRes.json();
+      const errors = createJson.data?.menuCreate?.userErrors || [];
+      if (errors.length === 0 && createJson.data?.menuCreate?.menu?.id) {
+        return { success: true, mode: "created", menu: createJson.data.menuCreate.menu };
+      }
+      return { success: false, message: errors.map((e) => e.message).join(", ") || "Failed to create menu." };
+    } catch (createErr) {
+      return { success: false, message: createErr?.message || "Failed to restore menu." };
+    }
+  } catch (err) {
+    console.warn("restoreMenu warning:", err?.message || err);
+    return { success: false, message: err?.message || "Menu restoration failed." };
+  }
+}
+
 // ============================================================================
 // 5. BLOGS & ARTICLES BACKUP & RESTORE (SEO Content Shield)
 // ============================================================================
@@ -980,6 +1322,7 @@ export async function fetchBlogsAndArticlesBackup(admin) {
             title
             handle
             commentPolicy
+            templateSuffix
             articles(first: 50) {
               nodes {
                 id
@@ -988,6 +1331,7 @@ export async function fetchBlogsAndArticlesBackup(admin) {
                 body: bodyHtml
                 summary: summaryHtml
                 tags
+                templateSuffix
                 isPublished
                 publishedAt
                 image {
@@ -1022,6 +1366,7 @@ export async function fetchBlogsAndArticlesBackup(admin) {
         title: b.title,
         handle: b.handle,
         commentPolicy: b.commentPolicy,
+        templateSuffix: b.templateSuffix || "",
         articleCount: b.articles?.nodes?.length || 0,
       })),
       articles: flattenedArticles,
@@ -1061,6 +1406,7 @@ export async function restoreArticle(admin, article) {
                 bodyHtml: article.body || article.bodyHtml || "",
                 summaryHtml: article.summary || article.summaryHtml || "",
                 handle: article.handle || undefined,
+                templateSuffix: article.templateSuffix !== undefined ? (article.templateSuffix || "") : undefined,
                 isPublished: article.isPublished ?? true,
                 tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
               },
@@ -1087,15 +1433,24 @@ export async function restoreArticle(admin, article) {
       try {
         const bRes = await admin.graphql(
           `#graphql
-          query getFirstBlog {
-            blogs(first: 5) {
+          query getBlogsForArticleRestore {
+            blogs(first: 25) {
               nodes { id title handle }
             }
           }`
         );
         const bJson = await bRes.json();
-        const firstBlog = bJson.data?.blogs?.nodes?.[0];
-        if (firstBlog) targetBlogId = firstBlog.id;
+        const liveBlogs = bJson.data?.blogs?.nodes || [];
+        const matched = liveBlogs.find(
+          (b) =>
+            (article.blogHandle && b.handle === article.blogHandle) ||
+            (article.blogTitle && b.title?.toLowerCase() === article.blogTitle?.toLowerCase())
+        );
+        if (matched) {
+          targetBlogId = matched.id;
+        } else if (liveBlogs.length > 0) {
+          targetBlogId = liveBlogs[0].id;
+        }
       } catch (e) {
         console.warn("Could not find blogs for article restoration:", e?.message);
       }
@@ -1121,6 +1476,7 @@ export async function restoreArticle(admin, article) {
             bodyHtml: article.body || article.bodyHtml || "",
             summaryHtml: article.summary || article.summaryHtml || "",
             handle: article.handle || undefined,
+            templateSuffix: article.templateSuffix || undefined,
             isPublished: article.isPublished ?? true,
             tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
           },
@@ -1851,20 +2207,20 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
     if (totalItems === 0) {
       return {
         success: false,
-        message: "No recognizable store assets (Products, Themes, Collections, Pages, Articles) found in this backup file.",
+        message: "No recognizable store assets (Products, Themes, Collections, Pages, Menus, Articles) found in this backup file.",
       };
     }
 
     let backupType = data.backupType || "FULL";
-    if (themeCount > 0 && productCount === 0 && collectionCount === 0 && pageCount === 0) {
+    if (themeCount > 0 && productCount === 0 && collectionCount === 0 && pageCount === 0 && menuCount === 0 && articleCount === 0) {
       backupType = "THEMES";
-    } else if (productCount > 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0) {
+    } else if (productCount > 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0 && menuCount === 0 && articleCount === 0) {
       backupType = "PRODUCTS";
-    } else if (collectionCount > 0 && productCount === 0 && themeCount === 0 && pageCount === 0) {
+    } else if (collectionCount > 0 && productCount === 0 && themeCount === 0 && pageCount === 0 && menuCount === 0 && articleCount === 0) {
       backupType = "COLLECTIONS";
-    } else if (pageCount > 0 && productCount === 0 && themeCount === 0 && collectionCount === 0) {
+    } else if ((pageCount > 0 || menuCount > 0) && productCount === 0 && themeCount === 0 && collectionCount === 0 && articleCount === 0) {
       backupType = "PAGES";
-    } else if (articleCount > 0 && productCount === 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0) {
+    } else if (articleCount > 0 && productCount === 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0 && menuCount === 0) {
       backupType = "BLOGS";
     }
 
@@ -1915,6 +2271,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
     if (mode === "RESTORE_NOW") {
       let liveCollections = 0;
       let livePages = 0;
+      let liveMenus = 0;
       let liveArticles = 0;
       let liveTheme = false;
 
@@ -1928,6 +2285,12 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       for (const page of pages) {
         const res = await restorePage(admin, page);
         if (res.success) livePages++;
+      }
+
+      // Restore navigation menus
+      for (const menu of menus) {
+        const res = await restoreMenu(admin, menu);
+        if (res.success) liveMenus++;
       }
 
       // Restore articles
@@ -1993,6 +2356,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         products: liveProducts,
         collections: liveCollections,
         pages: livePages,
+        menus: liveMenus,
         articles: liveArticles,
         themeStagingCreated: liveTheme,
       };
@@ -2001,6 +2365,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       if (liveProducts > 0) resultParts.push(`${liveProducts} products baseline synced`);
       if (liveCollections > 0) resultParts.push(`${liveCollections} collections restored`);
       if (livePages > 0) resultParts.push(`${livePages} pages restored`);
+      if (liveMenus > 0) resultParts.push(`${liveMenus} menus restored`);
       if (liveArticles > 0) resultParts.push(`${liveArticles} articles restored`);
       if (liveTheme) resultParts.push("theme staging created");
 
@@ -2016,14 +2381,26 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       success: true,
       restorePoint,
       summary,
-      message: `Backup archive imported successfully as Restore Point #${restorePoint.id} (${productCount} products, ${collectionCount} collections, ${pageCount} pages, ${articleCount} articles).`,
+      message: `Backup archive imported successfully as Restore Point #${restorePoint.id} (${productCount} products, ${collectionCount} collections, ${pageCount} pages, ${menuCount} menus, ${articleCount} articles).`,
     };
   } catch (err) {
     console.error("importBackupPayload error:", err?.message || err);
     return {
       success: false,
-      message: `Failed to import backup archive: ${err?.message || "Invalid JSON structure."}`,
+      message: `Failed to import backup archive: ${err?.message || "Invalid archive structure."}`,
     };
   }
 }
+
+// Re-export CSV portability utilities for server-side consumers
+export {
+  generateCollectionsCsv,
+  parseCollectionsCsv,
+  generatePagesAndMenusCsv,
+  parsePagesAndMenusCsv,
+  generateBlogsAndArticlesCsv,
+  parseBlogsAndArticlesCsv,
+  parseProductsCsv,
+  detectAndParseCsvArchive,
+} from "./utils/csv-portability.js";
 

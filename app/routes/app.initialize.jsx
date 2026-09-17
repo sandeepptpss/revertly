@@ -42,7 +42,14 @@ export const action = async ({ request }) => {
             pageInfo { hasNextPage endCursor }
             edges {
               node {
-                id title status vendor productType tags handle bodyHtml publishedAt
+                id title status vendor productType tags handle bodyHtml templateSuffix publishedAt
+                images(first: 20) {
+                  edges {
+                    node {
+                      id url altText
+                    }
+                  }
+                }
                 metafields(first: 50) {
                   edges {
                     node {

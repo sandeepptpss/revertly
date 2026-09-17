@@ -121,10 +121,26 @@ export const action = async ({ request }) => {
 
       const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
       if (rule && rule.shop === shop) {
+        // Disconnect triggeredRuleId on any incidents first to satisfy foreign key constraint
+        await prisma.incident.updateMany({
+          where: { triggeredRuleId: ruleId },
+          data: { triggeredRuleId: null },
+        });
         await prisma.detectionRule.delete({ where: { id: ruleId } });
         return { success: true, message: `Rule "${rule.name}" deleted successfully.` };
       }
       return { success: true, message: "Rule deleted." };
+    }
+
+    if (intent === "seed_defaults") {
+      const { seedDefaultDetectionRules } = await import("../monitor.server.js");
+      const created = await seedDefaultDetectionRules(shop);
+      return {
+        success: true,
+        message: created.length > 0
+          ? `Created ${created.length} recommended detection rules.`
+          : "Recommended rules are already configured.",
+      };
     }
 
     return { success: false, message: "Unknown action intent." };
@@ -137,7 +153,16 @@ export const action = async ({ request }) => {
   }
 };
 
-const FIELDS = ["price", "compareAtPrice", "title", "status", "vendor", "tags", "sku", "inventory"];
+const FIELDS = [
+  { value: "price", label: "Price (Variant Price)" },
+  { value: "compareAtPrice", label: "Compare-At Price" },
+  { value: "inventory", label: "Inventory Quantity" },
+  { value: "status", label: "Product Status (Active / Draft / Archived)" },
+  { value: "title", label: "Product Title" },
+  { value: "vendor", label: "Vendor" },
+  { value: "tags", label: "Tags" },
+  { value: "sku", label: "SKU" },
+];
 const CONDITIONS = ["CHANGED", "DECREASE_BY_PERCENT", "INCREASE_BY_PERCENT"];
 const SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 
@@ -147,6 +172,7 @@ export default function Rules() {
   const result = fetcher.data;
   const isSaving = fetcher.state !== "idle";
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [selectedCondition, setSelectedCondition] = useState("CHANGED");
   const [deleteRuleTarget, setDeleteRuleTarget] = useState(null);
 
   const isDeletingRule = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "delete";
@@ -279,14 +305,20 @@ export default function Rules() {
                   <label htmlFor="rule-field" className="rv-form-label">Monitored Field</label>
                   <select id="rule-field" name="field" className="rv-select">
                     {FIELDS.map((f) => (
-                      <option key={f} value={f}>{f.replace(/([A-Z])/g, " $1").toUpperCase()}</option>
+                      <option key={f.value} value={f.value}>{f.label}</option>
                     ))}
                   </select>
                 </div>
 
                 <div className="rv-form-field">
                   <label htmlFor="rule-condition" className="rv-form-label">Trigger Condition</label>
-                  <select id="rule-condition" name="condition" className="rv-select">
+                  <select
+                    id="rule-condition"
+                    name="condition"
+                    className="rv-select"
+                    value={selectedCondition}
+                    onChange={(e) => setSelectedCondition(e.target.value)}
+                  >
                     {CONDITIONS.map((c) => (
                       <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
                     ))}
@@ -305,15 +337,22 @@ export default function Rules() {
 
               <div className="rv-form-grid" style={{ marginBottom: "20px" }}>
                 <div className="rv-form-field">
-                  <label htmlFor="rule-threshold" className="rv-form-label">Threshold (%)</label>
+                  <label htmlFor="rule-threshold" className="rv-form-label">
+                    Threshold (%){selectedCondition === "CHANGED" ? " — Not applicable" : ""}
+                  </label>
                   <input
                     id="rule-threshold"
                     type="number"
                     name="threshold"
-                    placeholder="30"
+                    placeholder={selectedCondition === "CHANGED" ? "N/A for direct changes" : "30"}
+                    disabled={selectedCondition === "CHANGED"}
                     className="rv-input"
                   />
-                  <span className="rv-form-help">For percentage increases or drops.</span>
+                  <span className="rv-form-help">
+                    {selectedCondition === "CHANGED"
+                      ? "Direct change detection triggers whenever the field is modified."
+                      : "Triggers when percentage increase or decrease exceeds this value."}
+                  </span>
                 </div>
 
                 <div className="rv-form-field">
@@ -322,10 +361,11 @@ export default function Rules() {
                     id="rule-minProducts"
                     type="number"
                     name="minProducts"
-                    placeholder="10"
+                    placeholder="1"
+                    min="1"
                     className="rv-input"
                   />
-                  <span className="rv-form-help">Minimum products to trigger incident.</span>
+                  <span className="rv-form-help">Leave blank or set to 1 for instant single-product anomaly alerts; set higher (e.g. 5) for bulk-only aggregation.</span>
                 </div>
 
                 <div className="rv-form-field">
@@ -335,6 +375,7 @@ export default function Rules() {
                     type="number"
                     name="windowMinutes"
                     defaultValue="10"
+                    min="1"
                     className="rv-input"
                   />
                   <span className="rv-form-help">Aggregation window in minutes.</span>
@@ -370,14 +411,27 @@ export default function Rules() {
           title="No Custom Detection Rules Configured"
           description="Detection rules monitor your store 24/7 for sudden price drops, unauthorized product deletions, or bulk changes by external apps."
           action={
-            <button
-              type="button"
-              onClick={() => setShowCreateForm(true)}
-              className="rv-btn rv-btn-primary"
-            >
-              <FilterIcon size={15} />
-              <span>Create Your First Detection Rule</span>
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", justifyContent: "center" }}>
+              <fetcher.Form method="POST">
+                <input type="hidden" name="intent" value="seed_defaults" />
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="rv-btn rv-btn-primary"
+                >
+                  <SparklesIcon size={15} />
+                  <span>{isSaving ? "Adding..." : "Add Recommended Rules"}</span>
+                </button>
+              </fetcher.Form>
+              <button
+                type="button"
+                onClick={() => setShowCreateForm(true)}
+                className="rv-btn rv-btn-secondary"
+              >
+                <FilterIcon size={15} />
+                <span>Create Custom Rule</span>
+              </button>
+            </div>
           }
         />
       ) : (
@@ -431,7 +485,8 @@ export default function Rules() {
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "2px" }}>
                       <span className="rv-badge rv-badge-neutral rv-badge-sm">Field: {rule.field}</span>
                       <span className="rv-badge rv-badge-warning rv-badge-sm">
-                        Condition: {rule.condition.replace(/_/g, " ")}{rule.threshold ? ` (≥ ${rule.threshold}%)` : ""}
+                        Condition: {rule.condition.replace(/_/g, " ")}
+                        {rule.condition !== "CHANGED" && rule.threshold != null ? ` (≥ ${rule.threshold}%)` : ""}
                       </span>
                       {rule.minProducts && (
                         <span className="rv-badge rv-badge-neutral rv-badge-sm">{rule.minProducts}+ products</span>

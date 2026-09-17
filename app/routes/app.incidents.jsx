@@ -1,4 +1,5 @@
-import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
+import { useState, useEffect } from "react";
+import { useLoaderData, useFetcher, useRouteError, Link, useNavigate, useSearchParams, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -8,6 +9,11 @@ import {
   SettingsIcon,
   ArrowRightIcon,
   CheckCircleIcon,
+  RefreshCwIcon,
+  SearchIcon,
+  AlertTriangleIcon,
+  FilterIcon,
+  XIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
@@ -18,16 +24,36 @@ export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
   const url = new URL(request.url);
-  const status = url.searchParams.get("status") || "";
+
+  // Normalize status casing and validate against accepted database values
+  const rawStatus = (url.searchParams.get("status") || "").trim().toUpperCase();
+  const validStatuses = ["OPEN", "RESOLVED", "ROLLED_BACK", "IGNORED"];
+  const currentStatus = validStatuses.includes(rawStatus) ? rawStatus : "";
+
+  const searchQuery = (url.searchParams.get("q") || "").trim();
+  const rawSeverity = (url.searchParams.get("severity") || "").trim().toUpperCase();
+  const validSeverities = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+  const currentSeverity = validSeverities.includes(rawSeverity) ? rawSeverity : "";
+
+  const whereClause = {
+    shop,
+    ...(currentStatus ? { status: currentStatus } : {}),
+    ...(currentSeverity ? { severity: currentSeverity } : {}),
+    ...(searchQuery
+      ? {
+          OR: [
+            { name: { contains: searchQuery } },
+            { notes: { contains: searchQuery } },
+          ],
+        }
+      : {}),
+  };
 
   const [incidents, totalCount, openCount, resolvedCount, rolledBackCount, ignoredCount] = await Promise.all([
     prisma.incident.findMany({
-      where: {
-        shop,
-        ...(status ? { status } : {}),
-      },
+      where: whereClause,
       orderBy: { createdAt: "desc" },
-      take: 50,
+      take: 100,
       include: {
         _count: { select: { changes: true } },
       },
@@ -41,7 +67,9 @@ export const loader = async ({ request }) => {
 
   return {
     incidents,
-    currentStatus: status,
+    currentStatus,
+    currentSeverity,
+    searchQuery,
     counts: {
       total: totalCount,
       open: openCount,
@@ -90,6 +118,15 @@ export const action = async ({ request }) => {
       return { success: true, message: `Incident "${incident.name}" ignored.` };
     }
 
+    if (intent === "reopen") {
+      await prisma.incident.update({
+        where: { id: incidentId },
+        data: { status: "OPEN", resolvedAt: null },
+      });
+      await logAudit(shop, session, "INCIDENT_REOPEN", { incidentId, name: incident.name });
+      return { success: true, message: `Incident "${incident.name}" reopened as Open.` };
+    }
+
     return { success: false, message: "Action failed." };
   } catch (error) {
     console.error("Incidents action error:", error);
@@ -105,22 +142,96 @@ function formatTime(date) {
 }
 
 export default function Incidents() {
-  const { incidents, currentStatus, counts } = useLoaderData();
+  const { incidents, currentStatus, currentSeverity, searchQuery, counts } = useLoaderData();
   const fetcher = useFetcher();
+  const navigate = useNavigate();
+  const navigation = useNavigation();
+  const [searchParams] = useSearchParams();
+
+  const [searchInput, setSearchInput] = useState(searchQuery || "");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   const result = fetcher.data;
   const isSubmitting = fetcher.state !== "idle";
+  const isNavigating = navigation.state !== "idle";
+
+  // Sync search input when url param changes
+  useEffect(() => {
+    setSearchInput(searchQuery || "");
+  }, [searchQuery]);
+
+  // Turn off manual refresh spinner when navigation finishes
+  useEffect(() => {
+    if (!isNavigating && isRefreshing) {
+      setIsRefreshing(false);
+    }
+  }, [isNavigating, isRefreshing]);
+
+  // Auto-refresh interval (every 30 seconds) to detect real-time incident updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible" && !isSubmitting && !isNavigating) {
+        navigate(`.?${searchParams.toString()}`, { replace: true });
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [searchParams, isSubmitting, isNavigating, navigate]);
+
+  const handleManualRefresh = () => {
+    setIsRefreshing(true);
+    navigate(`.?${searchParams.toString()}`, { replace: true });
+  };
 
   const handleAction = (intent, incidentId) => {
     fetcher.submit({ intent, incidentId: String(incidentId) }, { method: "POST" });
   };
 
+  const handleStatusChange = (statusId) => {
+    const next = new URLSearchParams(searchParams);
+    if (statusId) {
+      next.set("status", statusId);
+    } else {
+      next.delete("status");
+    }
+    navigate(`.?${next.toString()}`);
+  };
+
+  const handleSeverityChange = (e) => {
+    const sev = e.target.value;
+    const next = new URLSearchParams(searchParams);
+    if (sev) {
+      next.set("severity", sev);
+    } else {
+      next.delete("severity");
+    }
+    navigate(`.?${next.toString()}`);
+  };
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    const next = new URLSearchParams(searchParams);
+    if (searchInput.trim()) {
+      next.set("q", searchInput.trim());
+    } else {
+      next.delete("q");
+    }
+    navigate(`.?${next.toString()}`);
+  };
+
+  const handleClearFilters = () => {
+    setSearchInput("");
+    navigate("/app/incidents");
+  };
+
   const statuses = [
-    { id: "", label: "All Incidents", count: counts?.total ?? 0, to: "/app/incidents" },
-    { id: "OPEN", label: "Open", count: counts?.open ?? 0, to: "/app/incidents?status=OPEN" },
-    { id: "RESOLVED", label: "Resolved", count: counts?.resolved ?? 0, to: "/app/incidents?status=RESOLVED" },
-    { id: "ROLLED_BACK", label: "Rolled Back", count: counts?.rolledBack ?? 0, to: "/app/incidents?status=ROLLED_BACK" },
-    { id: "IGNORED", label: "Ignored", count: counts?.ignored ?? 0, to: "/app/incidents?status=IGNORED" },
+    { id: "", label: "All Incidents", count: counts?.total ?? 0 },
+    { id: "OPEN", label: "Open", count: counts?.open ?? 0 },
+    { id: "RESOLVED", label: "Resolved", count: counts?.resolved ?? 0 },
+    { id: "ROLLED_BACK", label: "Rolled Back", count: counts?.rolledBack ?? 0 },
+    { id: "IGNORED", label: "Ignored", count: counts?.ignored ?? 0 },
   ];
+
+  const hasActiveFilters = Boolean(currentStatus || currentSeverity || searchQuery);
 
   return (
     <s-page heading="Incidents" inlineSize="large">
@@ -135,22 +246,186 @@ export default function Incidents() {
         </Banner>
       )}
 
-      {/* ── Filter Toolbar & Navigation ── */}
-      <div className="rv-filter-bar">
-        <PillNav
-          items={statuses}
-          activeId={currentStatus}
-          isLinks={true}
-        />
+      {/* ── Incidents Toolbar: Unified Status Tabs + Search & Filters ── */}
+      <div
+        className="rv-card"
+        style={{
+          padding: 0,
+          marginBottom: "16px",
+          border: "1px solid var(--rv-border)",
+          boxShadow: "var(--rv-shadow-sm)",
+          overflow: "hidden",
+        }}
+      >
+        {/* Top Row: Status Tabs & Action Buttons */}
+        <div
+          style={{
+            padding: "10px 14px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "10px",
+            background: "var(--rv-surface)",
+            borderBottom: "1px solid var(--rv-border-subdued, #e5e7eb)",
+          }}
+        >
+          <PillNav
+            items={statuses}
+            activeId={currentStatus}
+            onChange={handleStatusChange}
+            isLinks={false}
+          />
 
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
-            {incidents.length} incident{incidents.length !== 1 ? "s" : ""}
-          </span>
-          <Link to="/app/rules" className="rv-btn rv-btn-secondary rv-btn-sm">
-            <SettingsIcon size={14} />
-            <span>Configure Rules</span>
-          </Link>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              type="button"
+              onClick={handleManualRefresh}
+              disabled={isNavigating || isRefreshing}
+              className="rv-btn rv-btn-secondary rv-btn-sm"
+              title="Refresh latest incident status"
+            >
+              <RefreshCwIcon size={13} className={isRefreshing || isNavigating ? "rv-spin" : ""} />
+              <span>{isRefreshing || isNavigating ? "Refreshing..." : "Refresh"}</span>
+            </button>
+
+            <Link to="/app/rules" className="rv-btn rv-btn-secondary rv-btn-sm">
+              <SettingsIcon size={14} />
+              <span>Configure Rules</span>
+            </Link>
+          </div>
+        </div>
+
+        {/* Bottom Row: Search & Severity Filters */}
+        <div
+          style={{
+            padding: "10px 14px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "12px",
+            background: "var(--rv-surface-subdued, #f9fafb)",
+          }}
+        >
+          <form
+            onSubmit={handleSearchSubmit}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              flex: "1 1 280px",
+              maxWidth: "460px",
+            }}
+          >
+            <div className="rv-search-wrapper" style={{ flexGrow: 1, width: "100%", position: "relative" }}>
+              <span className="rv-search-icon">
+                <SearchIcon size={14} />
+              </span>
+              <input
+                type="text"
+                placeholder="Search incident name or details..."
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className="rv-input rv-input-with-icon"
+                style={{
+                  height: "34px",
+                  fontSize: "13px",
+                  paddingRight: searchInput ? "32px" : "12px",
+                }}
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchInput("");
+                    const next = new URLSearchParams(searchParams);
+                    next.delete("q");
+                    navigate(`.?${next.toString()}`);
+                  }}
+                  style={{
+                    position: "absolute",
+                    right: "8px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: "4px",
+                    color: "var(--rv-text-subdued)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "50%",
+                  }}
+                  title="Clear search"
+                >
+                  <XIcon size={13} />
+                </button>
+              )}
+            </div>
+            <button
+              type="submit"
+              className="rv-btn rv-btn-secondary rv-btn-sm"
+              style={{ height: "34px", flexShrink: 0, padding: "0 14px" }}
+            >
+              Filter
+            </button>
+          </form>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
+                Severity:
+              </span>
+              <select
+                value={currentSeverity}
+                onChange={handleSeverityChange}
+                className="rv-select"
+                style={{
+                  height: "34px",
+                  fontSize: "12px",
+                  padding: "0 28px 0 10px",
+                  width: "auto",
+                  minWidth: "130px",
+                }}
+              >
+                <option value="">All Severities</option>
+                <option value="CRITICAL">Critical</option>
+                <option value="HIGH">High</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="LOW">Low</option>
+              </select>
+            </div>
+
+            <span
+              style={{
+                fontSize: "12px",
+                color: "var(--rv-text-subdued)",
+                fontWeight: 600,
+                padding: "4px 8px",
+                background: "var(--rv-surface)",
+                border: "1px solid var(--rv-border-subdued, #e5e7eb)",
+                borderRadius: "var(--rv-radius-sm)",
+                lineHeight: 1,
+              }}
+            >
+              {incidents.length} incident{incidents.length !== 1 ? "s" : ""} shown
+            </span>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="rv-btn rv-btn-subtle rv-btn-sm"
+                style={{ fontSize: "12px", height: "34px", gap: "4px" }}
+                title="Reset all filters"
+              >
+                <XIcon size={12} />
+                <span>Reset</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -159,24 +434,40 @@ export default function Incidents() {
         <EmptyState
           icon={<ShieldCheckIcon size={28} style={{ color: "var(--rv-primary)" }} />}
           title={
-            currentStatus
-              ? `No ${currentStatus.toLowerCase().replace(/_/g, " ")} incidents`
-              : "All Clear — Zero Incidents Detected"
+            counts.total === 0
+              ? "All Clear — Zero Incidents Detected"
+              : hasActiveFilters
+              ? "No Incidents Match Your Filter"
+              : `No ${currentStatus.toLowerCase().replace(/_/g, " ")} incidents`
           }
           description={
-            currentStatus
-              ? `There are currently no incidents matching the "${currentStatus.toLowerCase().replace(/_/g, " ")}" status.`
-              : "Revertly monitors your catalog 24/7. When unauthorized bulk changes, price crashes, or rule violations occur, they will be quarantined here for 1-click rollback."
+            counts.total === 0
+              ? "Revertly monitors your catalog 24/7. When unauthorized bulk changes, price crashes, or rule violations occur, they will be quarantined here for 1-click rollback."
+              : hasActiveFilters
+              ? "Try resetting filters or adjusting search keywords to find other incidents."
+              : `There are currently no incidents matching the "${currentStatus.toLowerCase().replace(/_/g, " ")}" status.`
           }
           action={
-            currentStatus ? (
-              <Link to="/app/incidents" className="rv-btn rv-btn-secondary">
-                View All Incidents
-              </Link>
-            ) : (
+            counts.total === 0 ? (
               <Link to="/app/rules" className="rv-btn rv-btn-primary">
                 Review Detection Rules
               </Link>
+            ) : hasActiveFilters ? (
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="rv-btn rv-btn-primary"
+              >
+                View All Incidents
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleStatusChange("")}
+                className="rv-btn rv-btn-secondary"
+              >
+                View All Incidents
+              </button>
             )
           }
         />
@@ -186,13 +477,32 @@ export default function Incidents() {
             const isCritical = inc.severity === "CRITICAL";
             const isOpen = inc.status === "OPEN";
 
+            const isThisResolving =
+              isSubmitting &&
+              fetcher.formData?.get("incidentId") === String(inc.id) &&
+              fetcher.formData?.get("intent") === "resolve";
+            const isThisIgnoring =
+              isSubmitting &&
+              fetcher.formData?.get("incidentId") === String(inc.id) &&
+              fetcher.formData?.get("intent") === "ignore";
+            const isThisReopening =
+              isSubmitting &&
+              fetcher.formData?.get("incidentId") === String(inc.id) &&
+              fetcher.formData?.get("intent") === "reopen";
+
             return (
               <div
                 key={inc.id}
                 className="rv-card"
                 style={{
                   borderLeft: `4px solid ${
-                    isCritical ? "var(--rv-critical)" : isOpen ? "var(--rv-warning)" : "var(--rv-border)"
+                    isCritical
+                      ? "var(--rv-critical)"
+                      : isOpen
+                      ? "var(--rv-warning)"
+                      : inc.status === "RESOLVED"
+                      ? "var(--rv-primary)"
+                      : "var(--rv-border)"
                   }`,
                   margin: 0,
                 }}
@@ -232,6 +542,8 @@ export default function Incidents() {
                             ? "rv-badge-critical"
                             : inc.status === "RESOLVED"
                             ? "rv-badge-success"
+                            : inc.status === "ROLLED_BACK"
+                            ? "rv-badge-info"
                             : "rv-badge-neutral"
                         }`}
                       >
@@ -244,11 +556,23 @@ export default function Incidents() {
                         <ClockIcon size={13} />
                         <span>Detected: {formatTime(inc.createdAt)}</span>
                       </span>
+                      {inc.resolvedAt && (
+                        <>
+                          <span>·</span>
+                          <span>Completed: {formatTime(inc.resolvedAt)}</span>
+                        </>
+                      )}
                       <span>·</span>
                       <span><strong>{inc.affectedCount}</strong> product{inc.affectedCount !== 1 ? "s" : ""} affected</span>
                       <span>·</span>
-                      <span><strong>{inc._count.changes}</strong> recorded field changes</span>
+                      <span><strong>{inc._count?.changes ?? 0}</strong> recorded field changes</span>
                     </div>
+
+                    {inc.notes && (
+                      <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                        {inc.notes}
+                      </p>
+                    )}
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
@@ -261,41 +585,47 @@ export default function Incidents() {
                           <span>Review &amp; Rollback</span>
                           <ArrowRightIcon size={13} />
                         </Link>
-                        {(() => {
-                          const isThisResolving = isSubmitting && fetcher.formData?.get("incidentId") === String(inc.id) && fetcher.formData?.get("intent") === "resolve";
-                          const isThisIgnoring = isSubmitting && fetcher.formData?.get("incidentId") === String(inc.id) && fetcher.formData?.get("intent") === "ignore";
-                          return (
-                            <>
-                              <button
-                                type="button"
-                                disabled={isSubmitting}
-                                onClick={() => handleAction("resolve", inc.id)}
-                                className="rv-btn rv-btn-secondary rv-btn-sm"
-                                style={{ color: "var(--rv-primary)" }}
-                              >
-                                <CheckCircleIcon size={13} className={isThisResolving ? "rv-spin" : ""} />
-                                <span>{isThisResolving ? "Resolving..." : "Resolve"}</span>
-                              </button>
-                              <button
-                                type="button"
-                                disabled={isSubmitting}
-                                onClick={() => handleAction("ignore", inc.id)}
-                                className="rv-btn rv-btn-subtle rv-btn-sm"
-                              >
-                                <span>{isThisIgnoring ? "Ignoring..." : "Ignore"}</span>
-                              </button>
-                            </>
-                          );
-                        })()}
+                        <button
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleAction("resolve", inc.id)}
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                          style={{ color: "var(--rv-primary)" }}
+                        >
+                          <CheckCircleIcon size={13} className={isThisResolving ? "rv-spin" : ""} />
+                          <span>{isThisResolving ? "Resolving..." : "Resolve"}</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleAction("ignore", inc.id)}
+                          className="rv-btn rv-btn-subtle rv-btn-sm"
+                        >
+                          <span>{isThisIgnoring ? "Ignoring..." : "Ignore"}</span>
+                        </button>
                       </>
                     ) : (
-                      <Link
-                        to={`/app/incidents/${inc.id}`}
-                        className="rv-btn rv-btn-secondary rv-btn-sm"
-                      >
-                        <span>Inspect Details</span>
-                        <ArrowRightIcon size={13} />
-                      </Link>
+                      <>
+                        <Link
+                          to={`/app/incidents/${inc.id}`}
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                        >
+                          <span>Inspect Details</span>
+                          <ArrowRightIcon size={13} />
+                        </Link>
+                        {(inc.status === "RESOLVED" || inc.status === "IGNORED") && (
+                          <button
+                            type="button"
+                            disabled={isSubmitting}
+                            onClick={() => handleAction("reopen", inc.id)}
+                            className="rv-btn rv-btn-subtle rv-btn-sm"
+                            title="Reopen incident back to Open status"
+                          >
+                            <RefreshCwIcon size={13} className={isThisReopening ? "rv-spin" : ""} />
+                            <span>{isThisReopening ? "Reopening..." : "Reopen"}</span>
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -314,5 +644,8 @@ export function ErrorBoundary() {
 }
 
 export const headers = (headersArgs) => {
-  return boundary.headers(headersArgs);
+  return {
+    ...boundary.headers(headersArgs),
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+  };
 };
