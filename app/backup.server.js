@@ -3112,6 +3112,43 @@ export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
             orderData: ord,
           },
         });
+
+        // Also extract and archive customer profile from the order to bypass Level 2 Protected Customer Data restrictions
+        if (ord.customer?.id || customerEmail) {
+          const customerId = ord.customer?.id
+            ? String(ord.customer.id).replace("gid://shopify/Customer/", "")
+            : `cust_${orderId}`;
+          const nameParts = (customerName || "").trim().split(/\s+/);
+          const firstName = ord.customer?.firstName || nameParts[0] || "";
+          const lastName = ord.customer?.lastName || nameParts.slice(1).join(" ") || "";
+
+          await prisma.customerArchive.upsert({
+            where: { shop_customerId: { shop, customerId } },
+            create: {
+              shop,
+              customerId,
+              email: customerEmail,
+              firstName,
+              lastName,
+              phone: ord.customer?.phone || null,
+              ordersCount: 1,
+              totalSpent: totalPrice,
+              customerData: {
+                ...ord.customer,
+                defaultAddress: ord.shippingAddress || null,
+              },
+            },
+            update: {
+              email: customerEmail || undefined,
+              ordersCount: { increment: 1 },
+              customerData: {
+                ...ord.customer,
+                defaultAddress: ord.shippingAddress || null,
+              },
+            },
+          }).catch((e) => console.warn("Failed to extract customer from order:", e?.message));
+        }
+
         savedCount++;
       }
 

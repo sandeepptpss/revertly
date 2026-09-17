@@ -5,6 +5,7 @@ import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { syncOrdersVault, syncCustomersVault } from "../backup.server.js";
 import { checkVaultAccess } from "../billing.server.js";
+import { logAudit } from "../team.server.js";
 import {
   DatabaseIcon,
   SearchIcon,
@@ -43,11 +44,16 @@ export const loader = async ({ request }) => {
   const searchOrder = url.searchParams.get("searchOrder") || "";
   const searchCustomer = url.searchParams.get("searchCustomer") || "";
 
-  const [totalOrders, totalCustomers, latestOrder, orders, customers] = await Promise.all([
+  const [totalOrders, totalCustomers, latestOrder, latestAudit, orders, customers] = await Promise.all([
     prisma.orderArchive.count({ where: { shop } }),
     prisma.customerArchive.count({ where: { shop } }),
     prisma.orderArchive.findFirst({
       where: { shop },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true },
+    }),
+    prisma.auditLog.findFirst({
+      where: { shop, action: "VAULT_SYNC" },
       orderBy: { createdAt: "desc" },
       select: { createdAt: true },
     }),
@@ -94,7 +100,7 @@ export const loader = async ({ request }) => {
     stats: {
       totalOrders,
       totalCustomers,
-      lastSync: latestOrder?.createdAt || null,
+      lastSync: latestOrder?.createdAt || latestAudit?.createdAt || null,
     },
     orders,
     customers,
@@ -130,9 +136,21 @@ export const action = async ({ request }) => {
       const orderCount = ordRes.status === "fulfilled" && ordRes.value?.success ? ordRes.value.count : 0;
       const custCount = custRes.status === "fulfilled" && custRes.value?.success ? custRes.value.count : 0;
 
+      await logAudit(shop, session, "VAULT_SYNC", {
+        resourceType: "DataVault",
+        resourceId: shop,
+        details: { orderCount, custCount, maxAllowance: vaultAccess.maxOrders },
+        request,
+      });
+
+      const messageDetails =
+        orderCount === 0 && custCount === 0
+          ? "Sync completed! No orders were found in Shopify Admin yet. Once a customer places an order or you create a test order in Shopify, it will be automatically archived here."
+          : `Vault successfully synchronized! Archived ${orderCount} orders and ${custCount} customer profiles. (Plan allowance: ${vaultAccess.maxOrders === Infinity ? "Unlimited" : vaultAccess.maxOrders.toLocaleString()} orders)`;
+
       return {
         success: true,
-        message: `Vault successfully synchronized! Archived ${orderCount} orders and ${custCount} customer profiles. (Plan allowance: ${vaultAccess.maxOrders === Infinity ? "Unlimited" : vaultAccess.maxOrders.toLocaleString()} orders)`,
+        message: messageDetails,
       };
     }
 
@@ -160,7 +178,7 @@ function statusBadge(status) {
 }
 
 export default function DataVault() {
-  const { isLocked, stats, orders, customers, searchOrder, searchCustomer } = useLoaderData();
+  const { isLocked, plan, maxOrders, shop, stats, orders, customers, searchOrder, searchCustomer } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSyncing = fetcher.state !== "idle";
@@ -254,17 +272,22 @@ export default function DataVault() {
       {/* ── Hero Vault Status & Quick Export Actions ── */}
       <div className="rv-hero-banner">
         <div style={{ maxWidth: "680px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px", flexWrap: "wrap" }}>
             <strong style={{ fontSize: "17px", color: "var(--rv-text)", fontWeight: 700 }}>
               Store Financial &amp; Dispute Vault
             </strong>
             <span className="rv-badge rv-badge-success">Active &amp; Encrypted</span>
+            <span className="rv-badge rv-badge-info" style={{ fontWeight: 700, textTransform: "uppercase" }}>
+              {(plan || "Growth")} Plan
+            </span>
           </div>
           <p style={{ margin: "0 0 10px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
             Encrypted archive of historical transactions, line item SKUs, and buyer profiles for tax audits and chargeback defense.
           </p>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-            <span className="rv-badge rv-badge-info rv-badge-sm">{stats.totalOrders.toLocaleString()} Orders</span>
+            <span className="rv-badge rv-badge-neutral rv-badge-sm">
+              Allowance: <strong>{stats.totalOrders.toLocaleString()}</strong> / {maxOrders === Infinity ? "Unlimited" : maxOrders?.toLocaleString()} Orders
+            </span>
             <span className="rv-badge rv-badge-info rv-badge-sm">{stats.totalCustomers.toLocaleString()} Customers</span>
             <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
               <ClockIcon size={13} />
@@ -295,6 +318,33 @@ export default function DataVault() {
             <span>Evidence JSON</span>
           </a>
         </div>
+      </div>
+
+      {/* ── Active Plan Callout Banner ── */}
+      <div
+        style={{
+          background: "var(--rv-surface-subdued)",
+          border: "1px solid var(--rv-border)",
+          borderRadius: "var(--rv-radius-md)",
+          padding: "10px 16px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "10px",
+          marginBottom: "16px",
+          fontSize: "13px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <ShieldCheckIcon size={18} style={{ color: "var(--rv-primary)" }} />
+          <span>
+            <strong>{(plan || "Growth").toUpperCase()} Plan Active:</strong> Data Vault is fully unlocked with an allowance of up to {maxOrders === Infinity ? "unlimited" : maxOrders?.toLocaleString()} orders.
+          </span>
+        </div>
+        <Link to="/app/plan" className="rv-btn rv-btn-subtle rv-btn-sm" style={{ textDecoration: "none" }}>
+          <span>Manage Plan &rarr;</span>
+        </Link>
       </div>
 
       {/* ── Segmented Navigation Tabs ── */}
@@ -411,11 +461,23 @@ export default function DataVault() {
           {orders.length === 0 ? (
             <EmptyState
               icon={<DatabaseIcon size={28} style={{ color: "var(--rv-info)" }} />}
-              title={searchOrder ? "No orders matched your search" : "No orders archived yet"}
+              title={searchOrder ? "No orders matched your search" : "No orders found in Shopify store"}
               description={
                 searchOrder
                   ? "Try searching by a different order number, customer email, or full name."
-                  : "Click 'Sync Vault Now' above to pull your store's transaction records into the secure encrypted vault."
+                  : `Your ${(plan || "Growth").toUpperCase()} plan includes Data Vault archiving for up to ${maxOrders === Infinity ? "unlimited" : maxOrders?.toLocaleString()} orders. However, your Shopify store currently has 0 orders placed. Once customers place orders or you create a test order in Shopify Admin, click "Sync Vault Now" to archive them here.`
+              }
+              action={
+                <div style={{ display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" }}>
+                  <a
+                    href={`https://${shop}/admin/orders`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rv-btn rv-btn-secondary"
+                  >
+                    Open Shopify Orders Admin &rarr;
+                  </a>
+                </div>
               }
             />
           ) : (
