@@ -64,6 +64,7 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
   const backupName = `Automated Daily Backup - ${timestampStr} UTC`;
 
   const themeCheck = await checkFeatureAccess(shop, "themes");
+  const metafieldCheck = await checkFeatureAccess(shop, "metafieldBackup");
 
   const backupRes = await createMultiResourceRestorePoint({
     admin,
@@ -77,6 +78,7 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
       includePages: Boolean(admin),
       includeMenus: Boolean(admin),
       includeArticles: Boolean(admin),
+      includeMetafields: Boolean(admin && metafieldCheck.allowed),
     },
   });
 

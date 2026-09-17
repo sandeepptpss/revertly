@@ -32,7 +32,6 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
-import { HubNav } from "../components/HubNav.jsx";
 import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
@@ -190,7 +189,6 @@ export default function Marketing() {
   if (isLocked) {
     return (
       <s-page heading="Email Marketing Backup" inlineSize="large">
-        <HubNav hub="backups" activeTab="marketing" />
         <Banner tone="info" title={`Not included in the ${String(plan).toUpperCase()} plan`}>
           {MARKETING_UPGRADE_MESSAGE}
         </Banner>
@@ -213,7 +211,6 @@ export default function Marketing() {
 
   return (
     <s-page heading="Email Marketing Backup" inlineSize="large">
-      <HubNav hub="backups" activeTab="marketing" />
       {result?.message && (
         <Banner
           tone={result.success ? "success" : "critical"}

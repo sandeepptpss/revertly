@@ -1,8 +1,68 @@
 /**
  * Full Store Backup & Disaster Recovery Service for Revertly
- * Handles Themes, Collections, Pages, and Navigation Menus
+ * Handles Themes, Collections, Pages, Navigation Menus and Metafields
  */
 import prisma from "./db.server.js";
+
+// ============================================================================
+// 0. SHARED GRAPHQL PLUMBING
+// ============================================================================
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Runs an Admin GraphQL call, backing off and retrying when Shopify throttles.
+ *
+ * Metafield capture is by far the heaviest query workload in the app — six
+ * owner types, each paged — so it is the first caller that can realistically
+ * drain the leaky bucket. When Shopify reports THROTTLED it also reports the
+ * bucket's restore rate, so we can wait exactly long enough for the requested
+ * cost to be available again instead of guessing.
+ *
+ * Returns the parsed JSON body either way: throttling that outlives the retry
+ * budget surfaces as `json.errors` for the caller to handle, rather than as an
+ * exception, so it degrades the same way every other fetcher here does.
+ */
+export async function graphqlWithRetry(admin, query, variables = {}, { maxAttempts = 5, label = "" } = {}) {
+  let attempt = 0;
+
+  for (;;) {
+    attempt++;
+    let json;
+
+    try {
+      const res = await admin.graphql(query, { variables });
+      json = await res.json();
+    } catch (netErr) {
+      if (attempt >= maxAttempts) throw netErr;
+      await sleep(Math.min(500 * 2 ** (attempt - 1), 8000));
+      continue;
+    }
+
+    const throttled = (json?.errors || []).some((e) => e?.extensions?.code === "THROTTLED");
+    if (!throttled || attempt >= maxAttempts) return json;
+
+    const throttleStatus = json?.extensions?.cost?.throttleStatus;
+    const requested = json?.extensions?.cost?.requestedQueryCost ?? 100;
+    const deficit = requested - (throttleStatus?.currentlyAvailable || 0);
+    const waitMs = throttleStatus?.restoreRate
+      ? Math.ceil((deficit / throttleStatus.restoreRate) * 1000)
+      : 500 * 2 ** (attempt - 1);
+
+    if (label) {
+      console.warn(`[Revertly] Throttled on ${label}, retrying (attempt ${attempt}/${maxAttempts}).`);
+    }
+    // Jitter keeps concurrent resource fetchers from retrying in lockstep.
+    await sleep(Math.min(Math.max(waitMs, 500), 10000) + Math.random() * 250);
+  }
+}
+
+/** Splits an array into fixed-size batches. */
+function chunk(items, size) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
 
 // ============================================================================
 // 1. THEMES BACKUP & RESTORE
@@ -149,6 +209,7 @@ export async function calculateStoreStorageUsage(shop) {
           pageData: true,
           articleData: true,
           menuData: true,
+          metafieldData: true,
           orderData: true,
           customerData: true,
         },
@@ -166,6 +227,7 @@ export async function calculateStoreStorageUsage(shop) {
       "pageData",
       "articleData",
       "menuData",
+      "metafieldData",
       "orderData",
       "customerData",
     ];
@@ -1502,13 +1564,178 @@ export async function restoreArticle(admin, article) {
 }
 
 // ============================================================================
-// 6. PRODUCT METAFIELDS BACKUP & RESTORE
+// 6. METAFIELDS BACKUP & RESTORE
 // ============================================================================
 
 /**
- * Restores or updates product metafields via Shopify metafieldsSet mutation
+ * Owner types this app can read and write metafields for under its current
+ * OAuth scopes. Products/collections ride on read_products/write_products,
+ * pages/blogs/articles on read_content/write_content, and the shop itself is
+ * readable regardless. Customers and orders are deliberately absent: the app
+ * holds only read_orders/read_customers, so their metafields could be captured
+ * but never restored, and a backup you cannot restore is a false promise.
  */
-export async function restoreProductMetafields(admin, productId, metafields) {
+export const METAFIELD_OWNER_TYPES = ["SHOP", "PRODUCT", "COLLECTION", "PAGE", "BLOG", "ARTICLE"];
+
+/**
+ * Restore write modes, from safest to most destructive.
+ *
+ *   SKIP_EXISTING   Write only where nothing is currently stored. Brings back
+ *                   deleted metafields and cannot clobber a live value.
+ *   RESTORE_CHANGED Overwrite values that differ from the snapshot, guarded by
+ *                   a compare-and-set against the value read moments earlier.
+ *   FORCE           Unconditional upsert.
+ *
+ * No mode ever deletes: a metafield that exists live but not in the snapshot is
+ * left alone. "Restore" here means "put the saved values back", not "make the
+ * store byte-identical to the snapshot".
+ */
+export const METAFIELD_RESTORE_MODES = ["SKIP_EXISTING", "RESTORE_CHANGED", "FORCE"];
+
+// Shopify caps metafieldsSet at 25 inputs per call, and the mutation is atomic:
+// one rejected entry fails the whole batch.
+const METAFIELDS_SET_LIMIT = 25;
+
+/**
+ * Namespaces owned by Shopify or by other apps. They cannot be written by us
+ * and already exist on any target store, so attempting them only produces
+ * noise in the error list.
+ */
+function isReservedNamespace(namespace) {
+  const ns = String(namespace || "");
+  return ns.startsWith("shopify--") || ns === "shopify" || ns.startsWith("app--");
+}
+
+const METAFIELDS_SET_MUTATION = `#graphql
+  mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+    metafieldsSet(metafields: $metafields) {
+      metafields {
+        id
+        namespace
+        key
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }`;
+
+/**
+ * Buckets a metafieldsSet userError into an outcome.
+ *
+ * A compareDigest guard rejecting a write is the mechanism working, not a
+ * failure — under SKIP_EXISTING it means "something is already there", and
+ * under RESTORE_CHANGED it means "someone edited it while we were working".
+ * Both are reported to the merchant, neither is an error.
+ */
+function classifyMetafieldError(userError, mode) {
+  const message = String(userError?.message || "");
+  const code = String(userError?.code || "");
+
+  if (code === "STALE_OBJECT" || /compare.?digest|has changed|stale/i.test(message)) {
+    return mode === "SKIP_EXISTING" ? "skipped" : "conflict";
+  }
+  if (/type.*(does not match|mismatch|invalid)/i.test(message)) return "conflict";
+  if (code === "UNAUTHORIZED" || /access denied|not authorized|permission/i.test(message)) {
+    return "denied";
+  }
+  return "failed";
+}
+
+/**
+ * Writes metafield inputs in API-sized batches, isolating failures.
+ *
+ * Because metafieldsSet is atomic per call, a batch that reports any userError
+ * is retried one input at a time. That costs up to 25 extra calls, but only for
+ * batches that actually failed — and without it a single bad value would be
+ * reported as 25 lost metafields.
+ */
+async function setMetafieldsBatched(admin, inputs, { mode = "FORCE", label = "metafieldsSet" } = {}) {
+  const outcome = { written: 0, skipped: 0, conflicts: 0, denied: 0, failed: 0, errors: [] };
+  if (!Array.isArray(inputs) || inputs.length === 0) return outcome;
+
+  const runBatch = async (batch) => {
+    const json = await graphqlWithRetry(admin, METAFIELDS_SET_MUTATION, { metafields: batch }, { label });
+    return {
+      written: json?.data?.metafieldsSet?.metafields || [],
+      userErrors: json?.data?.metafieldsSet?.userErrors || [],
+      topLevelErrors: json?.errors || [],
+    };
+  };
+
+  for (const batch of chunk(inputs, METAFIELDS_SET_LIMIT)) {
+    let batchResult;
+    try {
+      batchResult = await runBatch(batch);
+    } catch (err) {
+      outcome.failed += batch.length;
+      outcome.errors.push({ reason: "network", message: err?.message || "Request failed" });
+      continue;
+    }
+
+    if (batchResult.userErrors.length === 0 && batchResult.topLevelErrors.length === 0) {
+      outcome.written += batchResult.written.length;
+      continue;
+    }
+
+    // Atomic failure: salvage the good entries and attribute each error.
+    for (const single of batch) {
+      let singleResult;
+      try {
+        singleResult = await runBatch([single]);
+      } catch (err) {
+        outcome.failed++;
+        outcome.errors.push({
+          namespace: single.namespace,
+          key: single.key,
+          reason: "network",
+          message: err?.message || "Request failed",
+        });
+        continue;
+      }
+
+      const userError = singleResult.userErrors[0];
+      if (!userError && singleResult.topLevelErrors.length === 0) {
+        outcome.written += singleResult.written.length;
+        continue;
+      }
+
+      const bucket = userError
+        ? classifyMetafieldError(userError, mode)
+        : "failed";
+      const message = userError?.message || singleResult.topLevelErrors[0]?.message || "Unknown error";
+
+      if (bucket === "skipped") outcome.skipped++;
+      else if (bucket === "conflict") outcome.conflicts++;
+      else if (bucket === "denied") outcome.denied++;
+      else outcome.failed++;
+
+      if (bucket !== "skipped") {
+        outcome.errors.push({
+          namespace: single.namespace,
+          key: single.key,
+          ownerId: single.ownerId,
+          reason: bucket,
+          message,
+        });
+      }
+    }
+  }
+
+  return outcome;
+}
+
+/**
+ * Restores or updates product metafields via Shopify's metafieldsSet mutation.
+ *
+ * Used by the per-product rollback path, where the snapshot's values are the
+ * intended truth, so it defaults to an unconditional overwrite. It routes
+ * through setMetafieldsBatched for the 25-input API cap — products with more
+ * metafields than that used to fail outright.
+ */
+export async function restoreProductMetafields(admin, productId, metafields, { mode = "FORCE" } = {}) {
   if (!metafields || metafields.length === 0) {
     return { success: true, count: 0 };
   }
@@ -1518,12 +1745,14 @@ export async function restoreProductMetafields(admin, productId, metafields) {
 
   const metafieldInputs = metafields
     .filter((m) => m.namespace && m.key && m.value !== undefined && m.value !== null)
+    .filter((m) => !isReservedNamespace(m.namespace))
     .map((m) => ({
       ownerId,
       namespace: m.namespace,
       key: m.key,
       value: String(m.value),
       type: m.type || "single_line_text_field",
+      ...(mode === "SKIP_EXISTING" ? { compareDigest: null } : {}),
     }));
 
   if (metafieldInputs.length === 0) {
@@ -1531,48 +1760,915 @@ export async function restoreProductMetafields(admin, productId, metafields) {
   }
 
   try {
-    const res = await admin.graphql(
-      `#graphql
-      mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
-          metafields {
-            id
-            namespace
-            key
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }`,
-      { variables: { metafields: metafieldInputs } }
-    );
+    const outcome = await setMetafieldsBatched(admin, metafieldInputs, {
+      mode,
+      label: "restoreProductMetafields",
+    });
 
-    const json = await res.json();
-    const userErrors = json.data?.metafieldsSet?.userErrors || [];
-    if (userErrors.length > 0) {
+    if (outcome.written === 0 && (outcome.failed > 0 || outcome.denied > 0)) {
       return {
         success: false,
-        message: userErrors.map((e) => `${e.field}: ${e.message}`).join(", "),
+        message: outcome.errors.map((e) => `${e.namespace}.${e.key}: ${e.message}`).join(", "),
       };
     }
 
-    const updated = json.data?.metafieldsSet?.metafields || [];
-    return { success: true, count: updated.length };
+    return { success: true, count: outcome.written, outcome };
   } catch (err) {
     console.error("restoreProductMetafields error:", err?.message || err);
     return { success: false, message: err?.message || "Failed to restore metafields." };
   }
 }
 
-// ============================================================================
+// ── Capture ─────────────────────────────────────────────────────────────────
+
+const METAFIELD_NODE_FIELDS = `
+  id
+  namespace
+  key
+  type
+  value
+  compareDigest
+  updatedAt`;
+
+/**
+ * Root connection and inline-fragment name for each owner type, so the six
+ * near-identical capture queries can be generated rather than copy-pasted.
+ * SHOP is absent because it is a singleton, not a connection.
+ */
+const OWNER_CONNECTIONS = {
+  PRODUCT: { field: "products", pageSize: 25, typeName: "Product" },
+  COLLECTION: { field: "collections", pageSize: 50, typeName: "Collection" },
+  PAGE: { field: "pages", pageSize: 50, typeName: "Page" },
+  BLOG: { field: "blogs", pageSize: 50, typeName: "Blog" },
+  ARTICLE: { field: "articles", pageSize: 50, typeName: "Article" },
+};
+
+/**
+ * Metafield definitions for one owner type.
+ *
+ * `ownerType` is a required argument — there is no "all owner types" form — so
+ * this runs once per type. The rich selection can include fields that come and
+ * go between API versions, so a failure falls back to the minimal set that has
+ * been stable, mirroring how fetchThemeBackup degrades. The caller records
+ * which shape succeeded so restore knows whether access/capabilities are real.
+ */
+async function fetchDefinitionsForOwnerType(admin, ownerType) {
+  const build = (rich) => `#graphql
+    query metafieldDefinitionsBackup($ownerType: MetafieldOwnerType!, $cursor: String) {
+      metafieldDefinitions(ownerType: $ownerType, first: 250, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          name
+          namespace
+          key
+          description
+          ownerType
+          pinnedPosition
+          type { name }
+          validations { name value }
+          ${rich ? "access { admin storefront }" : ""}
+        }
+      }
+    }`;
+
+  const collect = async (rich) => {
+    const nodes = [];
+    let cursor = null;
+
+    for (let page = 0; page < 20; page++) {
+      const json = await graphqlWithRetry(
+        admin,
+        build(rich),
+        { ownerType, cursor },
+        { label: `metafieldDefinitions(${ownerType})` }
+      );
+      if (json?.errors?.length) {
+        throw new Error(json.errors.map((e) => e.message).join("; "));
+      }
+      const conn = json?.data?.metafieldDefinitions;
+      nodes.push(...(conn?.nodes || []));
+      if (!conn?.pageInfo?.hasNextPage) break;
+      cursor = conn.pageInfo.endCursor;
+    }
+
+    return nodes;
+  };
+
+  try {
+    return { nodes: await collect(true), schema: "rich" };
+  } catch (richErr) {
+    try {
+      return { nodes: await collect(false), schema: "minimal" };
+    } catch (minErr) {
+      return { nodes: [], schema: "failed", error: minErr?.message || richErr?.message };
+    }
+  }
+}
+
+/**
+ * Follows the per-owner metafields connection past the first page.
+ *
+ * Nested connections cannot be paginated from the outer query, so an owner with
+ * more metafields than the inline page size needs a targeted follow-up. Without
+ * this the backup would silently truncate, which is the worst way for a backup
+ * product to fail.
+ */
+async function fetchOwnerMetafieldOverflow(admin, ownerGid, typeName) {
+  const query = `#graphql
+    query ownerMetafieldsPage($id: ID!, $cursor: String) {
+      node(id: $id) {
+        ... on ${typeName} {
+          metafields(first: 250, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {${METAFIELD_NODE_FIELDS}
+            }
+          }
+        }
+      }
+    }`;
+
+  const nodes = [];
+  let cursor = null;
+
+  for (let page = 0; page < 20; page++) {
+    const json = await graphqlWithRetry(admin, query, { id: ownerGid, cursor }, { label: `metafields(${typeName})` });
+    if (json?.errors?.length) break;
+    const conn = json?.data?.node?.metafields;
+    nodes.push(...(conn?.nodes || []));
+    if (!conn?.pageInfo?.hasNextPage) break;
+    cursor = conn.pageInfo.endCursor;
+  }
+
+  return nodes;
+}
+
+/** Captures every owner of one type that carries at least one metafield. */
+async function fetchOwnersWithMetafields(admin, ownerType) {
+  const owners = [];
+  const warnings = [];
+
+  if (ownerType === "SHOP") {
+    const json = await graphqlWithRetry(
+      admin,
+      `#graphql
+      query shopMetafieldsBackup($cursor: String) {
+        shop {
+          id
+          name
+          myshopifyDomain
+          metafields(first: 250, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {${METAFIELD_NODE_FIELDS}
+            }
+          }
+        }
+      }`,
+      { cursor: null },
+      { label: "shop metafields" }
+    );
+
+    if (json?.errors?.length) {
+      warnings.push({ stage: "owners", ownerType, message: json.errors.map((e) => e.message).join("; ") });
+      return { owners, warnings };
+    }
+
+    const shopNode = json?.data?.shop;
+    const metafields = (shopNode?.metafields?.nodes || []).filter((m) => !isReservedNamespace(m.namespace));
+    if (metafields.length > 0) {
+      owners.push({
+        ownerType: "SHOP",
+        sourceGid: shopNode.id,
+        handle: shopNode.myshopifyDomain || "shop",
+        title: shopNode.name || "Shop",
+        parentHandle: null,
+        truncated: false,
+        metafields,
+      });
+    }
+    return { owners, warnings };
+  }
+
+  const conn = OWNER_CONNECTIONS[ownerType];
+  if (!conn) return { owners, warnings };
+
+  const isArticle = ownerType === "ARTICLE";
+  const query = `#graphql
+    query ownerMetafieldsBackup($cursor: String) {
+      ${conn.field}(first: ${conn.pageSize}, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          handle
+          title
+          ${isArticle ? "blog { id handle }" : ""}
+          metafields(first: 50) {
+            pageInfo { hasNextPage }
+            nodes {${METAFIELD_NODE_FIELDS}
+            }
+          }
+        }
+      }
+    }`;
+
+  let cursor = null;
+
+  for (let page = 0; page < 200; page++) {
+    let json;
+    try {
+      json = await graphqlWithRetry(admin, query, { cursor }, { label: `${conn.field} metafields` });
+    } catch (err) {
+      warnings.push({ stage: "owners", ownerType, message: err?.message || "Request failed" });
+      break;
+    }
+
+    if (json?.errors?.length) {
+      warnings.push({ stage: "owners", ownerType, message: json.errors.map((e) => e.message).join("; ") });
+      break;
+    }
+
+    const connection = json?.data?.[conn.field];
+    for (const node of connection?.nodes || []) {
+      let metafields = (node.metafields?.nodes || []).filter((m) => !isReservedNamespace(m.namespace));
+      let truncated = false;
+
+      if (node.metafields?.pageInfo?.hasNextPage) {
+        const complete = await fetchOwnerMetafieldOverflow(admin, node.id, conn.typeName);
+        if (complete.length >= metafields.length) {
+          metafields = complete.filter((m) => !isReservedNamespace(m.namespace));
+        } else {
+          truncated = true;
+          warnings.push({
+            stage: "owners",
+            ownerType,
+            message: `Metafields for ${node.handle || node.id} may be incomplete.`,
+          });
+        }
+      }
+
+      if (metafields.length === 0) continue;
+
+      owners.push({
+        ownerType,
+        sourceGid: node.id,
+        handle: node.handle || null,
+        title: node.title || null,
+        parentHandle: isArticle ? node.blog?.handle || null : null,
+        truncated,
+        metafields,
+      });
+    }
+
+    if (!connection?.pageInfo?.hasNextPage) break;
+    cursor = connection.pageInfo.endCursor;
+  }
+
+  return { owners, warnings };
+}
+
+/**
+ * Captures the complete metafield document for a store.
+ *
+ * Follows the convention of every sibling fetcher: warns and returns an empty
+ * (but well-formed) document on failure, so a metafield problem can never take
+ * down a full-store backup running under Promise.allSettled. Partial captures
+ * are recorded in `warnings` rather than swallowed — a snapshot that is quietly
+ * short is more dangerous than one that admits it.
+ */
+export async function fetchMetafieldsBackup(admin, { ownerTypes = METAFIELD_OWNER_TYPES, sourceShop = null } = {}) {
+  const document = {
+    _schema: "revertly-metafields-v1",
+    capturedAt: new Date().toISOString(),
+    sourceShop,
+    definitionSchema: "rich",
+    definitions: {},
+    owners: [],
+    counts: {
+      definitions: 0,
+      definitionsByOwnerType: {},
+      owners: 0,
+      metafields: 0,
+      metafieldsByOwnerType: {},
+      truncatedOwners: 0,
+    },
+    warnings: [],
+  };
+
+  const types = ownerTypes.filter((t) => METAFIELD_OWNER_TYPES.includes(t));
+
+  try {
+    for (const ownerType of types) {
+      const { nodes, schema, error } = await fetchDefinitionsForOwnerType(admin, ownerType);
+      if (schema === "minimal") document.definitionSchema = "minimal";
+      if (schema === "failed") {
+        document.warnings.push({ stage: "definitions", ownerType, message: error || "Unavailable" });
+      }
+
+      const defs = nodes
+        .filter((d) => !isReservedNamespace(d.namespace))
+        .map((d) => ({
+          namespace: d.namespace,
+          key: d.key,
+          ownerType: d.ownerType || ownerType,
+          type: d.type?.name || null,
+          name: d.name,
+          description: d.description || "",
+          pinnedPosition: d.pinnedPosition ?? null,
+          validations: Array.isArray(d.validations) ? d.validations : [],
+          access: d.access || null,
+          sourceId: d.id,
+        }));
+
+      document.definitions[ownerType] = defs;
+      document.counts.definitionsByOwnerType[ownerType] = defs.length;
+      document.counts.definitions += defs.length;
+    }
+
+    for (const ownerType of types) {
+      const { owners, warnings } = await fetchOwnersWithMetafields(admin, ownerType);
+      document.owners.push(...owners);
+      document.warnings.push(...warnings);
+
+      const typeTotal = owners.reduce((sum, o) => sum + o.metafields.length, 0);
+      document.counts.metafieldsByOwnerType[ownerType] = typeTotal;
+      document.counts.metafields += typeTotal;
+      document.counts.truncatedOwners += owners.filter((o) => o.truncated).length;
+    }
+
+    document.counts.owners = document.owners.length;
+    return document;
+  } catch (err) {
+    console.warn("fetchMetafieldsBackup warning (check scopes):", err?.message || err);
+    document.warnings.push({ stage: "capture", message: err?.message || "Metafield capture failed." });
+    return document;
+  }
+}
+
+// ── Restore ─────────────────────────────────────────────────────────────────
+
+/** The key an owner is matched on across stores. Articles need their blog. */
+function ownerKey(owner) {
+  if (owner.ownerType === "ARTICLE") {
+    return `${owner.parentHandle || ""}/${owner.handle || ""}`;
+  }
+  return owner.handle || "";
+}
+
+/**
+ * Builds handle → gid maps for the owner types a restore actually needs.
+ *
+ * Resolving each owner with its own `query:"handle:X"` lookup would be one API
+ * call per product, which throttles immediately on a real catalog. Paging the
+ * id/handle pairs once is a single cheap sweep per owner type instead.
+ */
+async function buildOwnerIndex(admin, ownerTypes) {
+  const index = {};
+
+  for (const ownerType of ownerTypes) {
+    const map = new Map();
+
+    if (ownerType === "SHOP") {
+      const json = await graphqlWithRetry(
+        admin,
+        `#graphql
+        query shopIdForMetafields { shop { id myshopifyDomain } }`,
+        {},
+        { label: "shop id" }
+      );
+      const shopNode = json?.data?.shop;
+      if (shopNode?.id) {
+        // The shop is a singleton: every SHOP-owned entry resolves to it,
+        // whatever domain the snapshot was captured under.
+        map.set("*", shopNode.id);
+      }
+      index[ownerType] = map;
+      continue;
+    }
+
+    const conn = OWNER_CONNECTIONS[ownerType];
+    if (!conn) continue;
+
+    const isArticle = ownerType === "ARTICLE";
+    const query = `#graphql
+      query ownerHandleIndex($cursor: String) {
+        ${conn.field}(first: 250, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            handle
+            ${isArticle ? "blog { handle }" : ""}
+          }
+        }
+      }`;
+
+    let cursor = null;
+    for (let page = 0; page < 200; page++) {
+      let json;
+      try {
+        json = await graphqlWithRetry(admin, query, { cursor }, { label: `${conn.field} handle index` });
+      } catch {
+        break;
+      }
+      if (json?.errors?.length) break;
+
+      const connection = json?.data?.[conn.field];
+      for (const node of connection?.nodes || []) {
+        const key = isArticle ? `${node.blog?.handle || ""}/${node.handle || ""}` : node.handle || "";
+        if (key) map.set(key, node.id);
+      }
+
+      if (!connection?.pageInfo?.hasNextPage) break;
+      cursor = connection.pageInfo.endCursor;
+    }
+
+    index[ownerType] = map;
+  }
+
+  return index;
+}
+
+const METAFIELD_DEFINITION_LOOKUP = `#graphql
+  query metafieldDefinitionLookup($ownerType: MetafieldOwnerType!, $namespace: String!, $key: String!) {
+    metafieldDefinitions(ownerType: $ownerType, namespace: $namespace, key: $key, first: 1) {
+      nodes { id namespace key type { name } }
+    }
+  }`;
+
+/**
+ * Recreates metafield definitions on the target store.
+ *
+ * Definitions must land before values: a typed value written without its
+ * definition either fails validation or silently loses its type.
+ *
+ * Identity is the (ownerType, namespace, key) triple, never the source id,
+ * which is meaningless on another store. A definition whose `type` differs is
+ * reported and skipped — Shopify makes type immutable, and the only way to
+ * change it is metafieldDefinitionDelete, which can destroy every value
+ * attached to it. A backup tool must never reach for that.
+ */
+export async function restoreMetafieldDefinitions(admin, definitions = {}, { mode = "SKIP_EXISTING" } = {}) {
+  const summary = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
+
+  for (const [ownerType, defs] of Object.entries(definitions)) {
+    if (!METAFIELD_OWNER_TYPES.includes(ownerType) || !Array.isArray(defs)) continue;
+
+    for (const def of defs) {
+      if (!def?.namespace || !def?.key || !def?.type) {
+        summary.skipped++;
+        continue;
+      }
+      if (isReservedNamespace(def.namespace)) {
+        summary.skipped++;
+        continue;
+      }
+
+      let existing = null;
+      try {
+        const lookup = await graphqlWithRetry(
+          admin,
+          METAFIELD_DEFINITION_LOOKUP,
+          { ownerType, namespace: def.namespace, key: def.key },
+          { label: "metafieldDefinition lookup" }
+        );
+        existing = lookup?.data?.metafieldDefinitions?.nodes?.[0] || null;
+      } catch (err) {
+        summary.failed++;
+        summary.errors.push({
+          ownerType,
+          namespace: def.namespace,
+          key: def.key,
+          reason: "lookup",
+          message: err?.message || "Lookup failed",
+        });
+        continue;
+      }
+
+      if (existing && existing.type?.name && existing.type.name !== def.type) {
+        summary.skipped++;
+        summary.errors.push({
+          ownerType,
+          namespace: def.namespace,
+          key: def.key,
+          reason: "type_immutable",
+          message: `Definition already exists with type "${existing.type.name}" and cannot be changed to "${def.type}".`,
+        });
+        continue;
+      }
+
+      // Creating a missing definition is purely additive, so it happens in
+      // every mode. *Updating* one can tighten validations and invalidate live
+      // values, so it stays behind the explicit overwrite modes.
+      if (existing && mode === "SKIP_EXISTING") {
+        summary.skipped++;
+        continue;
+      }
+
+      try {
+        if (!existing) {
+          const json = await graphqlWithRetry(
+            admin,
+            `#graphql
+            mutation metafieldDefinitionCreate($definition: MetafieldDefinitionInput!) {
+              metafieldDefinitionCreate(definition: $definition) {
+                createdDefinition { id }
+                userErrors { field message code }
+              }
+            }`,
+            {
+              definition: {
+                name: def.name || `${def.namespace}.${def.key}`,
+                namespace: def.namespace,
+                key: def.key,
+                description: def.description || "",
+                type: def.type,
+                ownerType,
+                ...(Array.isArray(def.validations) && def.validations.length > 0
+                  ? { validations: def.validations.map((v) => ({ name: v.name, value: v.value })) }
+                  : {}),
+              },
+            },
+            { label: "metafieldDefinitionCreate" }
+          );
+
+          const errors = json?.data?.metafieldDefinitionCreate?.userErrors || [];
+          const taken = errors.some(
+            (e) => e.code === "TAKEN" || /already (exists|in use)|taken/i.test(String(e.message))
+          );
+
+          if (errors.length === 0) {
+            summary.created++;
+          } else if (taken) {
+            // Raced with another writer, or a reserved definition we could not
+            // see. Either way it exists now, which is the desired end state.
+            summary.skipped++;
+          } else {
+            summary.failed++;
+            summary.errors.push({
+              ownerType,
+              namespace: def.namespace,
+              key: def.key,
+              reason: "create",
+              message: errors.map((e) => e.message).join(", "),
+            });
+          }
+          continue;
+        }
+
+        const json = await graphqlWithRetry(
+          admin,
+          `#graphql
+          mutation metafieldDefinitionUpdate($definition: MetafieldDefinitionUpdateInput!) {
+            metafieldDefinitionUpdate(definition: $definition) {
+              updatedDefinition { id }
+              userErrors { field message code }
+            }
+          }`,
+          {
+            definition: {
+              namespace: def.namespace,
+              key: def.key,
+              ownerType,
+              name: def.name || `${def.namespace}.${def.key}`,
+              description: def.description || "",
+              ...(Array.isArray(def.validations) && def.validations.length > 0
+                ? { validations: def.validations.map((v) => ({ name: v.name, value: v.value })) }
+                : {}),
+            },
+          },
+          { label: "metafieldDefinitionUpdate" }
+        );
+
+        const errors = json?.data?.metafieldDefinitionUpdate?.userErrors || [];
+        if (errors.length === 0) {
+          summary.updated++;
+        } else {
+          summary.failed++;
+          summary.errors.push({
+            ownerType,
+            namespace: def.namespace,
+            key: def.key,
+            reason: "update",
+            message: errors.map((e) => e.message).join(", "),
+          });
+        }
+      } catch (err) {
+        summary.failed++;
+        summary.errors.push({
+          ownerType,
+          namespace: def.namespace,
+          key: def.key,
+          reason: "exception",
+          message: err?.message || "Definition restore failed",
+        });
+      }
+    }
+  }
+
+  return summary;
+}
+
+/**
+ * Reads the metafields currently on a set of owners, so RESTORE_CHANGED can
+ * both skip unchanged values and compare-and-set against a fresh digest.
+ */
+async function readLiveMetafields(admin, ownerGids, typeName) {
+  const live = new Map();
+
+  const query = `#graphql
+    query liveOwnerMetafields($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on ${typeName} {
+          id
+          metafields(first: 250) {
+            nodes { namespace key value compareDigest }
+          }
+        }
+      }
+    }`;
+
+  for (const batch of chunk(ownerGids, 50)) {
+    let json;
+    try {
+      json = await graphqlWithRetry(admin, query, { ids: batch }, { label: `live metafields (${typeName})` });
+    } catch {
+      continue;
+    }
+    if (json?.errors?.length) continue;
+
+    for (const node of json?.data?.nodes || []) {
+      if (!node?.id) continue;
+      const byKey = new Map();
+      for (const m of node.metafields?.nodes || []) {
+        byKey.set(`${m.namespace}.${m.key}`, m);
+      }
+      live.set(node.id, byKey);
+    }
+  }
+
+  return live;
+}
+
+/**
+ * Restores metafield values (and optionally their definitions) from a captured
+ * metafield document onto the live store.
+ *
+ * Safety comes from three places:
+ *  - owners are re-resolved by handle, and an owner that no longer exists is
+ *    reported and skipped, never created;
+ *  - SKIP_EXISTING writes with `compareDigest: null`, which Shopify honours as
+ *    "only if nothing is stored" — race-free, unlike a read-then-write check;
+ *  - RESTORE_CHANGED compares against values read moments earlier and sends
+ *    that digest, so an edit landing mid-restore is reported as a conflict
+ *    instead of being silently overwritten.
+ *
+ * Re-running is convergent: metafieldsSet upserts on (owner, namespace, key),
+ * so a second pass writes nothing new and creates no duplicates.
+ */
+export async function restoreMetafieldBackup(
+  admin,
+  shop,
+  metafieldData,
+  {
+    mode = "SKIP_EXISTING",
+    ownerTypes = METAFIELD_OWNER_TYPES,
+    includeDefinitions = true,
+    includeValues = true,
+  } = {}
+) {
+  const summary = {
+    mode,
+    definitionsCreated: 0,
+    definitionsUpdated: 0,
+    definitionsSkipped: 0,
+    definitionsFailed: 0,
+    ownersMatched: 0,
+    ownersMissing: 0,
+    metafieldsWritten: 0,
+    metafieldsSkipped: 0,
+    metafieldsUnchanged: 0,
+    conflicts: 0,
+    denied: 0,
+    failed: 0,
+    errors: [],
+  };
+
+  if (!metafieldData || typeof metafieldData !== "object") {
+    return { success: false, message: "This restore point does not contain a metafield backup.", summary };
+  }
+
+  const effectiveMode = METAFIELD_RESTORE_MODES.includes(mode) ? mode : "SKIP_EXISTING";
+  summary.mode = effectiveMode;
+
+  const allOwners = Array.isArray(metafieldData.owners) ? metafieldData.owners : [];
+  const requestedTypes = ownerTypes.filter((t) => METAFIELD_OWNER_TYPES.includes(t));
+  const owners = includeValues ? allOwners.filter((o) => requestedTypes.includes(o?.ownerType)) : [];
+
+  if (includeDefinitions && metafieldData.definitions) {
+    const filtered = Object.fromEntries(
+      Object.entries(metafieldData.definitions).filter(([t]) => requestedTypes.includes(t))
+    );
+    const defSummary = await restoreMetafieldDefinitions(admin, filtered, { mode: effectiveMode });
+    summary.definitionsCreated = defSummary.created;
+    summary.definitionsUpdated = defSummary.updated;
+    summary.definitionsSkipped = defSummary.skipped;
+    summary.definitionsFailed = defSummary.failed;
+    summary.errors.push(...defSummary.errors);
+  }
+
+  if (owners.length === 0) {
+    return {
+      success: summary.definitionsCreated > 0 || summary.definitionsUpdated > 0,
+      message:
+        summary.definitionsCreated > 0 || summary.definitionsUpdated > 0
+          ? `Restored ${summary.definitionsCreated + summary.definitionsUpdated} metafield definitions${
+              includeValues ? ". No metafield values in this snapshot." : " (values were not included in this run)."
+            }`
+          : includeValues
+          ? "No metafield values found in this snapshot for the selected resource types."
+          : "No metafield definitions needed restoring — they all already exist on this store.",
+      summary,
+    };
+  }
+
+  const presentTypes = [...new Set(owners.map((o) => o.ownerType))];
+  const index = await buildOwnerIndex(admin, presentTypes);
+
+  // A same-store restore can trust the captured gid, which survives a handle
+  // rename. Cross-store, the gid is meaningless and handle is the only key.
+  const sameShop = Boolean(metafieldData.sourceShop) && metafieldData.sourceShop === shop;
+
+  // Collapse duplicate (owner, namespace, key) entries a merged or hand-edited
+  // archive may carry, keeping the most recently updated value. Otherwise the
+  // second write compare-and-set-conflicts against the first.
+  const deduped = new Map();
+  for (const owner of owners) {
+    for (const mf of owner.metafields || []) {
+      if (!mf?.namespace || !mf?.key || mf.value === undefined || mf.value === null) continue;
+      if (isReservedNamespace(mf.namespace)) continue;
+      const key = `${owner.ownerType}|${ownerKey(owner)}|${mf.namespace}|${mf.key}`;
+      const prev = deduped.get(key);
+      if (!prev || new Date(mf.updatedAt || 0) >= new Date(prev.mf.updatedAt || 0)) {
+        deduped.set(key, { owner, mf });
+      }
+    }
+  }
+
+  // Resolve every owner once, then group the writes by owner type so the
+  // RESTORE_CHANGED read pass can batch its lookups.
+  const byType = new Map();
+  const seenOwners = new Set();
+
+  for (const { owner, mf } of deduped.values()) {
+    const key = ownerKey(owner);
+    const typeIndex = index[owner.ownerType];
+    let ownerId = null;
+
+    if (owner.ownerType === "SHOP") {
+      ownerId = typeIndex?.get("*") || null;
+    } else {
+      if (sameShop && owner.sourceGid && [...(typeIndex?.values() || [])].includes(owner.sourceGid)) {
+        ownerId = owner.sourceGid;
+      }
+      if (!ownerId) ownerId = typeIndex?.get(key) || null;
+    }
+
+    const ownerTag = `${owner.ownerType}|${key}`;
+    if (!ownerId) {
+      if (!seenOwners.has(ownerTag)) {
+        seenOwners.add(ownerTag);
+        summary.ownersMissing++;
+        summary.errors.push({
+          ownerType: owner.ownerType,
+          handle: owner.handle,
+          reason: "owner_not_found",
+          message: `${owner.ownerType.toLowerCase()} "${key}" no longer exists on this store — its metafields were skipped.`,
+        });
+      }
+      continue;
+    }
+
+    if (!seenOwners.has(ownerTag)) {
+      seenOwners.add(ownerTag);
+      summary.ownersMatched++;
+    }
+
+    if (!byType.has(owner.ownerType)) byType.set(owner.ownerType, []);
+    byType.get(owner.ownerType).push({ ownerId, mf });
+  }
+
+  for (const [ownerType, entries] of byType.entries()) {
+    const typeName = ownerType === "SHOP" ? "Shop" : OWNER_CONNECTIONS[ownerType]?.typeName;
+    let liveByOwner = null;
+
+    if (effectiveMode === "RESTORE_CHANGED" && typeName) {
+      liveByOwner = await readLiveMetafields(admin, [...new Set(entries.map((e) => e.ownerId))], typeName);
+    }
+
+    const inputs = [];
+    for (const { ownerId, mf } of entries) {
+      const input = {
+        ownerId,
+        namespace: mf.namespace,
+        key: mf.key,
+        value: String(mf.value),
+        type: mf.type || "single_line_text_field",
+      };
+
+      if (effectiveMode === "SKIP_EXISTING") {
+        // Shopify's documented "create only" guard: the write is rejected if
+        // anything is already stored under this key.
+        input.compareDigest = null;
+      } else if (effectiveMode === "RESTORE_CHANGED") {
+        const liveMf = liveByOwner?.get(ownerId)?.get(`${mf.namespace}.${mf.key}`);
+        if (liveMf && String(liveMf.value) === String(mf.value)) {
+          summary.metafieldsUnchanged++;
+          continue;
+        }
+        // Compare against what is live *now*, not the snapshot's digest — the
+        // snapshot digest describes the value we are trying to write, so it
+        // would never match and every write would fail.
+        input.compareDigest = liveMf ? liveMf.compareDigest : null;
+      }
+
+      inputs.push(input);
+    }
+
+    const outcome = await setMetafieldsBatched(admin, inputs, {
+      mode: effectiveMode,
+      label: `restore metafields (${ownerType})`,
+    });
+
+    summary.metafieldsWritten += outcome.written;
+    summary.metafieldsSkipped += outcome.skipped;
+    summary.conflicts += outcome.conflicts;
+    summary.denied += outcome.denied;
+    summary.failed += outcome.failed;
+    summary.errors.push(...outcome.errors.map((e) => ({ ...e, ownerType })));
+  }
+
+  const parts = [`Restored ${summary.metafieldsWritten} metafields across ${summary.ownersMatched} resources`];
+  if (summary.definitionsCreated > 0) parts.push(`${summary.definitionsCreated} definitions created`);
+  if (summary.definitionsUpdated > 0) parts.push(`${summary.definitionsUpdated} definitions updated`);
+  if (summary.metafieldsUnchanged > 0) parts.push(`${summary.metafieldsUnchanged} already matched`);
+  if (summary.metafieldsSkipped > 0) parts.push(`${summary.metafieldsSkipped} skipped (already set)`);
+  if (summary.ownersMissing > 0) parts.push(`${summary.ownersMissing} resources no longer exist`);
+  if (summary.conflicts > 0) parts.push(`${summary.conflicts} conflicts`);
+  if (summary.denied > 0) parts.push(`${summary.denied} blocked by app permissions`);
+  if (summary.failed > 0) parts.push(`${summary.failed} failed`);
+
+  const didSomething =
+    summary.metafieldsWritten > 0 ||
+    summary.definitionsCreated > 0 ||
+    summary.definitionsUpdated > 0 ||
+    summary.metafieldsUnchanged > 0 ||
+    summary.metafieldsSkipped > 0;
+
+  return {
+    success: didSomething,
+    message: `${parts.join(", ")}.`,
+    summary,
+    // Bounded: a large failed restore must not ship thousands of objects to
+    // the browser.
+    errors: summary.errors.slice(0, 50),
+  };
+}// ============================================================================
 // 7. UNIFIED MULTI-RESOURCE RESTORE POINT CREATION
 // ============================================================================
 
 /**
- * Orchestrates a complete store backup snapshot (Products, Themes, Collections, Pages, Menus, Articles)
- * without blocking or breaking existing product flows.
+ * The backupType a set of component flags implies.
+ *
+ * A snapshot that captures exactly one resource is labelled with that
+ * resource; anything broader is FULL. Menus are their own type only when
+ * captured alone — a Pages backup still sweeps them up, which is why PAGES is
+ * checked with menus allowed but MENUS is not.
+ */
+function inferBackupType(options) {
+  const enabled = [
+    options.includeProducts !== false && "PRODUCTS",
+    options.includeThemes !== false && "THEMES",
+    options.includeCollections !== false && "COLLECTIONS",
+    options.includePages !== false && "PAGES",
+    options.includeMenus !== false && "MENUS",
+    options.includeArticles !== false && "BLOGS",
+    options.includeMetafields === true && "METAFIELDS",
+  ].filter(Boolean);
+
+  if (enabled.length === 1) return enabled[0];
+  // Pages have always implied their navigation menus, so the pair keeps
+  // reading as a PAGES backup rather than becoming FULL.
+  if (enabled.length === 2 && enabled.includes("PAGES") && enabled.includes("MENUS")) return "PAGES";
+  return "FULL";
+}
+
+/**
+ * Orchestrates a complete store backup snapshot (Products, Themes, Collections,
+ * Pages, Menus, Articles, Metafields) without blocking or breaking existing
+ * product flows.
+ *
+ * `includeMetafields` defaults to false: it is a plan-gated capability and this
+ * function has no billing context, so it must be switched on by a caller that
+ * has already checked the entitlement.
  */
 export async function createMultiResourceRestorePoint({
   admin,
@@ -1588,6 +2684,7 @@ export async function createMultiResourceRestorePoint({
     includePages: true,
     includeMenus: true,
     includeArticles: true,
+    includeMetafields: false,
   },
 }) {
   const safeName =
@@ -1595,20 +2692,7 @@ export async function createMultiResourceRestorePoint({
     `Manual Snapshot - ${new Date().toISOString().slice(0, 19).replace("T", " ")}`;
 
   // Determine primary backup type
-  let backupType = explicitBackupType || "FULL";
-  if (!explicitBackupType) {
-    if (options.includeThemes && !options.includeProducts && !options.includeCollections && !options.includePages && !options.includeArticles) {
-      backupType = "THEMES";
-    } else if (options.includeProducts && !options.includeThemes && !options.includeCollections && !options.includePages && !options.includeArticles) {
-      backupType = "PRODUCTS";
-    } else if (options.includeCollections && !options.includeProducts && !options.includeThemes && !options.includePages && !options.includeArticles) {
-      backupType = "COLLECTIONS";
-    } else if (options.includePages && !options.includeProducts && !options.includeThemes && !options.includeCollections && !options.includeArticles) {
-      backupType = "PAGES";
-    } else if (options.includeArticles && !options.includeProducts && !options.includeThemes && !options.includeCollections && !options.includePages) {
-      backupType = "BLOGS";
-    }
-  }
+  const backupType = explicitBackupType || inferBackupType(options);
 
   // 1. Create the pending restore point
   const rp = await prisma.restorePoint.create({
@@ -1678,7 +2762,16 @@ export async function createMultiResourceRestorePoint({
       tasks.push(Promise.resolve({ blogs: [], articles: [] }));
     }
 
-    const [prodRes, themeRes, colRes, pageRes, menuRes, articleRes] = await Promise.allSettled(tasks);
+    // Task 6: Metafields & metafield definitions (opt-in — plan gated, and the
+    // heaviest query workload here, so it never runs unless asked for).
+    if (options.includeMetafields === true && admin) {
+      tasks.push(fetchMetafieldsBackup(admin, { sourceShop: shop }));
+    } else {
+      tasks.push(Promise.resolve(null));
+    }
+
+    const [prodRes, themeRes, colRes, pageRes, menuRes, articleRes, metafieldRes] =
+      await Promise.allSettled(tasks);
 
     const products = prodRes.status === "fulfilled" ? prodRes.value : [];
     const themeData = themeRes.status === "fulfilled" ? themeRes.value : null;
@@ -1686,12 +2779,14 @@ export async function createMultiResourceRestorePoint({
     const pages = pageRes.status === "fulfilled" ? pageRes.value : [];
     const menus = menuRes.status === "fulfilled" ? menuRes.value : [];
     const articleData = articleRes.status === "fulfilled" ? articleRes.value : { blogs: [], articles: [] };
+    const metafieldData = metafieldRes.status === "fulfilled" ? metafieldRes.value : null;
 
     const themeCount = themeData?.activeTheme ? 1 : 0;
     const collectionCount = Array.isArray(collections) ? collections.length : 0;
     const pageCount = Array.isArray(pages) ? pages.length : 0;
     const menuCount = Array.isArray(menus) ? menus.length : 0;
     const articleCount = Array.isArray(articleData?.articles) ? articleData.articles.length : 0;
+    const metafieldCount = metafieldData?.counts?.metafields || 0;
 
     // 3. Update RestorePoint to READY status
     const updated = await prisma.restorePoint.update({
@@ -1705,12 +2800,18 @@ export async function createMultiResourceRestorePoint({
         pageCount,
         menuCount,
         articleCount,
+        metafieldCount,
         snapshotData: products,
         themeData: themeData || undefined,
         collectionData: collections.length > 0 ? collections : undefined,
         pageData: pages.length > 0 ? pages : undefined,
         menuData: menus.length > 0 ? menus : undefined,
         articleData: articleCount > 0 || (articleData.blogs && articleData.blogs.length > 0) ? articleData : undefined,
+        // Definitions are worth keeping even when no owner carries a value.
+        metafieldData:
+          metafieldData && (metafieldCount > 0 || metafieldData.counts?.definitions > 0)
+            ? metafieldData
+            : undefined,
       },
     });
 
@@ -1724,6 +2825,9 @@ export async function createMultiResourceRestorePoint({
         pages: pageCount,
         menus: menuCount,
         articles: articleCount,
+        metafields: metafieldCount,
+        metafieldDefinitions: metafieldData?.counts?.definitions || 0,
+        metafieldWarnings: metafieldData?.warnings?.length || 0,
         backupType,
       },
     };
@@ -1844,6 +2948,60 @@ export async function backupBlogs({ admin, shop, name = null, description = "" }
       includePages: false,
       includeMenus: false,
       includeArticles: true,
+    },
+  });
+}
+
+/**
+ * Dedicated 1-Click Navigation Menu Backup
+ *
+ * Menus have always been captured alongside pages; this captures them on their
+ * own so a merchant who only reorganised their navigation can snapshot and
+ * revert just that, without a page restore riding along.
+ */
+export async function backupMenus({ admin, shop, name = null, description = "" }) {
+  const defaultName = `Navigation Menus Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return createMultiResourceRestorePoint({
+    admin,
+    shop,
+    name: name || defaultName,
+    description: description || "Dedicated snapshot of navigation menu structure, titles, links, and nested items.",
+    backupType: "MENUS",
+    options: {
+      includeProducts: false,
+      includeThemes: false,
+      includeCollections: false,
+      includePages: false,
+      includeMenus: true,
+      includeArticles: false,
+      includeMetafields: false,
+    },
+  });
+}
+
+/**
+ * Dedicated 1-Click Metafield Backup (values + definitions).
+ *
+ * Plan-gated: callers must confirm `checkFeatureAccess(shop, "metafieldBackup")`
+ * before invoking this, because createMultiResourceRestorePoint has no billing
+ * context of its own.
+ */
+export async function backupMetafields({ admin, shop, name = null, description = "" }) {
+  const defaultName = `Metafields Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return createMultiResourceRestorePoint({
+    admin,
+    shop,
+    name: name || defaultName,
+    description: description || "Dedicated snapshot of shop, product, collection, page, blog and article metafields and their definitions.",
+    backupType: "METAFIELDS",
+    options: {
+      includeProducts: false,
+      includeThemes: false,
+      includeCollections: false,
+      includePages: false,
+      includeMenus: false,
+      includeArticles: false,
+      includeMetafields: true,
     },
   });
 }
@@ -2150,6 +3308,82 @@ export function generateProductsCsv(products = []) {
 }
 
 /**
+ * Validates and normalizes an imported metafield document.
+ *
+ * Returns null for anything that is not a usable metafield backup, so the
+ * import path can treat "absent" and "malformed" identically instead of
+ * persisting a shape that would crash the restore loop later. Owners and
+ * metafields are filtered down to entries that could actually be written —
+ * an owner with no handle can never be re-resolved on the target store, and a
+ * metafield with no namespace/key is not addressable.
+ */
+export function normalizeMetafieldDocument(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+  const definitions = {};
+  let definitionTotal = 0;
+  const definitionsByOwnerType = {};
+
+  for (const ownerType of METAFIELD_OWNER_TYPES) {
+    const list = Array.isArray(raw.definitions?.[ownerType]) ? raw.definitions[ownerType] : [];
+    const clean = list.filter((d) => d && d.namespace && d.key && d.type);
+    definitions[ownerType] = clean;
+    definitionsByOwnerType[ownerType] = clean.length;
+    definitionTotal += clean.length;
+  }
+
+  const owners = [];
+  const metafieldsByOwnerType = {};
+  let metafieldTotal = 0;
+
+  for (const owner of Array.isArray(raw.owners) ? raw.owners : []) {
+    if (!owner || !METAFIELD_OWNER_TYPES.includes(owner.ownerType)) continue;
+    // SHOP is a singleton and resolves without a handle; everything else is
+    // matched by handle and is unrestorable without one.
+    if (owner.ownerType !== "SHOP" && !owner.handle) continue;
+    if (owner.ownerType === "ARTICLE" && !owner.parentHandle) continue;
+
+    const metafields = (Array.isArray(owner.metafields) ? owner.metafields : []).filter(
+      (m) => m && m.namespace && m.key && m.value !== undefined && m.value !== null
+    );
+    if (metafields.length === 0) continue;
+
+    owners.push({
+      ownerType: owner.ownerType,
+      sourceGid: owner.sourceGid || null,
+      handle: owner.handle || null,
+      title: owner.title || null,
+      parentHandle: owner.parentHandle || null,
+      truncated: Boolean(owner.truncated),
+      metafields,
+    });
+
+    metafieldsByOwnerType[owner.ownerType] = (metafieldsByOwnerType[owner.ownerType] || 0) + metafields.length;
+    metafieldTotal += metafields.length;
+  }
+
+  if (metafieldTotal === 0 && definitionTotal === 0) return null;
+
+  return {
+    _schema: "revertly-metafields-v1",
+    capturedAt: raw.capturedAt || new Date().toISOString(),
+    sourceShop: raw.sourceShop || null,
+    definitionSchema: raw.definitionSchema === "minimal" ? "minimal" : "rich",
+    definitions,
+    owners,
+    counts: {
+      definitions: definitionTotal,
+      definitionsByOwnerType,
+      owners: owners.length,
+      metafields: metafieldTotal,
+      metafieldsByOwnerType,
+      truncatedOwners: owners.filter((o) => o.truncated).length,
+    },
+    warnings: Array.isArray(raw.warnings) ? raw.warnings : [],
+  };
+}
+
+/**
  * Imports and validates an external Revertly backup archive (.json).
  * Supports saving directly as an offline restore point or triggering live restoration.
  */
@@ -2196,32 +3430,50 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         articles: Array.isArray(data.articles) ? data.articles : [],
       };
 
+    // Accepts the asset key from a full archive, the top-level key from a
+    // standalone metafields export, and the raw column name, so a file exported
+    // from any of the three paths imports the same way.
+    const rawMetafields = storeAssets.metafields || data.metafields || data.metafieldData || null;
+    const metafields = normalizeMetafieldDocument(rawMetafields);
+
     const productCount = products.length;
     const themeCount = theme?.activeTheme || (theme?.files && theme.files.length > 0) ? 1 : 0;
     const collectionCount = collections.length;
     const pageCount = pages.length;
     const menuCount = menus.length;
     const articleCount = Array.isArray(blogsAndArticles.articles) ? blogsAndArticles.articles.length : 0;
+    const metafieldCount = metafields?.counts?.metafields || 0;
+    const metafieldDefinitionCount = metafields?.counts?.definitions || 0;
 
-    const totalItems = productCount + themeCount + collectionCount + pageCount + menuCount + articleCount;
+    const totalItems =
+      productCount + themeCount + collectionCount + pageCount + menuCount + articleCount +
+      metafieldCount + metafieldDefinitionCount;
     if (totalItems === 0) {
       return {
         success: false,
-        message: "No recognizable store assets (Products, Themes, Collections, Pages, Menus, Articles) found in this backup file.",
+        message: "No recognizable store assets (Products, Themes, Collections, Pages, Menus, Articles, Metafields) found in this backup file.",
       };
     }
 
+    // Label the archive by what it actually contains rather than trusting the
+    // declared type, which is often absent on hand-assembled files.
+    const present = [
+      productCount > 0 && "PRODUCTS",
+      themeCount > 0 && "THEMES",
+      collectionCount > 0 && "COLLECTIONS",
+      pageCount > 0 && "PAGES",
+      menuCount > 0 && "MENUS",
+      articleCount > 0 && "BLOGS",
+      (metafieldCount > 0 || metafieldDefinitionCount > 0) && "METAFIELDS",
+    ].filter(Boolean);
+
     let backupType = data.backupType || "FULL";
-    if (themeCount > 0 && productCount === 0 && collectionCount === 0 && pageCount === 0 && menuCount === 0 && articleCount === 0) {
-      backupType = "THEMES";
-    } else if (productCount > 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0 && menuCount === 0 && articleCount === 0) {
-      backupType = "PRODUCTS";
-    } else if (collectionCount > 0 && productCount === 0 && themeCount === 0 && pageCount === 0 && menuCount === 0 && articleCount === 0) {
-      backupType = "COLLECTIONS";
-    } else if ((pageCount > 0 || menuCount > 0) && productCount === 0 && themeCount === 0 && collectionCount === 0 && articleCount === 0) {
+    if (present.length === 1) {
+      backupType = present[0];
+    } else if (present.length === 2 && present.includes("PAGES") && present.includes("MENUS")) {
       backupType = "PAGES";
-    } else if (articleCount > 0 && productCount === 0 && themeCount === 0 && collectionCount === 0 && pageCount === 0 && menuCount === 0) {
-      backupType = "BLOGS";
+    } else if (present.length > 1) {
+      backupType = "FULL";
     }
 
     const archiveName = data.name
@@ -2246,12 +3498,14 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         pageCount,
         menuCount,
         articleCount,
+        metafieldCount,
         snapshotData: products.length > 0 ? products : undefined,
         themeData: theme || undefined,
         collectionData: collections.length > 0 ? collections : undefined,
         pageData: pages.length > 0 ? pages : undefined,
         menuData: menus.length > 0 ? menus : undefined,
         articleData: articleCount > 0 || (blogsAndArticles.blogs && blogsAndArticles.blogs.length > 0) ? blogsAndArticles : undefined,
+        metafieldData: metafields || undefined,
       },
     });
 
@@ -2263,6 +3517,8 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       pages: pageCount,
       menus: menuCount,
       articles: articleCount,
+      metafields: metafieldCount,
+      metafieldDefinitions: metafieldDefinitionCount,
       backupType,
       restoredLive: false,
     };
@@ -2297,6 +3553,20 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       for (const art of blogsAndArticles.articles || []) {
         const res = await restoreArticle(admin, art);
         if (res.success) liveArticles++;
+      }
+
+      // Restore metafields last: the loops above recreate owners that were
+      // deleted, so running metafields after them means a restored page or
+      // collection gets its metafields back in the same pass. SKIP_EXISTING is
+      // the only safe default for an import — the archive may come from
+      // another store, and an import must never silently clobber live values.
+      let liveMetafields = 0;
+      let metafieldRestore = null;
+      if (metafields && (metafieldCount > 0 || metafieldDefinitionCount > 0)) {
+        metafieldRestore = await restoreMetafieldBackup(admin, shop, metafields, {
+          mode: "SKIP_EXISTING",
+        });
+        liveMetafields = metafieldRestore.summary?.metafieldsWritten || 0;
       }
 
       // Restore theme staging if theme files present
@@ -2358,6 +3628,8 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         pages: livePages,
         menus: liveMenus,
         articles: liveArticles,
+        metafields: liveMetafields,
+        metafieldDetail: metafieldRestore?.summary || null,
         themeStagingCreated: liveTheme,
       };
 
@@ -2367,6 +3639,10 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       if (livePages > 0) resultParts.push(`${livePages} pages restored`);
       if (liveMenus > 0) resultParts.push(`${liveMenus} menus restored`);
       if (liveArticles > 0) resultParts.push(`${liveArticles} articles restored`);
+      if (liveMetafields > 0) resultParts.push(`${liveMetafields} metafields restored`);
+      if (metafieldRestore?.summary?.metafieldsSkipped > 0) {
+        resultParts.push(`${metafieldRestore.summary.metafieldsSkipped} metafields left untouched (already set)`);
+      }
       if (liveTheme) resultParts.push("theme staging created");
 
       return {
@@ -2381,7 +3657,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       success: true,
       restorePoint,
       summary,
-      message: `Backup archive imported successfully as Restore Point #${restorePoint.id} (${productCount} products, ${collectionCount} collections, ${pageCount} pages, ${menuCount} menus, ${articleCount} articles).`,
+      message: `Backup archive imported successfully as Restore Point #${restorePoint.id} (${productCount} products, ${collectionCount} collections, ${pageCount} pages, ${menuCount} menus, ${articleCount} articles, ${metafieldCount} metafields).`,
     };
   } catch (err) {
     console.error("importBackupPayload error:", err?.message || err);
@@ -2398,6 +3674,10 @@ export {
   parseCollectionsCsv,
   generatePagesAndMenusCsv,
   parsePagesAndMenusCsv,
+  generateMenusCsv,
+  parseMenusCsv,
+  generateMetafieldsCsv,
+  parseMetafieldsCsv,
   generateBlogsAndArticlesCsv,
   parseBlogsAndArticlesCsv,
   parseProductsCsv,

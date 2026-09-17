@@ -163,16 +163,18 @@ model RestorePoint {
   pageCount       Int       @default(0)
   menuCount       Int       @default(0)
   articleCount    Int       @default(0)
+  metafieldCount  Int       @default(0)
   orderCount      Int       @default(0)
   customerCount   Int       @default(0)
   status          String    @db.VarChar(50)  @default("CREATING") // CREATING, READY, RESTORING
-  backupType      String    @default("FULL") @db.VarChar(50)      // FULL, PRODUCTS, THEMES, COLLECTIONS, VAULT
+  backupType      String    @default("FULL") @db.VarChar(50)      // FULL, PRODUCTS, THEMES, COLLECTIONS, PAGES, BLOGS, MENUS, METAFIELDS, VAULT
   snapshotData    Json?     // array of product snapshots
   themeData       Json?     // active theme metadata & critical file contents
   collectionData  Json?     // array of collections & ruleSets
   pageData        Json?     // array of pages
   menuData        Json?     // array of navigation menus
   articleData     Json?     // array of blogs & articles
+  metafieldData   Json?     // { definitions, owners, counts } — revertly-metafields-v1
   orderData       Json?     // array/snapshot of orders
   customerData    Json?     // array/snapshot of customers
   cloudSyncedAt   DateTime?

@@ -57,6 +57,12 @@ export default function App() {
         <s-link href={navHref("/app/restore-points")}>
           Backups &amp; Recovery
         </s-link>
+        <s-link href={navHref("/app/import-export")}>
+          Import &amp; Export
+        </s-link>
+        <s-link href={navHref("/app/marketing")}>
+          Marketing Backups
+        </s-link>
         <s-link href={navHref("/app/incidents")}>Store Protection</s-link>
         <s-link href={navHref("/app/settings")}>Settings &amp; Team</s-link>
         <s-link href={navHref("/app/plan")}>Plans &amp; Billing</s-link>

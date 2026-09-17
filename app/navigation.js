@@ -31,17 +31,23 @@ const NAV_SECTIONS = [
     prefixes: ["/app/desktop"],
   },
   {
-    // Backups & Recovery hub: every tab in HUB_CONFIG.backups plus the
-    // restore point detail/export routes.
+    // Backups & Recovery hub: Restore Points, Rollback History, and Data Vault.
     href: "/app/restore-points",
     prefixes: [
       "/app/restore-points",
       "/app/rollback-history",
-      "/app/import-export",
       "/app/vault",
-      "/app/marketing",
-      "/app/export",
     ],
+  },
+  {
+    // Import & Export section
+    href: "/app/import-export",
+    prefixes: ["/app/import-export", "/app/export"],
+  },
+  {
+    // Marketing Backups section
+    href: "/app/marketing",
+    prefixes: ["/app/marketing"],
   },
   {
     // Store Protection hub: every tab in HUB_CONFIG.protection plus the

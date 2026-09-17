@@ -21,9 +21,7 @@ const HUB_CONFIG = {
     tabs: [
       { id: "restore-points", label: "Restore Points", to: "/app/restore-points", icon: SaveIcon },
       { id: "rollback-history", label: "Rollback History", to: "/app/rollback-history", icon: HistoryIcon },
-      { id: "import-export", label: "Import & Export", to: "/app/import-export", icon: DownloadIcon },
       { id: "vault", label: "Data Vault", to: "/app/vault", icon: DatabaseIcon },
-      { id: "marketing", label: "Marketing Backups", to: "/app/marketing", icon: MailIcon },
     ],
   },
   protection: {

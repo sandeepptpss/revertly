@@ -116,15 +116,17 @@ export async function serializeRestorePoint(restorePointId) {
       description: rp.description,
       createdAt: rp.createdAt,
       backupType: rp.backupType,
-      // Products live in `snapshotData`; product metafields are nested inside
-      // each product entry there. There is no separate productData/metafieldData
-      // column — reading those exported empty backups.
+      // Products live in `snapshotData`, with the product's own metafields
+      // nested inside each entry there. `metafieldData` is a *different*
+      // thing: the store-wide metafield backup (shop, collection, page, blog
+      // and article owners plus the definitions), which has its own column.
       snapshotData: rp.snapshotData,
       themeData: rp.themeData,
       collectionData: rp.collectionData,
       pageData: rp.pageData,
       articleData: rp.articleData,
       menuData: rp.menuData,
+      metafieldData: rp.metafieldData,
       orderData: rp.orderData,
       customerData: rp.customerData,
       counts: {
@@ -134,6 +136,7 @@ export async function serializeRestorePoint(restorePointId) {
         pages: rp.pageCount,
         menus: rp.menuCount,
         articles: rp.articleCount,
+        metafields: rp.metafieldCount,
         orders: rp.orderCount,
         customers: rp.customerCount,
       },
@@ -565,6 +568,7 @@ export async function importBackupFromCloud(shop, fileId) {
       pageData: rpData.pageData || undefined,
       articleData: rpData.articleData || undefined,
       menuData: rpData.menuData || undefined,
+      metafieldData: rpData.metafieldData || undefined,
       orderData: rpData.orderData || undefined,
       customerData: rpData.customerData || undefined,
       productCount: rpData.counts?.products ?? countOf(products),
@@ -573,6 +577,7 @@ export async function importBackupFromCloud(shop, fileId) {
       pageCount: rpData.counts?.pages ?? countOf(rpData.pageData),
       menuCount: rpData.counts?.menus ?? countOf(rpData.menuData),
       articleCount: rpData.counts?.articles ?? countOf(rpData.articleData?.articles),
+      metafieldCount: rpData.counts?.metafields ?? (rpData.metafieldData?.counts?.metafields || 0),
       cloudSyncedAt: new Date(),
       cloudSyncStatus: "IMPORTED",
       cloudProvider: provider,

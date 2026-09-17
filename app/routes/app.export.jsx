@@ -5,14 +5,19 @@ import {
   generateProductsCsv,
   generateCollectionsCsv,
   generatePagesAndMenusCsv,
+  generateMenusCsv,
+  generateMetafieldsCsv,
   generateBlogsAndArticlesCsv,
   fetchThemeBackup,
   fetchCollectionsBackup,
   fetchPagesBackup,
   fetchMenusBackup,
   fetchBlogsAndArticlesBackup,
+  fetchMetafieldsBackup,
   fetchLiveProductsBackup,
+  METAFIELD_OWNER_TYPES,
 } from "../backup.server.js";
+import { checkFeatureAccess } from "../billing.server.js";
 
 export const loader = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
@@ -179,7 +184,7 @@ export const loader = async ({ request }) => {
   }
 
   // ── 6. Pages & Navigation Menus CSV Export ───────────────────────────────
-  if (type === "pages_csv" || type === "menus_csv") {
+  if (type === "pages_csv") {
     let pages = [];
     let menus = [];
     if (isSnapshot) {
@@ -266,6 +271,90 @@ export const loader = async ({ request }) => {
     return makeResponse(JSON.stringify(payload, null, 2), "application/json; charset=utf-8", filename);
   }
 
+  // ── 10. Navigation Menus CSV Export (Standalone) ─────────────────────────
+  if (type === "menus_csv") {
+    const menus = isSnapshot
+      ? (Array.isArray(targetRp.menuData) ? targetRp.menuData : [])
+      : await fetchMenusBackup(admin);
+
+    const csvContent = generateMenusCsv(menus);
+    const filename = `revertly-menus-${cleanShop}-${filePrefix}-${dateStr}.csv`;
+    return makeResponse(csvContent, "text/csv; charset=utf-8", filename);
+  }
+
+  // ── 11. Navigation Menus JSON Export (Standalone) ────────────────────────
+  if (type === "menus_json") {
+    const menus = isSnapshot
+      ? (Array.isArray(targetRp.menuData) ? targetRp.menuData : [])
+      : await fetchMenusBackup(admin);
+
+    const payload = {
+      _schema: "revertly-menus-v1",
+      shop,
+      source: isSnapshot ? "snapshot" : "live",
+      restorePointId: targetRp?.id || undefined,
+      restorePointName: targetRp?.name || undefined,
+      exportedAt: new Date().toISOString(),
+      menuCount: menus.length,
+      menus,
+    };
+
+    const filename = `revertly-menus-${cleanShop}-${filePrefix}-${dateStr}.json`;
+    return makeResponse(JSON.stringify(payload, null, 2), "application/json; charset=utf-8", filename);
+  }
+
+  // ── 12. Metafields Export (JSON & CSV) ───────────────────────────────────
+  //
+  // Metafield capture is plan-gated, so a live export re-checks entitlement
+  // here rather than relying on the UI having hidden the button. A snapshot
+  // export is not gated: the data was already captured under an entitled plan
+  // and a merchant must always be able to get their own backup out.
+  if (type === "metafields_json" || type === "metafields_csv") {
+    let metafieldData;
+
+    if (isSnapshot) {
+      metafieldData = targetRp.metafieldData || null;
+    } else {
+      const access = await checkFeatureAccess(shop, "metafieldBackup");
+      if (!access.allowed) {
+        throw new Response(
+          "Metafield export requires a Growth plan or higher. Upgrade in Plans & Billing to export live metafields.",
+          { status: 403 }
+        );
+      }
+      metafieldData = await fetchMetafieldsBackup(admin, { sourceShop: shop, ownerTypes: METAFIELD_OWNER_TYPES });
+    }
+
+    const safeDoc = metafieldData || {
+      _schema: "revertly-metafields-v1",
+      definitions: {},
+      owners: [],
+      counts: { definitions: 0, owners: 0, metafields: 0 },
+      warnings: [],
+    };
+
+    if (type === "metafields_csv") {
+      const csvContent = generateMetafieldsCsv(safeDoc);
+      const filename = `revertly-metafields-${cleanShop}-${filePrefix}-${dateStr}.csv`;
+      return makeResponse(csvContent, "text/csv; charset=utf-8", filename);
+    }
+
+    const payload = {
+      _schema: "revertly-metafields-v1",
+      shop,
+      source: isSnapshot ? "snapshot" : "live",
+      restorePointId: targetRp?.id || undefined,
+      restorePointName: targetRp?.name || undefined,
+      exportedAt: new Date().toISOString(),
+      metafieldCount: safeDoc.counts?.metafields || 0,
+      definitionCount: safeDoc.counts?.definitions || 0,
+      metafields: safeDoc,
+    };
+
+    const filename = `revertly-metafields-${cleanShop}-${filePrefix}-${dateStr}.json`;
+    return makeResponse(JSON.stringify(payload, null, 2), "application/json; charset=utf-8", filename);
+  }
+
   // ── 7. Full Store Backup JSON Export (Default) ────────────────────────────
   if (isSnapshot) {
     const exportPayload = {
@@ -287,6 +376,7 @@ export const loader = async ({ request }) => {
         pageCount: targetRp.pageCount,
         menuCount: targetRp.menuCount,
         articleCount: targetRp.articleCount || 0,
+        metafieldCount: targetRp.metafieldCount || 0,
       },
       storeAssets: {
         products: targetRp.snapshotData || [],
@@ -295,6 +385,7 @@ export const loader = async ({ request }) => {
         pages: targetRp.pageData || [],
         menus: targetRp.menuData || [],
         blogsAndArticles: targetRp.articleData || null,
+        metafields: targetRp.metafieldData || null,
       },
     };
 
@@ -308,12 +399,20 @@ export const loader = async ({ request }) => {
     products = await fetchLiveProductsBackup(admin, shop);
   }
 
-  const [theme, collections, pages, menus, blogData] = await Promise.all([
+  // Metafields are plan-gated and expensive, so the live full archive includes
+  // them only for entitled stores. An unentitled store still gets every other
+  // asset rather than a failed export.
+  const metafieldAccess = await checkFeatureAccess(shop, "metafieldBackup");
+
+  const [theme, collections, pages, menus, blogData, metafieldDoc] = await Promise.all([
     fetchThemeBackup(admin),
     fetchCollectionsBackup(admin),
     fetchPagesBackup(admin),
     fetchMenusBackup(admin),
     fetchBlogsAndArticlesBackup(admin),
+    metafieldAccess.allowed
+      ? fetchMetafieldsBackup(admin, { sourceShop: shop })
+      : Promise.resolve(null),
   ]);
 
   const livePayload = {
@@ -333,6 +432,7 @@ export const loader = async ({ request }) => {
       pageCount: pages.length,
       menuCount: menus.length,
       articleCount: blogData?.articles?.length || 0,
+      metafieldCount: metafieldDoc?.counts?.metafields || 0,
     },
     storeAssets: {
       products,
@@ -341,6 +441,7 @@ export const loader = async ({ request }) => {
       pages,
       menus,
       blogsAndArticles: blogData,
+      metafields: metafieldDoc,
     },
   };
 

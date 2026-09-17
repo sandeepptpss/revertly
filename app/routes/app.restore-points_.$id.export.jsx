@@ -53,6 +53,7 @@ export const loader = async ({ request, params }) => {
       pageCount: restorePoint.pageCount,
       menuCount: restorePoint.menuCount,
       articleCount: restorePoint.articleCount || 0,
+      metafieldCount: restorePoint.metafieldCount || 0,
     },
     storeAssets: {
       products: restorePoint.snapshotData || [],
@@ -61,6 +62,7 @@ export const loader = async ({ request, params }) => {
       pages: restorePoint.pageData || [],
       menus: restorePoint.menuData || [],
       blogsAndArticles: restorePoint.articleData || null,
+      metafields: restorePoint.metafieldData || null,
     },
   };
 

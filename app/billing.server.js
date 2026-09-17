@@ -45,6 +45,22 @@ export {
 //   marketingFlows    → Klaviyo flows and Mailchimp journeys/automations,
 //                       which are automation *logic* rather than contact
 //                       records and are a Business-and-above differentiator.
+//
+// ── Metafield backup ────────────────────────────────────────────────────────
+//
+//   metafieldBackup   → standalone Shop/Product/Collection/Page/Blog/Article
+//                       metafield *and metafield-definition* capture and
+//                       restore. Growth and above.
+//
+// This is deliberately *not* the same thing as the product metafields that
+// ride along inside a product snapshot — those stay on every plan, because
+// removing them would break rollback for Free stores. What Growth buys is
+// store-wide metafield coverage beyond products, the definitions themselves,
+// and handle-based restore onto a different store.
+//
+// The flag must be re-checked at restore time, not just at backup time: a
+// store can capture a metafield backup on Growth and then downgrade, and the
+// snapshot outlives the subscription.
 export const PLAN_LIMITS = {
   free: {
     products: 100,
@@ -60,6 +76,7 @@ export const PLAN_LIMITS = {
     marketingBackup: false,
     marketingProfiles: 0,
     marketingFlows: false,
+    metafieldBackup: false,
   },
   starter: {
     products: 1000,
@@ -75,6 +92,7 @@ export const PLAN_LIMITS = {
     marketingBackup: false,
     marketingProfiles: 0,
     marketingFlows: false,
+    metafieldBackup: false,
   },
   growth: {
     products: 5000,
@@ -90,6 +108,7 @@ export const PLAN_LIMITS = {
     marketingBackup: true,
     marketingProfiles: 10000,
     marketingFlows: false,
+    metafieldBackup: true,
   },
   business: {
     products: 20000,
@@ -105,6 +124,7 @@ export const PLAN_LIMITS = {
     marketingBackup: true,
     marketingProfiles: 50000,
     marketingFlows: true,
+    metafieldBackup: true,
   },
   enterprise: {
     products: Infinity,
@@ -120,6 +140,7 @@ export const PLAN_LIMITS = {
     marketingBackup: true,
     marketingProfiles: Infinity,
     marketingFlows: true,
+    metafieldBackup: true,
   },
 };
 

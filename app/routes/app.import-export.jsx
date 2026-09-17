@@ -5,6 +5,7 @@ import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 import { importBackupPayload } from "../backup.server.js";
+import { checkFeatureAccess } from "../billing.server.js";
 import { detectAndParseCsvArchive } from "../utils/csv-portability.js";
 import {
   UploadIcon,
@@ -15,12 +16,13 @@ import {
   FileTextIcon,
   BookOpenIcon,
   LayersIcon,
+  DatabaseIcon,
+  ZapIcon,
   CheckCircleIcon,
   ClockIcon,
   AlertTriangleIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
-import { HubNav } from "../components/HubNav.jsx";
 import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
@@ -41,13 +43,17 @@ export const loader = async ({ request }) => {
       pageCount: true,
       menuCount: true,
       articleCount: true,
+      metafieldCount: true,
       createdAt: true,
     },
     take: 50,
   });
 
+  const metafieldAccess = await checkFeatureAccess(shop, "metafieldBackup");
+
   return {
     restorePoints,
+    hasMetafieldAccess: metafieldAccess.allowed,
   };
 };
 
@@ -129,7 +135,7 @@ export const action = async ({ request }) => {
 };
 
 export default function ImportExportHub() {
-  const { restorePoints } = useLoaderData();
+  const { restorePoints, hasMetafieldAccess = false } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isImporting = fetcher.state !== "idle";
@@ -188,7 +194,9 @@ export default function ImportExportHub() {
         try {
           const parsedCsv = detectAndParseCsvArchive(text);
           const sum = parsedCsv.summary;
-          const totalItems = sum.products + sum.themes + sum.collections + sum.pages + sum.menus + sum.articles;
+          const totalItems =
+            sum.products + sum.themes + sum.collections + sum.pages + sum.menus + sum.articles +
+            (sum.metafields || 0);
 
           if (totalItems === 0) {
             setFileError("This CSV file contains no recognizable store assets. Please select a valid Revertly backup CSV file.");
@@ -211,6 +219,11 @@ export default function ImportExportHub() {
             pagesCount: sum.pages,
             menusCount: sum.menus,
             articlesCount: sum.articles,
+            metafieldsCount: sum.metafields || 0,
+            definitionsCount: 0,
+            // CSV carries metafield values only; definitions need the JSON
+            // archive, and the merchant should know before they import.
+            metafieldsValuesOnly: (sum.metafields || 0) > 0,
           });
         } catch (err) {
           setFileError(`Failed to parse file as valid CSV: ${err.message}`);
@@ -253,11 +266,19 @@ export default function ImportExportHub() {
           parsed.articles ||
           [];
 
+        // Accepts the asset key from a full archive, the top-level key from a
+        // standalone metafields export, and the raw column name.
+        const metafieldDoc = storeAssets.metafields || parsed.metafields || parsed.metafieldData || null;
+        const metafieldCount = metafieldDoc?.counts?.metafields || 0;
+        const definitionCount = metafieldDoc?.counts?.definitions || 0;
+
         const themeFilesCount = theme?.files?.length || (theme?.activeTheme ? 1 : 0);
-        const totalItems = prods.length + themeFilesCount + cols.length + pgs.length + menus.length + arts.length;
+        const totalItems =
+          prods.length + themeFilesCount + cols.length + pgs.length + menus.length + arts.length +
+          metafieldCount + definitionCount;
 
         if (totalItems === 0) {
-          setFileError("This JSON file contains no recognizable store assets (Products, Themes, Collections, Pages, Menus, or Articles). Please select a valid Revertly backup archive.");
+          setFileError("This JSON file contains no recognizable store assets (Products, Themes, Collections, Pages, Menus, Articles, or Metafields). Please select a valid Revertly backup archive.");
           setFilePayload(null);
           setFileStats(null);
           return;
@@ -277,6 +298,9 @@ export default function ImportExportHub() {
           pagesCount: pgs.length,
           menusCount: menus.length,
           articlesCount: arts.length,
+          metafieldsCount: metafieldCount,
+          definitionsCount: definitionCount,
+          metafieldsValuesOnly: false,
         });
       } catch (err) {
         setFileError(`Failed to parse file as valid JSON: ${err.message}`);
@@ -373,7 +397,6 @@ export default function ImportExportHub() {
 
   return (
     <s-page heading="Import &amp; Export Hub" inlineSize="large">
-      <HubNav hub="backups" activeTab="import-export" />
 
       {/* ── Action Feedback Banner ── */}
       {result?.message && (
@@ -402,7 +425,7 @@ export default function ImportExportHub() {
             <span className="rv-badge rv-badge-success">Encrypted &amp; Verified</span>
           </div>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-            Export your entire store catalog, theme templates, and content into offline JSON/CSV files, or upload external Revertly backup archives to restore your store anytime.
+            Export your entire store catalog, theme templates, navigation menus, metafields, and content into offline JSON/CSV files, or upload external Revertly backup archives to restore your store anytime.
           </p>
         </div>
 
@@ -493,6 +516,7 @@ export default function ImportExportHub() {
                     <span className="rv-badge rv-badge-neutral">{selectedRp.pageCount} Pages</span>
                     <span className="rv-badge rv-badge-neutral">{selectedRp.menuCount || 0} Menus</span>
                     <span className="rv-badge rv-badge-neutral">{selectedRp.articleCount || 0} Articles</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.metafieldCount || 0} Metafields</span>
                   </div>
                 </div>
               ) : (
@@ -527,7 +551,7 @@ export default function ImportExportHub() {
               </div>
               <div className="rv-card-body" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: "calc(100% - 60px)" }}>
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-                  The definitive backup archive. Bundles Products, Liquid Themes, Collections, Pages, Navigation Menus, and Blog Articles into an encrypted portable JSON file.
+                  The definitive backup archive. Bundles Products, Liquid Themes, Collections, Pages, Navigation Menus, Blog Articles, and Metafields into an encrypted portable JSON file.
                 </p>
                 <button
                   type="button"
@@ -760,6 +784,108 @@ export default function ImportExportHub() {
                 </div>
               </div>
             </div>
+
+            {/* 7. Navigation Menus (Standalone) */}
+            <div className="rv-card" style={{ margin: 0 }}>
+              <div className="rv-card-header">
+                <h3 className="rv-card-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <ZapIcon size={18} style={{ color: "#6366f1" }} />
+                  <span>Navigation Menus</span>
+                </h3>
+                {selectedRp ? (
+                  <span className={`rv-badge ${(selectedRp.menuCount || 0) > 0 ? "rv-badge-info" : "rv-badge-neutral"}`}>
+                    {selectedRp.menuCount || 0} menus
+                  </span>
+                ) : (
+                  <span className="rv-badge rv-badge-info">CSV &amp; JSON</span>
+                )}
+              </div>
+              <div className="rv-card-body" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: "calc(100% - 60px)" }}>
+                <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                  Export header, footer and custom menus on their own — titles, links, and the full nested item
+                  hierarchy — without the pages they normally ship with.
+                </p>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    type="button"
+                    disabled={downloadingType === "menus_csv"}
+                    onClick={() => handleDownload("menus_csv", "revertly-menus.csv")}
+                    className="rv-btn rv-btn-secondary"
+                    style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
+                  >
+                    <DownloadIcon size={14} />
+                    <span>{downloadingType === "menus_csv" ? "Downloading..." : "CSV Spreadsheet"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={downloadingType === "menus_json"}
+                    onClick={() => handleDownload("menus_json", "revertly-menus.json")}
+                    className="rv-btn rv-btn-secondary"
+                    style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
+                  >
+                    <DownloadIcon size={14} />
+                    <span>{downloadingType === "menus_json" ? "Downloading..." : "JSON Raw"}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 8. Metafields */}
+            <div className="rv-card" style={{ margin: 0 }}>
+              <div className="rv-card-header">
+                <h3 className="rv-card-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <DatabaseIcon size={18} style={{ color: "#14b8a6" }} />
+                  <span>Metafields &amp; Definitions</span>
+                </h3>
+                {selectedRp ? (
+                  <span className={`rv-badge ${(selectedRp.metafieldCount || 0) > 0 ? "rv-badge-info" : "rv-badge-neutral"}`}>
+                    {selectedRp.metafieldCount || 0} metafields
+                  </span>
+                ) : hasMetafieldAccess ? (
+                  <span className="rv-badge rv-badge-success">Featured</span>
+                ) : (
+                  <span className="rv-badge rv-badge-warning">Growth+</span>
+                )}
+              </div>
+              <div className="rv-card-body" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: "calc(100% - 60px)" }}>
+                <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                  Export shop, product, collection, page, blog and article metafields. JSON carries the metafield
+                  definitions too; CSV is a values-only spreadsheet.
+                </p>
+                {!selectedRp && !hasMetafieldAccess ? (
+                  <Link
+                    to="/app/plan"
+                    className="rv-btn rv-btn-secondary"
+                    style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
+                  >
+                    <span>Upgrade to Export Metafields</span>
+                  </Link>
+                ) : (
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      type="button"
+                      disabled={downloadingType === "metafields_csv"}
+                      onClick={() => handleDownload("metafields_csv", "revertly-metafields.csv")}
+                      className="rv-btn rv-btn-secondary"
+                      style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
+                    >
+                      <DownloadIcon size={14} />
+                      <span>{downloadingType === "metafields_csv" ? "Downloading..." : "CSV Values"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={downloadingType === "metafields_json"}
+                      onClick={() => handleDownload("metafields_json", "revertly-metafields.json")}
+                      className="rv-btn rv-btn-secondary"
+                      style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
+                    >
+                      <DownloadIcon size={14} />
+                      <span>{downloadingType === "metafields_json" ? "Downloading..." : "JSON Full"}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Available Backups Table with Pagination */}
@@ -800,7 +926,8 @@ export default function ImportExportHub() {
                             <span className="rv-badge rv-badge-sm rv-badge-info">{rp.backupType || "FULL"}</span>
                           </td>
                           <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                            {rp.productCount} products · {rp.themeCount} themes
+                            {rp.productCount} products · {rp.themeCount} themes · {rp.menuCount || 0} menus ·{" "}
+                            {rp.metafieldCount || 0} metafields
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <button
@@ -956,7 +1083,29 @@ export default function ImportExportHub() {
                         {fileStats.articlesCount}
                       </strong>
                     </div>
+                    <div style={{ padding: "10px", borderRadius: "6px", background: "var(--rv-surface-subdued)", textAlign: "center" }}>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Metafields</span>
+                      <strong style={{ fontSize: "16px", color: fileStats.metafieldsCount > 0 ? "var(--rv-text)" : "var(--rv-text-subdued)" }}>
+                        {fileStats.metafieldsCount || 0}
+                      </strong>
+                    </div>
+                    <div style={{ padding: "10px", borderRadius: "6px", background: "var(--rv-surface-subdued)", textAlign: "center" }}>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Definitions</span>
+                      <strong style={{ fontSize: "16px", color: fileStats.definitionsCount > 0 ? "var(--rv-text)" : "var(--rv-text-subdued)" }}>
+                        {fileStats.definitionsCount || 0}
+                      </strong>
+                    </div>
                   </div>
+
+                  {fileStats.metafieldsValuesOnly && (
+                    <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "6px", background: "#eff6ff", color: "#1e40af", display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
+                      <AlertTriangleIcon size={16} />
+                      <span>
+                        This CSV carries metafield <strong>values</strong> only. Metafield definitions are not part of
+                        the CSV format — import the JSON archive if you need them.
+                      </span>
+                    </div>
+                  )}
 
                   {/* Mode Selector */}
                   <div style={{ marginBottom: "20px", padding: "16px", borderRadius: "8px", background: "var(--rv-surface-subdued)", border: "1px solid var(--rv-border)" }}>
@@ -993,7 +1142,7 @@ export default function ImportExportHub() {
                         <div>
                           <strong style={{ fontSize: "13px", color: "var(--rv-primary)" }}>Direct Live Restore (Immediate Action)</strong>
                           <span style={{ display: "block", fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                            Immediately restores Collections, Pages, Menus, and Articles into Shopify, creates a preview staging theme, and syncs product snapshots.
+                            Immediately restores Collections, Pages, Menus, and Articles into Shopify, creates a preview staging theme, and syncs product snapshots. Metafields are restored in safe mode: only values missing from your live store are written, so nothing currently set is overwritten.
                           </span>
                         </div>
                       </label>

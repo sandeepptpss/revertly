@@ -48,10 +48,16 @@ function formatDate(d) {
 //   vaultOrders>0    → Growth and above   (checkVaultAccess, app.vault.jsx)
 //   marketingBackup  → Growth and above   (checkMarketingBackupAccess)
 //   marketingProfiles→ Growth and above   (checkMarketingBackupAccess)
+//   metafieldBackup  → Growth and above   (restore-points, app.export, scheduler)
 //   themes           → Business and above (restore-points, scheduler)
 //   circuitBreaker   → Business and above (monitor.server.js)
 //   slack            → Business and above (app.settings.jsx)
 //   marketingFlows   → Business and above (checkMarketingBackupAccess)
+//
+// A feature row is normally a plain string. An object of the shape
+// { label, badge } renders the same row with a badge after it, used to call
+// out a headline capability of the tier. The badge is cosmetic only: the gate
+// is always the matching flag in PLAN_LIMITS, never this field.
 //
 // Anything the app ships without a plan gate — scheduled backups, incidents,
 // uptime monitoring, health checks, team roles, the audit log, offline
@@ -74,7 +80,8 @@ const PLANS = [
       "1 active detection rule",
       "Manual single-product rollback & deleted product recovery",
       "Scheduled backups — daily, twice-daily or weekly",
-      "Products, Collections, Pages, Menus & Blog backup",
+      "Products, Collections, Pages & Blog backup",
+      "Navigation Menu backup & restore — full menu hierarchy",
       "Email drift & bulk-anomaly alerts",
       "Incidents, Activity & Rollback History logs",
       "Uptime Monitoring & Store Health Check",
@@ -117,6 +124,9 @@ const PLANS = [
       "10 active detection rules",
       "Bulk multi-product incident rollback (CSV undo)",
       "Orders & Customers Vault (2,500 orders)",
+      { label: "Metafield Backups — values & definitions", badge: "Featured" },
+      "Shop, product, collection, page, blog & article metafields",
+      "Safe restore that never overwrites live metafield values",
       "Klaviyo & Mailchimp Backup — 10,000 subscriber profiles",
       "Lists, audiences, segments & profile fields captured",
       "Restore a deleted list or re-import lost subscribers",
@@ -1271,10 +1281,14 @@ export default function Plan() {
                       What&apos;s Included:
                     </span>
                     {plan.features.map((feature, idx) => {
+                      // A row is either a plain string or { label, badge }.
+                      const label = typeof feature === "string" ? feature : feature.label;
+                      const badge = typeof feature === "string" ? null : feature.badge;
+
                       // "Everything in Starter, plus:" is a roll-up of the tier
                       // below, not an item of its own — a ✓ beside it would read
                       // as one more feature rather than as the heading it is.
-                      const isInheritanceLine = feature.endsWith("plus:");
+                      const isInheritanceLine = label.endsWith("plus:");
                       if (isInheritanceLine) {
                         return (
                           <div
@@ -1286,14 +1300,21 @@ export default function Plan() {
                               lineHeight: 1.4,
                             }}
                           >
-                            {feature}
+                            {label}
                           </div>
                         );
                       }
                       return (
                         <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "12px", lineHeight: 1.4 }}>
                           <span style={{ color: "var(--rv-primary)", fontWeight: "bold" }}>✓</span>
-                          <span style={{ color: "var(--rv-text)" }}>{feature}</span>
+                          <span style={{ color: "var(--rv-text)" }}>
+                            <span style={{ fontWeight: badge ? 600 : undefined }}>{label}</span>
+                            {badge && (
+                              <span className="rv-badge rv-badge-success rv-badge-sm" style={{ marginLeft: "6px" }}>
+                                {badge}
+                              </span>
+                            )}
+                          </span>
                         </div>
                       );
                     })}

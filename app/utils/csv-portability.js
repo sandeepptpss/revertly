@@ -612,7 +612,213 @@ export function parseProductsCsv(csvString) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. UNIVERSAL CSV DETECTOR & PARSER
+// 5. NAVIGATION MENUS (STANDALONE)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Navigation menus on their own, rather than sharing a file with pages.
+ *
+ * The nested item tree has no flat representation that survives a spreadsheet
+ * round trip, so it stays as JSON in a single column — exactly as the combined
+ * pages-and-menus export already does. Distinct "Menu …" headers keep this file
+ * from being mistaken for the combined one by the detector below.
+ */
+export function generateMenusCsv(menus = []) {
+  const headers = ["Menu ID", "Menu Title", "Menu Handle", "Item Count", "Menu Items"];
+
+  const rows = (menus || []).map((menu) => {
+    const items = Array.isArray(menu.items) ? menu.items : [];
+    return [
+      menu.id || "",
+      menu.title || "",
+      menu.handle || "",
+      String(items.length),
+      items.length > 0 ? JSON.stringify(items) : "[]",
+    ].map(escapeCsvField);
+  });
+
+  return UTF8_BOM + [headers.map((h) => `"${h}"`).join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+}
+
+export function parseMenusCsv(csvString) {
+  const { data } = parseCsvToObjects(csvString);
+  if (data.length === 0) {
+    throw new Error("Navigation Menus CSV contains no data rows.");
+  }
+
+  const menus = [];
+
+  for (const row of data) {
+    const title = row["Menu Title"] || row["Title"] || row["title"] || "";
+    if (!title.trim()) continue;
+
+    const rawItems = row["Menu Items"] || row["menuItems"] || "";
+    let items = [];
+    if (rawItems.trim()) {
+      try {
+        const parsed = JSON.parse(rawItems);
+        if (Array.isArray(parsed)) items = parsed;
+      } catch {
+        // A menu whose tree will not parse is still worth restoring as an
+        // empty shell — losing the whole menu would be worse.
+        items = [];
+      }
+    }
+
+    menus.push({
+      id: row["Menu ID"] || row["ID"] || row["id"] || undefined,
+      title,
+      handle: row["Menu Handle"] || row["Handle"] || row["handle"] || "",
+      items,
+    });
+  }
+
+  if (menus.length === 0) {
+    throw new Error("No valid navigation menus could be parsed from this CSV.");
+  }
+
+  return menus;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. METAFIELDS (VALUES ONLY)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Flattens a metafield document to one row per value.
+ *
+ * CSV carries metafield *values* only. Definitions — with their validations,
+ * access settings and pinned positions — have no honest flat representation,
+ * so they stay JSON-only, and both the export UI and the import summary say so.
+ * A merchant who needs the full fidelity picks the JSON archive.
+ *
+ * `Owner Handle` plus `Parent Handle` (the owning blog, for articles) is what
+ * makes a row restorable on another store; the source gid is carried purely for
+ * reference and is never used for cross-store matching.
+ */
+export function generateMetafieldsCsv(metafieldData) {
+  const headers = [
+    "Owner Type",
+    "Owner Handle",
+    "Parent Handle",
+    "Owner Title",
+    "Namespace",
+    "Key",
+    "Type",
+    "Value",
+    "Owner ID",
+  ];
+
+  const rows = [];
+  for (const owner of metafieldData?.owners || []) {
+    for (const mf of owner.metafields || []) {
+      rows.push(
+        [
+          owner.ownerType || "",
+          owner.handle || "",
+          owner.parentHandle || "",
+          owner.title || "",
+          mf.namespace || "",
+          mf.key || "",
+          mf.type || "",
+          mf.value === undefined || mf.value === null ? "" : String(mf.value),
+          owner.sourceGid || "",
+        ].map(escapeCsvField)
+      );
+    }
+  }
+
+  return UTF8_BOM + [headers.map((h) => `"${h}"`).join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+}
+
+/**
+ * Rebuilds a metafield document from a flat CSV, regrouping rows by owner.
+ *
+ * The result carries an empty `definitions` map, because CSV cannot express
+ * them — restoring it creates values against whatever definitions the target
+ * store already has.
+ */
+export function parseMetafieldsCsv(csvString) {
+  const { data } = parseCsvToObjects(csvString);
+  if (data.length === 0) {
+    throw new Error("Metafields CSV contains no data rows.");
+  }
+
+  const ownersByKey = new Map();
+  let total = 0;
+
+  for (const row of data) {
+    const ownerType = (row["Owner Type"] || row["ownerType"] || "").toUpperCase().trim();
+    const namespace = (row["Namespace"] || row["namespace"] || "").trim();
+    const key = (row["Key"] || row["key"] || "").trim();
+    if (!ownerType || !namespace || !key) continue;
+
+    const rawValue = row["Value"] ?? row["value"] ?? "";
+    const handle = (row["Owner Handle"] || row["ownerHandle"] || "").trim();
+    const parentHandle = (row["Parent Handle"] || row["parentHandle"] || "").trim() || null;
+
+    // Only SHOP resolves without a handle; anything else is unmatchable.
+    if (ownerType !== "SHOP" && !handle) continue;
+
+    const groupKey = `${ownerType}|${parentHandle || ""}|${handle}`;
+    if (!ownersByKey.has(groupKey)) {
+      ownersByKey.set(groupKey, {
+        ownerType,
+        sourceGid: (row["Owner ID"] || "").trim() || null,
+        handle: handle || null,
+        title: (row["Owner Title"] || "").trim() || null,
+        parentHandle,
+        truncated: false,
+        metafields: [],
+      });
+    }
+
+    ownersByKey.get(groupKey).metafields.push({
+      namespace,
+      key,
+      type: (row["Type"] || row["type"] || "").trim() || "single_line_text_field",
+      value: String(rawValue),
+    });
+    total++;
+  }
+
+  if (total === 0) {
+    throw new Error("No valid metafields could be parsed from this CSV.");
+  }
+
+  const owners = [...ownersByKey.values()];
+  const metafieldsByOwnerType = {};
+  for (const owner of owners) {
+    metafieldsByOwnerType[owner.ownerType] =
+      (metafieldsByOwnerType[owner.ownerType] || 0) + owner.metafields.length;
+  }
+
+  return {
+    _schema: "revertly-metafields-v1",
+    capturedAt: new Date().toISOString(),
+    sourceShop: null,
+    definitionSchema: "minimal",
+    definitions: {},
+    owners,
+    counts: {
+      definitions: 0,
+      definitionsByOwnerType: {},
+      owners: owners.length,
+      metafields: total,
+      metafieldsByOwnerType,
+      truncatedOwners: 0,
+    },
+    warnings: [
+      {
+        stage: "import",
+        message: "Imported from CSV: metafield values only. Definitions are not carried by the CSV format.",
+      },
+    ],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. UNIVERSAL CSV DETECTOR & PARSER
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -631,7 +837,54 @@ export function detectAndParseCsvArchive(csvString) {
 
   const normalizedHeaders = headers.map((h) => h.toLowerCase().trim());
 
-  // 1. Collections Detection
+  // Metafields and standalone menus are checked first: their headers are
+  // unambiguous, whereas the checks below deliberately match loosely (a bare
+  // "Sort Order" + "Title" counts as Collections) and would otherwise claim
+  // these files.
+
+  // 1. Metafields Detection
+  const hasNamespace = normalizedHeaders.includes("namespace");
+  const hasKey = normalizedHeaders.includes("key");
+  const hasOwnerType = normalizedHeaders.includes("owner type");
+  const hasOwnerHandle = normalizedHeaders.includes("owner handle");
+  if (hasNamespace && hasKey && (hasOwnerType || hasOwnerHandle)) {
+    const metafields = parseMetafieldsCsv(csvString);
+    return {
+      type: "METAFIELDS",
+      data: { metafields },
+      summary: {
+        products: 0,
+        themes: 0,
+        collections: 0,
+        pages: 0,
+        menus: 0,
+        articles: 0,
+        metafields: metafields.counts.metafields,
+      },
+    };
+  }
+
+  // 2. Standalone Navigation Menus Detection
+  const hasMenuHandle = normalizedHeaders.includes("menu handle");
+  const hasMenuTitle = normalizedHeaders.includes("menu title");
+  if (hasMenuHandle || (hasMenuTitle && normalizedHeaders.includes("menu items"))) {
+    const menus = parseMenusCsv(csvString);
+    return {
+      type: "MENUS",
+      data: { menus },
+      summary: {
+        products: 0,
+        themes: 0,
+        collections: 0,
+        pages: 0,
+        menus: menus.length,
+        articles: 0,
+        metafields: 0,
+      },
+    };
+  }
+
+  // 3. Collections Detection
   const hasCollectionId = normalizedHeaders.includes("collection id");
   const hasRules = normalizedHeaders.includes("rules") || normalizedHeaders.includes("condition match");
   const hasSortOrder = normalizedHeaders.includes("sort order");
@@ -647,11 +900,12 @@ export function detectAndParseCsvArchive(csvString) {
         pages: 0,
         menus: 0,
         articles: 0,
+        metafields: 0,
       },
     };
   }
 
-  // 2. Blogs & Articles Detection
+  // 4. Blogs & Articles Detection
   const hasBlogTitle = normalizedHeaders.includes("blog title") || normalizedHeaders.includes("blog handle");
   const hasSummaryHtml = normalizedHeaders.includes("summary html");
   const hasCommentPolicy = normalizedHeaders.includes("comment policy");
@@ -667,11 +921,12 @@ export function detectAndParseCsvArchive(csvString) {
         pages: 0,
         menus: 0,
         articles: articles.length,
+        metafields: 0,
       },
     };
   }
 
-  // 3. Pages & Menus Detection
+  // 5. Pages & Menus Detection
   const hasMenuItems = normalizedHeaders.includes("menu items");
   const hasRecordType = normalizedHeaders.includes("record type");
   const hasBodyHtml = normalizedHeaders.includes("body html") || normalizedHeaders.includes("body (html)");
@@ -687,11 +942,12 @@ export function detectAndParseCsvArchive(csvString) {
         pages: pages.length,
         menus: menus.length,
         articles: 0,
+        metafields: 0,
       },
     };
   }
 
-  // 4. Products Detection
+  // 6. Products Detection
   const hasProductId = normalizedHeaders.includes("product id");
   const hasVariantsCount = normalizedHeaders.includes("variants count");
   const hasPriceMin = normalizedHeaders.includes("price min");
@@ -708,11 +964,12 @@ export function detectAndParseCsvArchive(csvString) {
         pages: 0,
         menus: 0,
         articles: 0,
+        metafields: 0,
       },
     };
   }
 
-  // 5. Fallback check for single page/menu exports or generic Shopify exports
+  // 7. Fallback check for single page/menu exports or generic Shopify exports
   if (normalizedHeaders.includes("title") && (normalizedHeaders.includes("handle") || normalizedHeaders.includes("body"))) {
     const { pages, menus } = parsePagesAndMenusCsv(csvString);
     return {
@@ -725,11 +982,12 @@ export function detectAndParseCsvArchive(csvString) {
         pages: pages.length,
         menus: menus.length,
         articles: 0,
+        metafields: 0,
       },
     };
   }
 
   throw new Error(
-    "Unrecognized CSV format: The file headers do not match any supported data type (Collections, Pages & Menus, Blogs & Articles, or Products). Please ensure your CSV was exported from Revertly."
+    "Unrecognized CSV format: The file headers do not match any supported data type (Collections, Pages & Menus, Navigation Menus, Blogs & Articles, Products, or Metafields). Please ensure your CSV was exported from Revertly."
   );
 }

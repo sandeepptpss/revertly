@@ -10,6 +10,8 @@ import {
   backupCollections,
   backupPages,
   backupBlogs,
+  backupMenus,
+  backupMetafields,
 } from "../backup.server.js";
 import { checkRestorePointLimit, checkFeatureAccess } from "../billing.server.js";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
@@ -31,6 +33,8 @@ import {
   FileTextIcon,
   BookOpenIcon,
   LayersIcon,
+  DatabaseIcon,
+  ZapIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
@@ -42,7 +46,7 @@ export const loader = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const [restorePoints, limitInfo, themeAccess, settings] = await Promise.all([
+  const [restorePoints, limitInfo, themeAccess, metafieldAccess, settings] = await Promise.all([
     prisma.restorePoint.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
@@ -58,6 +62,7 @@ export const loader = async ({ request }) => {
         pageCount: true,
         menuCount: true,
         articleCount: true,
+        metafieldCount: true,
         cloudSyncStatus: true,
         cloudProvider: true,
         createdAt: true,
@@ -65,6 +70,7 @@ export const loader = async ({ request }) => {
     }),
     checkRestorePointLimit(shop),
     checkFeatureAccess(shop, "themes"),
+    checkFeatureAccess(shop, "metafieldBackup"),
     prisma.appSettings.findUnique({ where: { shop } }),
   ]);
 
@@ -94,6 +100,8 @@ export const loader = async ({ request }) => {
     restorePoints,
     limitInfo,
     hasThemeAccess: themeAccess.allowed,
+    hasMetafieldAccess: metafieldAccess.allowed,
+    metafieldPlan: metafieldAccess.plan,
     themes,
     cloudSyncConfig: {
       connected: Boolean(settings?.cloudSyncConnected),
@@ -129,17 +137,25 @@ export const action = async ({ request }) => {
       const description = (formData.get("description") || "").slice(0, 2000);
 
       const themeCheck = await checkFeatureAccess(shop, "themes");
+      const metafieldCheck = await checkFeatureAccess(shop, "metafieldBackup");
       const isFull = intent === "backupFull";
       const includeProducts = isFull || formData.get("includeProducts") === "1";
       const includeThemes = themeCheck.allowed && (isFull || formData.get("includeThemes") === "1");
       const includeCollections = isFull || formData.get("includeCollections") === "1";
       const includePages = isFull || formData.get("includePages") === "1";
       const includeArticles = isFull || formData.get("includeArticles") === "1";
+      // Menus have always ridden along with pages; they are now selectable on
+      // their own, so an explicit tick counts even when pages are unticked.
+      const includeMenus = isFull || includePages || formData.get("includeMenus") === "1";
+      // Gated capabilities are resolved from the plan, never from the form, so
+      // a crafted request cannot switch one on.
+      const includeMetafields =
+        metafieldCheck.allowed && (isFull || formData.get("includeMetafields") === "1");
 
-      if (!includeProducts && !includeThemes && !includeCollections && !includePages && !includeArticles) {
+      if (!includeProducts && !includeThemes && !includeCollections && !includePages && !includeArticles && !includeMenus && !includeMetafields) {
         return {
           success: false,
-          message: "Please select at least one component (Products, Themes, Collections, Pages, or Articles) to include in the restore point.",
+          message: "Please select at least one component (Products, Themes, Collections, Pages, Menus, Articles, or Metafields) to include in the restore point.",
         };
       }
 
@@ -154,8 +170,9 @@ export const action = async ({ request }) => {
           includeThemes,
           includeCollections,
           includePages,
-          includeMenus: includePages,
+          includeMenus,
           includeArticles,
+          includeMetafields,
         },
       });
 
@@ -168,8 +185,11 @@ export const action = async ({ request }) => {
       if (s.products > 0) parts.push(`${s.products} products`);
       if (s.themes > 0) parts.push(`1 theme`);
       if (s.collections > 0) parts.push(`${s.collections} collections`);
-      if (s.pages > 0) parts.push(`${s.pages} pages & menus`);
+      if (s.pages > 0) parts.push(`${s.pages} pages`);
+      if (s.menus > 0) parts.push(`${s.menus} navigation menus`);
       if (s.articles > 0) parts.push(`${s.articles} blog articles`);
+      if (s.metafields > 0) parts.push(`${s.metafields} metafields`);
+      if (s.metafieldDefinitions > 0) parts.push(`${s.metafieldDefinitions} metafield definitions`);
 
       await logAudit(shop, perm.actor, "BACKUP_CREATED", {
         resourceType: "RestorePoint",
@@ -314,6 +334,88 @@ export const action = async ({ request }) => {
       return { success: true, message: `Blog & Article Backup completed (${result.summary?.articles || 0} articles).` };
     }
 
+    if (intent === "backupMenus") {
+      const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+      if (!perm.allowed) return { success: false, message: perm.message };
+
+      const limitCheck = await checkRestorePointLimit(shop);
+      if (!limitCheck.allowed) {
+        return { success: false, message: `Restore Point Limit Reached (${limitCheck.currentCount} / ${limitCheck.limit}). Please upgrade.` };
+      }
+
+      const rawName = formData.get("name")?.trim();
+      const result = await backupMenus({ admin, shop, name: rawName });
+
+      if (!result.success) return { success: false, message: result.message || "Navigation menu backup failed." };
+
+      if ((result.summary?.menus || 0) === 0) {
+        return {
+          success: true,
+          message: "Navigation Menu Backup completed, but no menus were found on this store. Check that the app has navigation permissions.",
+        };
+      }
+
+      await logAudit(shop, perm.actor, "BACKUP_CREATED", {
+        resourceType: "RestorePoint",
+        resourceId: result.restorePoint?.id,
+        details: { type: "MENUS", count: result.summary?.menus },
+        request,
+      });
+
+      return { success: true, message: `Navigation Menu Backup completed (${result.summary?.menus || 0} menus).` };
+    }
+
+    if (intent === "backupMetafields") {
+      const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+      if (!perm.allowed) return { success: false, message: perm.message };
+
+      const metafieldCheck = await checkFeatureAccess(shop, "metafieldBackup");
+      if (!metafieldCheck.allowed) {
+        return {
+          success: false,
+          message: "Metafield backups require a Growth plan or higher. Upgrade in Plans & Billing to capture metafields and their definitions.",
+        };
+      }
+
+      const limitCheck = await checkRestorePointLimit(shop);
+      if (!limitCheck.allowed) {
+        return { success: false, message: `Restore Point Limit Reached (${limitCheck.currentCount} / ${limitCheck.limit}). Please upgrade.` };
+      }
+
+      const rawName = formData.get("name")?.trim();
+      const result = await backupMetafields({ admin, shop, name: rawName });
+
+      if (!result.success) return { success: false, message: result.message || "Metafield backup failed." };
+
+      const values = result.summary?.metafields || 0;
+      const defs = result.summary?.metafieldDefinitions || 0;
+
+      if (values === 0 && defs === 0) {
+        return {
+          success: true,
+          message: "Metafield Backup completed, but no metafields or definitions were found on this store yet.",
+        };
+      }
+
+      await logAudit(shop, perm.actor, "BACKUP_CREATED", {
+        resourceType: "RestorePoint",
+        resourceId: result.restorePoint?.id,
+        details: { type: "METAFIELDS", metafields: values, definitions: defs },
+        request,
+      });
+
+      // A partial capture is surfaced rather than hidden: a backup the merchant
+      // believes is complete when it is not is the worst outcome here.
+      const warned = result.summary?.metafieldWarnings > 0
+        ? " Some resources could not be read — open the snapshot to review the warnings."
+        : "";
+
+      return {
+        success: true,
+        message: `Metafield Backup completed (${values} metafields, ${defs} definitions).${warned}`,
+      };
+    }
+
     if (intent === "delete") {
       const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_DELETE);
       if (!perm.allowed) return { success: false, message: perm.message };
@@ -385,7 +487,7 @@ function formatTime(date) {
 }
 
 export default function RestorePoints() {
-  const { restorePoints, limitInfo, hasThemeAccess, themes = [] } = useLoaderData();
+  const { restorePoints, limitInfo, hasThemeAccess, hasMetafieldAccess, themes = [] } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activeIntent = fetcher.state !== "idle" ? fetcher.formData?.get("intent") : null;
@@ -396,6 +498,8 @@ export default function RestorePoints() {
   const isCollectionsSubmitting = isAnySubmitting && activeIntent === "backupCollections";
   const isPagesSubmitting = isAnySubmitting && activeIntent === "backupPages";
   const isBlogsSubmitting = isAnySubmitting && activeIntent === "backupBlogs";
+  const isMenusSubmitting = isAnySubmitting && activeIntent === "backupMenus";
+  const isMetafieldsSubmitting = isAnySubmitting && activeIntent === "backupMetafields";
   const isCustomSubmitting = isAnySubmitting && activeIntent === "create";
   const [searchParams] = useSearchParams();
   const [showCreateForm, setShowCreateForm] = useState(
@@ -411,7 +515,9 @@ export default function RestorePoints() {
     themes: Boolean(hasThemeAccess),
     collections: true,
     pages: true,
+    menus: true,
     articles: true,
+    metafields: Boolean(hasMetafieldAccess),
   });
 
   useEffect(() => {
@@ -471,6 +577,8 @@ export default function RestorePoints() {
       collections: restorePoints.filter((r) => r.backupType === "COLLECTIONS").length,
       pages: restorePoints.filter((r) => r.backupType === "PAGES").length,
       blogs: restorePoints.filter((r) => r.backupType === "BLOGS").length,
+      menus: restorePoints.filter((r) => r.backupType === "MENUS").length,
+      metafields: restorePoints.filter((r) => r.backupType === "METAFIELDS").length,
     };
   }, [restorePoints]);
 
@@ -884,6 +992,112 @@ export default function RestorePoints() {
                 </button>
               </fetcher.Form>
             </div>
+
+            {/* 7. Navigation Menu Backup */}
+            <div
+              className="rv-toggle-card"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                border: isMenusSubmitting ? "2px solid #6366f1" : "1px solid var(--rv-border)",
+                background: isMenusSubmitting ? "rgba(99, 102, 241, 0.04)" : undefined,
+                transition: "all 0.2s ease",
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <ZapIcon size={16} style={{ color: "#6366f1" }} />
+                    <strong style={{ fontSize: "14px" }}>Navigation Menu Backup</strong>
+                  </div>
+                  {isMenusSubmitting && (
+                    <span className="rv-badge rv-badge-sm" style={{ background: "#e0e7ff", color: "#4338ca", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <SparklesIcon size={10} className="rv-spin" /> Running...
+                    </span>
+                  )}
+                </div>
+                <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  Header, footer and custom menus: titles, links, and nested item hierarchy.
+                </p>
+              </div>
+              <fetcher.Form method="POST" style={{ marginTop: "12px" }}>
+                <input type="hidden" name="intent" value="backupMenus" />
+                <button
+                  type="submit"
+                  disabled={isAnySubmitting || isLimitReached}
+                  className="rv-btn rv-btn-secondary rv-btn-sm"
+                  style={{ width: "100%", borderColor: isMenusSubmitting ? "#6366f1" : undefined, color: isMenusSubmitting ? "#4338ca" : undefined }}
+                >
+                  {isMenusSubmitting ? (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                      <SparklesIcon size={14} className="rv-spin" /> Backing up Menus...
+                    </span>
+                  ) : (
+                    "Backup Menus"
+                  )}
+                </button>
+              </fetcher.Form>
+            </div>
+
+            {/* 8. Metafield Backup */}
+            <div
+              className="rv-toggle-card"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                border: isMetafieldsSubmitting ? "2px solid #14b8a6" : "1px solid var(--rv-border)",
+                background: isMetafieldsSubmitting ? "rgba(20, 184, 166, 0.04)" : undefined,
+                transition: "all 0.2s ease",
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <DatabaseIcon size={16} style={{ color: "#14b8a6" }} />
+                    <strong style={{ fontSize: "14px" }}>Metafield Backup</strong>
+                  </div>
+                  {isMetafieldsSubmitting ? (
+                    <span className="rv-badge rv-badge-sm" style={{ background: "#ccfbf1", color: "#0f766e", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <SparklesIcon size={10} className="rv-spin" /> Running...
+                    </span>
+                  ) : hasMetafieldAccess ? (
+                    <span className="rv-badge rv-badge-success rv-badge-sm">Featured</span>
+                  ) : (
+                    <span className="rv-badge rv-badge-warning rv-badge-sm">Growth+</span>
+                  )}
+                </div>
+                <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  {hasMetafieldAccess
+                    ? "Shop, product, collection, page, blog and article metafields, plus their definitions."
+                    : "Custom metafields and definitions across your store. Requires Growth or higher."}
+                </p>
+              </div>
+              <fetcher.Form method="POST" style={{ marginTop: "12px" }}>
+                <input type="hidden" name="intent" value="backupMetafields" />
+                {hasMetafieldAccess ? (
+                  <button
+                    type="submit"
+                    disabled={isAnySubmitting || isLimitReached}
+                    className="rv-btn rv-btn-secondary rv-btn-sm"
+                    style={{ width: "100%", borderColor: isMetafieldsSubmitting ? "#14b8a6" : undefined, color: isMetafieldsSubmitting ? "#0f766e" : undefined }}
+                  >
+                    {isMetafieldsSubmitting ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                        <SparklesIcon size={14} className="rv-spin" /> Backing up Metafields...
+                      </span>
+                    ) : (
+                      "Backup Metafields"
+                    )}
+                  </button>
+                ) : (
+                  <Link to="/app/plan" className="rv-btn rv-btn-secondary rv-btn-sm" style={{ width: "100%", justifyContent: "center" }}>
+                    Upgrade to Unlock
+                  </Link>
+                )}
+              </fetcher.Form>
+            </div>
           </div>
         </div>
       </div>
@@ -1034,6 +1248,55 @@ export default function RestorePoints() {
                       <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Blog Posts &amp; Content</span>
                     </label>
                   </div>
+
+                  <div className={`rv-toggle-card ${components.menus ? "rv-toggle-card-active" : ""}`}>
+                    <input
+                      id="chk-menus"
+                      type="checkbox"
+                      name="includeMenus"
+                      checked={components.menus}
+                      onChange={(e) => setComponents((prev) => ({ ...prev, menus: e.target.checked }))}
+                      value="1"
+                      style={{ marginTop: "3px", cursor: "pointer" }}
+                    />
+                    <label htmlFor="chk-menus" style={{ cursor: "pointer", flexGrow: 1 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <ZapIcon size={15} style={{ color: "var(--rv-primary)" }} />
+                        <strong style={{ fontSize: "13px" }}>Navigation Menus</strong>
+                      </span>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Menu Trees &amp; Links</span>
+                    </label>
+                  </div>
+
+                  <div
+                    className={`rv-toggle-card ${hasMetafieldAccess && components.metafields ? "rv-toggle-card-active" : ""}`}
+                    style={{ opacity: hasMetafieldAccess ? 1 : 0.65, cursor: hasMetafieldAccess ? "pointer" : "not-allowed" }}
+                  >
+                    <input
+                      id="chk-metafields"
+                      type="checkbox"
+                      name="includeMetafields"
+                      checked={hasMetafieldAccess && components.metafields}
+                      onChange={(e) => hasMetafieldAccess && setComponents((prev) => ({ ...prev, metafields: e.target.checked }))}
+                      disabled={!hasMetafieldAccess}
+                      value="1"
+                      style={{ marginTop: "3px", cursor: hasMetafieldAccess ? "pointer" : "not-allowed" }}
+                    />
+                    <label htmlFor="chk-metafields" style={{ cursor: hasMetafieldAccess ? "pointer" : "not-allowed", flexGrow: 1 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <DatabaseIcon size={15} style={{ color: "var(--rv-primary)" }} />
+                        <strong style={{ fontSize: "13px" }}>Metafields</strong>
+                        {hasMetafieldAccess ? (
+                          <span className="rv-badge rv-badge-success rv-badge-sm">Featured</span>
+                        ) : (
+                          <span className="rv-badge rv-badge-warning rv-badge-sm">Growth+</span>
+                        )}
+                      </span>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>
+                        {hasMetafieldAccess ? "Values & Definitions" : "Requires Growth or higher"}
+                      </span>
+                    </label>
+                  </div>
                 </div>
               </div>
 
@@ -1070,6 +1333,8 @@ export default function RestorePoints() {
             { id: "COLLECTIONS", label: `Collections (${counts.collections})` },
             { id: "PAGES", label: `Pages (${counts.pages})` },
             { id: "BLOGS", label: `Blogs (${counts.blogs})` },
+            { id: "MENUS", label: `Menus (${counts.menus})` },
+            { id: "METAFIELDS", label: `Metafields (${counts.metafields})` },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -1160,6 +1425,10 @@ export default function RestorePoints() {
                           ? "Page Backup"
                           : rp.backupType === "BLOGS"
                           ? "Blog Backup"
+                          : rp.backupType === "MENUS"
+                          ? "Navigation Menu Backup"
+                          : rp.backupType === "METAFIELDS"
+                          ? "Metafield Backup"
                           : rp.backupType}
                       </span>
                     )}
@@ -1190,6 +1459,9 @@ export default function RestorePoints() {
                     )}
                     {rp.articleCount > 0 && (
                       <span className="rv-badge rv-badge-success rv-badge-sm">{rp.articleCount} Articles</span>
+                    )}
+                    {rp.metafieldCount > 0 && (
+                      <span className="rv-badge rv-badge-info rv-badge-sm">{rp.metafieldCount} Metafields</span>
                     )}
                     <span style={{ color: "var(--rv-text-subdued)" }}>·</span>
                     {rp.cloudSyncStatus === "SYNCED" ? (

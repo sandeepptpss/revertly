@@ -11,6 +11,8 @@ import {
   restoreMenu,
   restoreArticle,
   restoreProductMetafields,
+  restoreMetafieldBackup,
+  METAFIELD_RESTORE_MODES,
   computeDiffLines,
   fetchThemeBackup,
 } from "../backup.server.js";
@@ -31,6 +33,7 @@ import {
   CloudUploadIcon,
   GoogleDriveIcon,
   DropboxIcon,
+  DatabaseIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
@@ -158,6 +161,7 @@ export const loader = async ({ request, params }) => {
   const pageData = Array.isArray(restorePoint.pageData) ? restorePoint.pageData : [];
   const menuData = Array.isArray(restorePoint.menuData) ? restorePoint.menuData : [];
   const articleData = restorePoint.articleData || { blogs: [], articles: [] };
+  const metafieldData = restorePoint.metafieldData || null;
 
   let themeDiffFiles = [];
   if (Array.isArray(themeData?.files) && themeData.files.length > 0) {
@@ -189,8 +193,14 @@ export const loader = async ({ request, params }) => {
 
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
 
+  // Entitlement is re-read here rather than assumed from the snapshot: a store
+  // can capture metafields on Growth and later downgrade, and the snapshot
+  // outlives the subscription.
+  const metafieldAccess = await checkFeatureAccess(shop, "metafieldBackup");
+
   return {
     restorePoint,
+    hasMetafieldAccess: metafieldAccess.allowed,
     savedCount: savedProducts.length,
     differences,
     lastJob: restorePoint.rollbackJobs[0] || null,
@@ -200,6 +210,7 @@ export const loader = async ({ request, params }) => {
     pageData,
     menuData,
     articleData,
+    metafieldData,
     cloudSyncConfig: {
       connected: Boolean(settings?.cloudSyncConnected),
       provider: settings?.cloudSyncProvider || "NONE",
@@ -462,6 +473,45 @@ export const action = async ({ request, params }) => {
       };
     }
 
+    if (intent === "restore_metafields" || intent === "restore_metafield_definitions") {
+      // Entitlement is enforced at restore time as well as at backup time —
+      // a downgraded store must not be able to replay a Growth-era snapshot.
+      const metafieldAccess = await checkFeatureAccess(shop, "metafieldBackup");
+      if (!metafieldAccess.allowed) {
+        return {
+          success: false,
+          message: "Metafield restore requires a Growth plan or higher. Upgrade in Plans & Billing to restore metafields.",
+        };
+      }
+
+      const restorePoint = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+      });
+      const metafieldData = restorePoint?.metafieldData || null;
+      if (!metafieldData) {
+        return { success: false, message: "No metafield backup found in this snapshot." };
+      }
+
+      const requestedMode = formData.get("metafieldMode");
+      const mode = METAFIELD_RESTORE_MODES.includes(requestedMode) ? requestedMode : "SKIP_EXISTING";
+      const definitionsOnly = intent === "restore_metafield_definitions";
+
+      const res = await restoreMetafieldBackup(admin, shop, metafieldData, {
+        mode,
+        includeDefinitions: true,
+        includeValues: !definitionsOnly,
+      });
+
+      await logAudit(shop, restorePerm.actor, "METAFIELDS_RESTORED", {
+        resourceType: "Metafield",
+        resourceId: String(rpId),
+        details: { mode, definitionsOnly, summary: res.summary },
+        request,
+      });
+
+      return res;
+    }
+
     if (intent === "restore_all_articles") {
       const restorePoint = await prisma.restorePoint.findFirst({
         where: { id: rpId, shop },
@@ -710,12 +760,22 @@ export default function RestorePointDetail() {
     pageData,
     menuData = [],
     articleData,
+    metafieldData = null,
+    hasMetafieldAccess = false,
   } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isRestoring = fetcher.state !== "idle";
 
   const filesList = themeDiffFiles?.length > 0 ? themeDiffFiles : (themeData?.files || []);
+
+  const metafieldOwners = Array.isArray(metafieldData?.owners) ? metafieldData.owners : [];
+  const metafieldValueCount = metafieldData?.counts?.metafields || 0;
+  const metafieldDefinitionCount = metafieldData?.counts?.definitions || 0;
+  // A snapshot with definitions but no values is still worth a tab — the
+  // definitions alone are recoverable configuration.
+  const metafieldTotal = metafieldValueCount + metafieldDefinitionCount;
+  const metafieldWarnings = Array.isArray(metafieldData?.warnings) ? metafieldData.warnings : [];
 
   const [selectedFiles, setSelectedFiles] = useState(
     () => filesList.map((f) => f.filename)
@@ -724,6 +784,9 @@ export default function RestorePointDetail() {
   const [selectedProductIds, setSelectedProductIds] = useState([]);
   const [showLiveRestoreModal, setShowLiveRestoreModal] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState(null);
+  // The safe mode is the default and stays the default: an accidental restore
+  // must never be able to overwrite live metafield values.
+  const [metafieldMode, setMetafieldMode] = useState("SKIP_EXISTING");
 
   useEffect(() => {
     if (result && !isRestoring) {
@@ -738,12 +801,15 @@ export default function RestorePointDetail() {
     if (type === "COLLECTIONS" && collectionData.length > 0) return "collections";
     if (type === "PAGES" && (pageData.length > 0 || menuData.length > 0)) return "pages";
     if (type === "BLOGS" && (articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)) return "articles";
+    if (type === "MENUS" && menuData.length > 0) return "pages";
+    if (type === "METAFIELDS" && metafieldTotal > 0) return "metafields";
     if (differences.length > 0) return "products";
     if (themeData?.activeTheme) return "theme";
     if (savedCount > 0) return "products";
     if (collectionData.length > 0) return "collections";
     if (pageData.length > 0 || menuData.length > 0) return "pages";
     if (articleData?.articles?.length > 0) return "articles";
+    if (metafieldTotal > 0) return "metafields";
     return "products";
   });
 
@@ -756,6 +822,9 @@ export default function RestorePointDetail() {
     ...(pageData.length > 0 || menuData.length > 0 ? [{ id: "pages", label: "Pages & Menus", count: pageData.length + menuData.length }] : []),
     ...((articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)
       ? [{ id: "articles", label: "Articles", count: articleData.articles?.length || 0 }]
+      : []),
+    ...(metafieldTotal > 0
+      ? [{ id: "metafields", label: "Metafields", count: metafieldValueCount }]
       : []),
     ...(lastJob ? [{ id: "history", label: "History" }] : []),
   ];
@@ -808,6 +877,12 @@ export default function RestorePointDetail() {
             )}
             {articleData?.articles?.length > 0 && (
               <span className="rv-badge rv-badge-success rv-badge-sm">{articleData.articles.length} Articles</span>
+            )}
+            {metafieldValueCount > 0 && (
+              <span className="rv-badge rv-badge-info rv-badge-sm">{metafieldValueCount} Metafields</span>
+            )}
+            {metafieldDefinitionCount > 0 && (
+              <span className="rv-badge rv-badge-neutral rv-badge-sm">{metafieldDefinitionCount} Definitions</span>
             )}
             {restorePoint.cloudSyncStatus === "SYNCED" ? (
               <span className="rv-badge rv-badge-info rv-badge-sm" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
@@ -1775,6 +1850,269 @@ export default function RestorePointDetail() {
                 </tbody>
               </table>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Metafields Section ── */}
+      {activeTab === "metafields" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+          {!hasMetafieldAccess && (
+            <Banner
+              tone="warning"
+              title="Metafield restore requires a Growth plan"
+              action={
+                <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+                  Upgrade Plan
+                </Link>
+              }
+            >
+              This snapshot&apos;s metafields are safely stored and can still be exported, but restoring them to your
+              live store requires a Growth plan or higher.
+            </Banner>
+          )}
+
+          {metafieldWarnings.length > 0 && (
+            <Banner tone="warning" title="This metafield capture was incomplete">
+              <ul style={{ margin: "6px 0 0", paddingLeft: "18px", fontSize: "12px" }}>
+                {metafieldWarnings.slice(0, 5).map((w, idx) => (
+                  <li key={idx}>
+                    {w.ownerType ? `${w.ownerType}: ` : ""}
+                    {w.message}
+                  </li>
+                ))}
+              </ul>
+            </Banner>
+          )}
+
+          {/* Restore controls */}
+          <div className="rv-card" style={{ margin: 0 }}>
+            <div className="rv-card-header">
+              <div>
+                <h3 className="rv-card-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <DatabaseIcon size={18} style={{ color: "#14b8a6" }} />
+                  <span>
+                    Protected Metafields ({metafieldValueCount} values, {metafieldDefinitionCount} definitions)
+                  </span>
+                </h3>
+                <p style={{ margin: "3px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  Captured across {metafieldOwners.length} resources. Restoring never deletes metafields added since
+                  this snapshot — it only puts saved values back.
+                </p>
+              </div>
+            </div>
+
+            <div className="rv-card-body">
+              <div
+                style={{
+                  marginBottom: "16px",
+                  padding: "14px 16px",
+                  borderRadius: "8px",
+                  background: "var(--rv-surface-subdued)",
+                  border: "1px solid var(--rv-border)",
+                }}
+              >
+                <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "10px" }}>
+                  How should existing metafields be treated?
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {[
+                    {
+                      id: "SKIP_EXISTING",
+                      title: "Only restore what is missing (Recommended)",
+                      desc: "Writes a value only where nothing is currently stored. Brings back deleted metafields and cannot overwrite anything on your live store.",
+                    },
+                    {
+                      id: "RESTORE_CHANGED",
+                      title: "Restore values that have changed",
+                      desc: "Overwrites live values that differ from this snapshot. Values edited while the restore runs are reported as conflicts rather than silently replaced.",
+                    },
+                    {
+                      id: "FORCE",
+                      title: "Overwrite everything from this snapshot",
+                      desc: "Replaces every captured metafield value unconditionally. Use only when the snapshot is known to be the correct state.",
+                    },
+                  ].map((opt) => (
+                    <label
+                      key={opt.id}
+                      htmlFor={`mf-mode-${opt.id}`}
+                      style={{ display: "flex", alignItems: "flex-start", gap: "10px", cursor: "pointer" }}
+                    >
+                      <input
+                        id={`mf-mode-${opt.id}`}
+                        type="radio"
+                        name="metafield_mode_select"
+                        checked={metafieldMode === opt.id}
+                        onChange={() => setMetafieldMode(opt.id)}
+                        disabled={!hasMetafieldAccess || isRestoring}
+                        style={{ marginTop: "3px" }}
+                      />
+                      <div>
+                        <strong style={{ fontSize: "13px", color: opt.id === "FORCE" ? "var(--rv-critical)" : undefined }}>
+                          {opt.title}
+                        </strong>
+                        <span style={{ display: "block", fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                          {opt.desc}
+                        </span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  disabled={!hasMetafieldAccess || isRestoring || metafieldValueCount === 0}
+                  className="rv-btn rv-btn-primary"
+                  onClick={() =>
+                    setConfirmDialog({
+                      title: "Restore Metafields",
+                      message: (
+                        <>
+                          Restore <strong>{metafieldValueCount}</strong> metafield values across{" "}
+                          <strong>{metafieldOwners.length}</strong> resources, plus{" "}
+                          <strong>{metafieldDefinitionCount}</strong> definitions?
+                        </>
+                      ),
+                      dangerNote:
+                        metafieldMode === "FORCE"
+                          ? "Overwrite mode replaces every captured value on your live store, including values edited since this snapshot was taken."
+                          : metafieldMode === "RESTORE_CHANGED"
+                          ? "Values that differ from this snapshot will be replaced. Resources that no longer exist are skipped, never recreated."
+                          : "Only missing metafields will be written. Nothing currently stored on your live store will be changed.",
+                      confirmLabel: "Restore Metafields",
+                      tone: metafieldMode === "SKIP_EXISTING" ? "primary" : "critical",
+                      onConfirm: () =>
+                        fetcher.submit(
+                          { intent: "restore_metafields", metafieldMode },
+                          { method: "POST" }
+                        ),
+                    })
+                  }
+                >
+                  {isRestoring && fetcher.formData?.get("intent") === "restore_metafields"
+                    ? "Restoring Metafields..."
+                    : `Restore All Metafields (${metafieldValueCount})`}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!hasMetafieldAccess || isRestoring || metafieldDefinitionCount === 0}
+                  className="rv-btn rv-btn-secondary"
+                  onClick={() =>
+                    fetcher.submit(
+                      { intent: "restore_metafield_definitions", metafieldMode },
+                      { method: "POST" }
+                    )
+                  }
+                >
+                  {isRestoring && fetcher.formData?.get("intent") === "restore_metafield_definitions"
+                    ? "Restoring Definitions..."
+                    : `Restore Definitions Only (${metafieldDefinitionCount})`}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Definitions table */}
+          {metafieldDefinitionCount > 0 && (
+            <div className="rv-card" style={{ margin: 0 }}>
+              <div className="rv-card-header">
+                <h3 className="rv-card-title">
+                  <span>Metafield Definitions ({metafieldDefinitionCount})</span>
+                </h3>
+              </div>
+              <div className="rv-card-body" style={{ overflowX: "auto" }}>
+                <table className="rv-table" style={{ width: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th>Owner</th>
+                      <th>Namespace &amp; Key</th>
+                      <th>Name</th>
+                      <th>Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(metafieldData?.definitions || {}).flatMap(([ownerType, defs]) =>
+                      (defs || []).map((def, idx) => (
+                        <tr key={`${ownerType}-${def.namespace}-${def.key}-${idx}`}>
+                          <td>
+                            <span className="rv-badge rv-badge-neutral rv-badge-sm">{ownerType}</span>
+                          </td>
+                          <td style={{ fontFamily: "monospace", fontSize: "12px" }}>
+                            {def.namespace}.{def.key}
+                          </td>
+                          <td style={{ fontSize: "13px" }}>{def.name || "—"}</td>
+                          <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>{def.type || "—"}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Owners table */}
+          {metafieldOwners.length > 0 ? (
+            <div className="rv-card" style={{ margin: 0 }}>
+              <div className="rv-card-header">
+                <h3 className="rv-card-title">
+                  <span>Resources with Metafields ({metafieldOwners.length})</span>
+                </h3>
+              </div>
+              <div className="rv-card-body" style={{ overflowX: "auto" }}>
+                <table className="rv-table" style={{ width: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>Resource</th>
+                      <th>Handle</th>
+                      <th style={{ textAlign: "right" }}>Metafields</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {metafieldOwners.slice(0, 200).map((owner, idx) => (
+                      <tr key={`${owner.ownerType}-${owner.handle}-${idx}`}>
+                        <td>
+                          <span className="rv-badge rv-badge-neutral rv-badge-sm">{owner.ownerType}</span>
+                        </td>
+                        <td style={{ fontSize: "13px" }}>
+                          {owner.title || owner.handle || "—"}
+                          {owner.truncated && (
+                            <span className="rv-badge rv-badge-warning rv-badge-sm" style={{ marginLeft: "6px" }}>
+                              Partial
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ fontFamily: "monospace", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                          {owner.parentHandle ? `${owner.parentHandle}/` : ""}
+                          {owner.handle || "—"}
+                        </td>
+                        <td style={{ textAlign: "right", fontSize: "13px" }}>{owner.metafields?.length || 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {metafieldOwners.length > 200 && (
+                  <p style={{ margin: "10px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                    Showing the first 200 of {metafieldOwners.length} resources. All of them are included in a restore
+                    and in any export.
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <EmptyState
+              icon={<DatabaseIcon size={26} style={{ color: "#14b8a6" }} />}
+              title="No Metafield Values in This Snapshot"
+              description={
+                metafieldDefinitionCount > 0
+                  ? "This snapshot captured metafield definitions but no resource carried a value at the time. You can still restore the definitions above."
+                  : "This snapshot did not capture any metafields. Run a Metafield Backup from Restore Points to create one."
+              }
+            />
           )}
         </div>
       )}
