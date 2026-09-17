@@ -12,6 +12,8 @@ import {
   BoxIcon,
 } from "../components/Icons.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -156,6 +158,14 @@ function JobCard({ job }) {
 
 export default function RollbackHistory() {
   const { jobs } = useLoaderData();
+  const {
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    paginatedItems: pagedJobs,
+    totalItems: totalJobs,
+  } = usePagination(jobs, 10);
 
   return (
     <s-page
@@ -163,6 +173,8 @@ export default function RollbackHistory() {
       backAction={{ url: "/app", label: "Dashboard" }}
       inlineSize="large"
     >
+      <HubNav hub="backups" activeTab="rollback-history" />
+
       {/* ── Top Header Hero ── */}
       <div className="rv-hero-banner">
         <div>
@@ -199,9 +211,18 @@ export default function RollbackHistory() {
         />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-          {jobs.map((job) => (
+          {pagedJobs.map((job) => (
             <JobCard key={job.id} job={job} />
           ))}
+
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalJobs}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="rollbacks"
+          />
         </div>
       )}
     </s-page>

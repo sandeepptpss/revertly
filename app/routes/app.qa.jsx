@@ -14,6 +14,8 @@ import {
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -73,8 +75,18 @@ export default function QaDiagnostics() {
 
   const checks = Array.isArray(latest?.testResults) ? latest.testResults : [];
 
+  const {
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    paginatedItems: pagedHistory,
+    totalItems: totalHistory,
+  } = usePagination(history, 10);
+
   return (
     <s-page heading="Automated QA & Backup Health" inlineSize="large">
+      <HubNav hub="protection" activeTab="qa" />
       {result?.message && (
         <Banner tone={result.success ? "success" : "critical"}>{result.message}</Banner>
       )}
@@ -187,7 +199,7 @@ export default function QaDiagnostics() {
                   </tr>
                 </thead>
                 <tbody>
-                  {history.map((h) => (
+                  {pagedHistory.map((h) => (
                     <tr key={h.id}>
                       <td style={{ fontSize: "12px", whiteSpace: "nowrap" }}>{new Date(h.testedAt).toLocaleString()}</td>
                       <td style={{ fontWeight: 700, color: scoreColor(h.healthScore) }}>{h.healthScore}</td>
@@ -205,6 +217,15 @@ export default function QaDiagnostics() {
               </table>
             </div>
           )}
+
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalHistory}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="test runs"
+          />
         </div>
       </div>
     </s-page>

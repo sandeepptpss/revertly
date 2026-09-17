@@ -18,6 +18,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -166,9 +168,13 @@ export default function DataVault() {
   const [activeTab, setActiveTab] = useState("orders");
   const [inspectedOrder, setInspectedOrder] = useState(null);
 
+  const ordersPagination = usePagination(orders, 10);
+  const customersPagination = usePagination(customers, 10);
+
   if (isLocked) {
     return (
       <s-page heading="Orders & Customers Vault" inlineSize="large">
+        <HubNav hub="backups" activeTab="vault" />
         <div
           className="rv-card"
           style={{
@@ -233,6 +239,7 @@ export default function DataVault() {
 
   return (
     <s-page heading="Orders & Customers Vault" inlineSize="large">
+      <HubNav hub="backups" activeTab="vault" />
 
       {/* ── Action Result Banner ── */}
       {result?.message && (
@@ -426,7 +433,7 @@ export default function DataVault() {
                   </tr>
                 </thead>
                 <tbody>
-                  {orders.map((ord) => (
+                  {ordersPagination.paginatedItems.map((ord) => (
                     <tr key={ord.id}>
                       <td style={{ fontWeight: 700 }}>{ord.orderNumber}</td>
                       <td style={{ color: "var(--rv-text-subdued)", fontSize: "12px" }}>
@@ -460,6 +467,15 @@ export default function DataVault() {
               </table>
             </div>
           )}
+
+          <Pagination
+            currentPage={ordersPagination.currentPage}
+            totalItems={ordersPagination.totalItems}
+            pageSize={ordersPagination.pageSize}
+            onPageChange={ordersPagination.setCurrentPage}
+            onPageSizeChange={ordersPagination.setPageSize}
+            itemLabel="orders"
+          />
         </div>
       )}
 
@@ -512,7 +528,7 @@ export default function DataVault() {
                   </tr>
                 </thead>
                 <tbody>
-                  {customers.map((cust) => {
+                  {customersPagination.paginatedItems.map((cust) => {
                     const addr = cust.customerData?.defaultAddress;
                     const addressStr = addr
                       ? [addr.city, addr.province, addr.country].filter(Boolean).join(", ")
@@ -539,6 +555,15 @@ export default function DataVault() {
               </table>
             </div>
           )}
+
+          <Pagination
+            currentPage={customersPagination.currentPage}
+            totalItems={customersPagination.totalItems}
+            pageSize={customersPagination.pageSize}
+            onPageChange={customersPagination.setCurrentPage}
+            onPageSizeChange={customersPagination.setPageSize}
+            itemLabel="customers"
+          />
         </div>
       )}
 

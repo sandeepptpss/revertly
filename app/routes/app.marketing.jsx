@@ -32,6 +32,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -181,9 +183,14 @@ export default function Marketing() {
   const [tab, setTab] = useState("lists");
   const [keyDraft, setKeyDraft] = useState({ KLAVIYO: "", MAILCHIMP: "" });
 
+  const listsPagination = usePagination(lists, 10);
+  const profilesPagination = usePagination(profiles, 10);
+  const flowsPagination = usePagination(flows, 10);
+
   if (isLocked) {
     return (
       <s-page heading="Email Marketing Backup" inlineSize="large">
+        <HubNav hub="backups" activeTab="marketing" />
         <Banner tone="info" title={`Not included in the ${String(plan).toUpperCase()} plan`}>
           {MARKETING_UPGRADE_MESSAGE}
         </Banner>
@@ -206,6 +213,7 @@ export default function Marketing() {
 
   return (
     <s-page heading="Email Marketing Backup" inlineSize="large">
+      <HubNav hub="backups" activeTab="marketing" />
       {result?.message && (
         <Banner
           tone={result.success ? "success" : "critical"}
@@ -445,7 +453,7 @@ export default function Marketing() {
                       </tr>
                     </thead>
                     <tbody>
-                      {lists.map((row) => (
+                      {listsPagination.paginatedItems.map((row) => (
                         <tr key={row.id}>
                           <td><strong>{row.name}</strong></td>
                           <td>{MARKETING_PROVIDERS[row.provider]?.label || row.provider}</td>
@@ -482,6 +490,15 @@ export default function Marketing() {
                     </tbody>
                   </table>
                 )}
+
+                <Pagination
+                  currentPage={listsPagination.currentPage}
+                  totalItems={listsPagination.totalItems}
+                  pageSize={listsPagination.pageSize}
+                  onPageChange={listsPagination.setCurrentPage}
+                  onPageSizeChange={listsPagination.setPageSize}
+                  itemLabel="lists"
+                />
               </div>
             </div>
           )}
@@ -527,7 +544,7 @@ export default function Marketing() {
                         </tr>
                       </thead>
                       <tbody>
-                        {profiles.map((p) => (
+                        {profilesPagination.paginatedItems.map((p) => (
                           <tr key={p.id}>
                             <td>{p.email || "—"}</td>
                             <td>{[p.firstName, p.lastName].filter(Boolean).join(" ") || "—"}</td>
@@ -555,6 +572,14 @@ export default function Marketing() {
                         </>
                       )}
                     </div>
+                    <Pagination
+                      currentPage={profilesPagination.currentPage}
+                      totalItems={profilesPagination.totalItems}
+                      pageSize={profilesPagination.pageSize}
+                      onPageChange={profilesPagination.setCurrentPage}
+                      onPageSizeChange={profilesPagination.setPageSize}
+                      itemLabel="profiles"
+                    />
                   </>
                 )}
               </div>
@@ -593,7 +618,7 @@ export default function Marketing() {
                       </tr>
                     </thead>
                     <tbody>
-                      {flows.map((f) => (
+                      {flowsPagination.paginatedItems.map((f) => (
                         <tr key={f.id}>
                           <td><strong>{f.name}</strong></td>
                           <td>{MARKETING_PROVIDERS[f.provider]?.label || f.provider}</td>
@@ -613,6 +638,15 @@ export default function Marketing() {
                     </tbody>
                   </table>
                 )}
+
+                <Pagination
+                  currentPage={flowsPagination.currentPage}
+                  totalItems={flowsPagination.totalItems}
+                  pageSize={flowsPagination.pageSize}
+                  onPageChange={flowsPagination.setCurrentPage}
+                  onPageSizeChange={flowsPagination.setPageSize}
+                  itemLabel="flows"
+                />
               </div>
             </div>
           )}

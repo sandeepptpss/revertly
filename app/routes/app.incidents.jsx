@@ -18,6 +18,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request }) => {
@@ -231,10 +233,20 @@ export default function Incidents() {
     { id: "IGNORED", label: "Ignored", count: counts?.ignored ?? 0 },
   ];
 
+  const {
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    paginatedItems: pagedIncidents,
+    totalItems,
+  } = usePagination(incidents, 10);
+
   const hasActiveFilters = Boolean(currentStatus || currentSeverity || searchQuery);
 
   return (
     <s-page heading="Incidents" inlineSize="large">
+      <HubNav hub="protection" activeTab="incidents" />
 
       {/* ── Action Feedback Banner ── */}
       {result?.message && (
@@ -473,7 +485,7 @@ export default function Incidents() {
         />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          {incidents.map((inc) => {
+          {pagedIncidents.map((inc) => {
             const isCritical = inc.severity === "CRITICAL";
             const isOpen = inc.status === "OPEN";
 
@@ -632,6 +644,15 @@ export default function Incidents() {
               </div>
             );
           })}
+
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalItems}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="incidents"
+          />
         </div>
       )}
 

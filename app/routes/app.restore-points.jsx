@@ -35,6 +35,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
@@ -474,6 +476,7 @@ export default function RestorePoints() {
 
   return (
     <s-page heading="Restore Points" inlineSize="large">
+      <HubNav hub="backups" activeTab="restore-points" />
 
       {/* ── Action Feedback Banner ── */}
       {result?.message && (
@@ -1264,111 +1267,14 @@ export default function RestorePoints() {
           ))}
 
           {/* ── Pagination Controls ── */}
-          {totalPages > 1 && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                flexWrap: "wrap",
-                gap: "14px",
-                marginTop: "10px",
-                padding: "14px 18px",
-                background: "var(--rv-surface)",
-                border: "1px solid var(--rv-border)",
-                borderRadius: "8px",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-                <span>
-                  Showing <strong>{totalItems === 0 ? 0 : startIndex + 1}–{endIndex}</strong> of <strong>{totalItems}</strong> restore points
-                </span>
-                <span style={{ color: "var(--rv-border)" }}>•</span>
-                <label htmlFor="rp-page-size" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <span>Per page:</span>
-                  <select
-                    id="rp-page-size"
-                    value={pageSize}
-                    onChange={(e) => {
-                      setPageSize(Number(e.target.value));
-                      setCurrentPage(1);
-                    }}
-                    style={{
-                      padding: "3px 8px",
-                      borderRadius: "4px",
-                      border: "1px solid var(--rv-border)",
-                      background: "var(--rv-surface)",
-                      color: "var(--rv-text)",
-                      fontSize: "12px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <option value={10}>10</option>
-                    <option value={20}>20</option>
-                    <option value={50}>50</option>
-                  </select>
-                </label>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <button
-                  type="button"
-                  onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
-                  disabled={validPage <= 1}
-                  className="rv-btn rv-btn-secondary rv-btn-sm"
-                  style={{ opacity: validPage <= 1 ? 0.5 : 1, cursor: validPage <= 1 ? "not-allowed" : "pointer" }}
-                >
-                  <ArrowLeftIcon size={13} />
-                  <span>Previous</span>
-                </button>
-
-                {Array.from({ length: totalPages }, (_, i) => i + 1)
-                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - validPage) <= 1)
-                  .reduce((acc, p, idx, arr) => {
-                    if (idx > 0 && p - arr[idx - 1] > 1) {
-                      acc.push(-1 * idx);
-                    }
-                    acc.push(p);
-                    return acc;
-                  }, [])
-                  .map((p) => {
-                    if (p < 0) {
-                      return (
-                        <span key={p} style={{ padding: "0 4px", color: "var(--rv-text-subdued)", fontSize: "12px" }}>
-                          …
-                        </span>
-                      );
-                    }
-                    return (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => setCurrentPage(p)}
-                        className={`rv-btn rv-btn-sm ${validPage === p ? "rv-btn-primary" : "rv-btn-secondary"}`}
-                        style={{
-                          minWidth: "30px",
-                          padding: "3px 8px",
-                          fontWeight: validPage === p ? 700 : 500,
-                        }}
-                      >
-                        {p}
-                      </button>
-                    );
-                  })}
-
-                <button
-                  type="button"
-                  onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
-                  disabled={validPage >= totalPages}
-                  className="rv-btn rv-btn-secondary rv-btn-sm"
-                  style={{ opacity: validPage >= totalPages ? 0.5 : 1, cursor: validPage >= totalPages ? "not-allowed" : "pointer" }}
-                >
-                  <span>Next</span>
-                  <ArrowRightIcon size={13} />
-                </button>
-              </div>
-            </div>
-          )}
+          <Pagination
+            currentPage={validPage}
+            totalItems={totalItems}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="restore points"
+          />
         </div>
       )}
 

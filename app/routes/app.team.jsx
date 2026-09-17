@@ -16,6 +16,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 const ROLE_DESCRIPTIONS = {
   OWNER: "Full control, including billing and team management.",
@@ -180,6 +182,15 @@ export default function Team() {
   const [showInvite, setShowInvite] = useState(false);
   const [removeMemberTarget, setRemoveMemberTarget] = useState(null);
 
+  const {
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    paginatedItems: pagedAuditLogs,
+    totalItems: totalAuditLogs,
+  } = usePagination(auditLogs, 10);
+
   const isRemovingMember = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "remove";
 
   useEffect(() => {
@@ -200,6 +211,7 @@ export default function Team() {
 
   return (
     <s-page heading="Team & Access Control" inlineSize="large">
+      <HubNav hub="settings" activeTab="team" />
       {result?.message && (
         <Banner tone={result.success ? "success" : "critical"}>{result.message}</Banner>
       )}
@@ -429,7 +441,7 @@ export default function Team() {
                   </tr>
                 </thead>
                 <tbody>
-                  {auditLogs.map((log) => (
+                  {pagedAuditLogs.map((log) => (
                     <tr key={log.id}>
                       <td style={{ fontSize: "12px", whiteSpace: "nowrap" }}>
                         {new Date(log.createdAt).toLocaleString()}
@@ -445,6 +457,15 @@ export default function Team() {
               </table>
             </div>
           )}
+
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalAuditLogs}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="audit logs"
+          />
         </div>
       </div>
 

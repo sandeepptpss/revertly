@@ -1,4 +1,4 @@
-import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, Link, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { restoreDeletedProduct } from "../monitor.server.js";
@@ -16,6 +16,8 @@ import {
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -113,6 +115,7 @@ function fieldLabel(fieldName) {
 
 export default function Activity() {
   const { changes, total, page, perPage, field, product, deletedProducts, shop } = useLoaderData();
+  const navigate = useNavigate();
   const cleanShop = (shop || "").replace(".myshopify.com", "");
   const fetcher = useFetcher();
   const result = fetcher.data;
@@ -121,6 +124,7 @@ export default function Activity() {
 
   return (
     <s-page heading="Activity Log" inlineSize="large">
+      <HubNav hub="protection" activeTab="activity" />
       
       {/* ── Action Feedback Banner ── */}
       {result?.message && (
@@ -340,44 +344,17 @@ export default function Activity() {
       )}
 
       {/* ── Pagination Controls ── */}
-      {totalPages > 1 && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "20px", padding: "10px 0" }}>
-          <div style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-            Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({total.toLocaleString()} records)
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            {page > 1 ? (
-              <Link
-                to={`/app/activity?page=${page - 1}${field ? `&field=${encodeURIComponent(field)}` : ""}${product ? `&product=${encodeURIComponent(product)}` : ""}`}
-                className="rv-btn rv-btn-secondary rv-btn-sm"
-              >
-                <ArrowLeftIcon size={13} />
-                <span>Previous</span>
-              </Link>
-            ) : (
-              <button disabled className="rv-btn rv-btn-secondary rv-btn-sm">
-                <ArrowLeftIcon size={13} />
-                <span>Previous</span>
-              </button>
-            )}
-
-            {page < totalPages ? (
-              <Link
-                to={`/app/activity?page=${page + 1}${field ? `&field=${encodeURIComponent(field)}` : ""}${product ? `&product=${encodeURIComponent(product)}` : ""}`}
-                className="rv-btn rv-btn-secondary rv-btn-sm"
-              >
-                <span>Next</span>
-                <ArrowRightIcon size={13} />
-              </Link>
-            ) : (
-              <button disabled className="rv-btn rv-btn-secondary rv-btn-sm">
-                <span>Next</span>
-                <ArrowRightIcon size={13} />
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+      <Pagination
+        currentPage={page}
+        totalItems={total}
+        pageSize={perPage}
+        onPageChange={(newPage) => {
+          navigate(
+            `/app/activity?page=${newPage}${field ? `&field=${encodeURIComponent(field)}` : ""}${product ? `&product=${encodeURIComponent(product)}` : ""}`
+          );
+        }}
+        itemLabel="records"
+      />
 
     </s-page>
   );

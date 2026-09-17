@@ -35,6 +35,7 @@ import {
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
+import { HubNav } from "../components/HubNav.jsx";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -648,6 +649,7 @@ export default function Settings() {
 
   return (
     <s-page heading="Settings" inlineSize="large">
+      <HubNav hub="settings" activeTab="settings" />
       <div className="rv-settings-wrapper">
 
         {/* Cloud OAuth round-trip result (redirected back from the provider) */}

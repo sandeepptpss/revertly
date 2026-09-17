@@ -43,19 +43,10 @@ export default function App() {
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app" rel="home">Dashboard</s-link>
-        <s-link href="/app/activity">Activity</s-link>
-        <s-link href="/app/incidents">Incidents</s-link>
-        <s-link href="/app/restore-points">Restore Points</s-link>
-        <s-link href="/app/import-export">Import &amp; Export</s-link>
-        <s-link href="/app/vault">Data Vault</s-link>
-        <s-link href="/app/marketing">Email Marketing</s-link>
-        <s-link href="/app/rollback-history">Rollback History</s-link>
-        <s-link href="/app/rules">Rules</s-link>
-        <s-link href="/app/monitoring">Uptime</s-link>
-        <s-link href="/app/qa">Health Check</s-link>
-        <s-link href="/app/team">Team</s-link>
-        <s-link href="/app/settings">Settings</s-link>
+        <s-link href="/app/desktop">Desktop</s-link>
+        <s-link href="/app/restore-points">Backups &amp; Recovery</s-link>
+        <s-link href="/app/incidents">Store Protection</s-link>
+        <s-link href="/app/settings">Settings &amp; Team</s-link>
         <s-link href="/app/plan">Plans &amp; Billing</s-link>
         <s-link href="/app/support">Support</s-link>
         {showAdminLink && <s-link href="/app/admin">Admin Panel</s-link>}

@@ -17,6 +17,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -160,8 +162,18 @@ export default function Monitoring() {
   const down = services.filter((s) => s.status === "DOWN").length;
   const degraded = services.filter((s) => s.status === "DEGRADED").length;
 
+  const {
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    paginatedItems: pagedRecentChecks,
+    totalItems: totalRecentChecks,
+  } = usePagination(recentChecks, 10);
+
   return (
     <s-page heading="Uptime Monitoring" inlineSize="large">
+      <HubNav hub="protection" activeTab="monitoring" />
       {result?.message && (
         <Banner tone={result.success ? "success" : "critical"}>{result.message}</Banner>
       )}
@@ -327,7 +339,7 @@ export default function Monitoring() {
                   </tr>
                 </thead>
                 <tbody>
-                  {recentChecks.map((c) => (
+                  {pagedRecentChecks.map((c) => (
                     <tr key={c.id}>
                       <td style={{ fontSize: "12px", whiteSpace: "nowrap" }}>{new Date(c.checkedAt).toLocaleString()}</td>
                       <td>{c.service?.name || `#${c.serviceId}`}</td>
@@ -339,6 +351,15 @@ export default function Monitoring() {
               </table>
             </div>
           )}
+
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalRecentChecks}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="downtime events"
+          />
         </div>
       </div>
 

@@ -20,6 +20,8 @@ import {
   AlertTriangleIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -131,6 +133,15 @@ export default function ImportExportHub() {
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isImporting = fetcher.state !== "idle";
+
+  const {
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    paginatedItems: pagedRestorePoints,
+    totalItems: totalRp,
+  } = usePagination(restorePoints, 10);
 
   const [activeTab, setActiveTab] = useState("export"); // "export" | "import"
   const [selectedRpId, setSelectedRpId] = useState("");
@@ -362,6 +373,7 @@ export default function ImportExportHub() {
 
   return (
     <s-page heading="Import &amp; Export Hub" inlineSize="large">
+      <HubNav hub="backups" activeTab="import-export" />
 
       {/* ── Action Feedback Banner ── */}
       {result?.message && (
@@ -747,6 +759,73 @@ export default function ImportExportHub() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* Available Backups Table with Pagination */}
+          <div className="rv-card" style={{ marginTop: "12px", border: "1px solid var(--rv-border)" }}>
+            <div className="rv-card-header">
+              <h3 className="rv-card-title">
+                <ClockIcon size={18} />
+                <span>Available Backups for Export ({restorePoints.length})</span>
+              </h3>
+            </div>
+            <div className="rv-card-body">
+              {restorePoints.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "16px", color: "var(--rv-text-subdued)", fontSize: "13px" }}>
+                  No snapshots captured yet. Backups will appear here once created.
+                </div>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="rv-table" style={{ width: "100%" }}>
+                    <thead>
+                      <tr>
+                        <th>Snapshot Name</th>
+                        <th>Created Date</th>
+                        <th>Type</th>
+                        <th>Contents</th>
+                        <th style={{ textAlign: "right" }}>Selection</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedRestorePoints.map((rp) => (
+                        <tr key={rp.id}>
+                          <td>
+                            <strong>#{rp.id}</strong> - {rp.name}
+                          </td>
+                          <td style={{ fontSize: "12px", whiteSpace: "nowrap" }}>
+                            {new Date(rp.createdAt).toLocaleDateString()}
+                          </td>
+                          <td>
+                            <span className="rv-badge rv-badge-sm rv-badge-info">{rp.backupType || "FULL"}</span>
+                          </td>
+                          <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                            {rp.productCount} products · {rp.themeCount} themes
+                          </td>
+                          <td style={{ textAlign: "right" }}>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedRpId(String(rp.id))}
+                              className={`rv-btn rv-btn-sm ${selectedRpId === String(rp.id) ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                            >
+                              {selectedRpId === String(rp.id) ? "Selected" : "Select for Export"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <Pagination
+                currentPage={currentPage}
+                totalItems={totalRp}
+                pageSize={pageSize}
+                onPageChange={setCurrentPage}
+                onPageSizeChange={setPageSize}
+                itemLabel="backups"
+              />
             </div>
           </div>
         </div>

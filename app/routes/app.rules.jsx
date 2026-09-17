@@ -12,6 +12,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
+import { HubNav } from "../components/HubNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -199,8 +201,18 @@ export default function Rules() {
   const isLimitReached = !limitInfo?.allowed;
   const quotaPercent = maxLimit === Infinity ? 0 : Math.min(100, Math.round((activeCount / maxLimit) * 100));
 
+  const {
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    paginatedItems: pagedRules,
+    totalItems,
+  } = usePagination(rules, 10);
+
   return (
     <s-page heading="Detection Rules" inlineSize="large">
+      <HubNav hub="protection" activeTab="rules" />
 
       {/* ── Action Result Banner ── */}
       {result?.message && (
@@ -435,8 +447,8 @@ export default function Rules() {
           }
         />
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-          {rules.map((rule) => {
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          {pagedRules.map((rule) => {
             const isCritical = rule.severity === "CRITICAL";
 
             return (
@@ -523,6 +535,15 @@ export default function Rules() {
               </div>
             );
           })}
+
+          <Pagination
+            currentPage={currentPage}
+            totalItems={totalItems}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="rules"
+          />
         </div>
       )}
 

@@ -178,7 +178,7 @@ export default function Dashboard() {
   } = useLoaderData();
 
   return (
-    <s-page heading="Dashboard" inlineSize="large">
+    <s-page heading="Desktop" inlineSize="large">
 
       {/* ── Top Hero Protection Status ── */}
       <div className="rv-hero-banner">
