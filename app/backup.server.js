@@ -298,12 +298,10 @@ export async function enforceBackupRetentionPolicy(shop) {
 
   let deletedRps = 0;
   if (rpIdsToDelete.length > 0) {
-    // Delete related rollback results and jobs first
-    await prisma.rollbackResult.deleteMany({
-      where: { rollbackJob: { restorePointId: { in: rpIdsToDelete } } },
-    });
-    await prisma.rollbackJob.deleteMany({
+    // Decouple related rollback jobs first so the audit trail is permanently preserved
+    await prisma.rollbackJob.updateMany({
       where: { restorePointId: { in: rpIdsToDelete } },
+      data: { restorePointId: null },
     });
     const del = await prisma.restorePoint.deleteMany({
       where: { id: { in: rpIdsToDelete } },

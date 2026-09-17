@@ -219,6 +219,62 @@ export const loader = async ({ request, params }) => {
   };
 };
 
+async function recordRestoreRollbackJob({
+  shop,
+  restorePointId,
+  resourceType,
+  totalItems = 0,
+  successCount = 0,
+  failedCount = 0,
+  startTime = new Date(),
+  results = [],
+}) {
+  try {
+    const finalStatus =
+      failedCount > 0 && successCount > 0
+        ? "PARTIAL"
+        : failedCount > 0 && successCount === 0
+        ? "FAILED"
+        : "COMPLETED";
+
+    const job = await prisma.rollbackJob.create({
+      data: {
+        shop,
+        restorePointId,
+        status: finalStatus,
+        totalProducts: Math.max(totalItems, successCount + failedCount, results?.length || 0, 1),
+        processedCount: successCount + failedCount,
+        successCount,
+        failedCount,
+        fieldsToRestore: {
+          resourceType,
+          durationMs: Math.max(0, new Date().getTime() - new Date(startTime).getTime()),
+        },
+        createdAt: startTime,
+        completedAt: new Date(),
+      },
+    });
+
+    if (results && results.length > 0) {
+      await prisma.rollbackResult.createMany({
+        data: results.map((r) => ({
+          rollbackJobId: job.id,
+          productId: String(r.productId || r.id || "item"),
+          productTitle: String(r.productTitle || r.title || r.name || "Item"),
+          status: r.status || "SUCCESS",
+          errorMessage: r.errorMessage || null,
+          restoredFields: r.restoredFields || null,
+        })),
+      });
+    }
+
+    return job;
+  } catch (err) {
+    console.error("recordRestoreRollbackJob error:", err);
+    return null;
+  }
+}
+
 export const action = async ({ request, params }) => {
   try {
     const { session, admin } = await authenticate.admin(request);
@@ -280,6 +336,7 @@ export const action = async ({ request, params }) => {
         }
       }
 
+      const startTime = new Date();
       const res = await restoreThemeFilesWithSafety({
         admin,
         shop,
@@ -290,6 +347,28 @@ export const action = async ({ request, params }) => {
         mode,
       });
 
+      const filesCount = res.filesRestored || (selectedFilenames ? selectedFilenames.length : themeData.files.length);
+      const isSuccess = Boolean(res?.success);
+      const targetFiles = selectedFilenames && selectedFilenames.length > 0
+        ? themeData.files.filter((f) => selectedFilenames.includes(f.filename))
+        : themeData.files;
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "THEMES",
+        totalItems: filesCount,
+        successCount: isSuccess ? filesCount : 0,
+        failedCount: isSuccess ? 0 : filesCount,
+        startTime,
+        results: (targetFiles || []).map((f) => ({
+          productId: f.filename,
+          productTitle: `Theme File: ${f.filename}`,
+          status: isSuccess ? "SUCCESS" : "FAILED",
+          errorMessage: isSuccess ? null : res?.message || "Restore failed",
+        })),
+      });
+
       if (res?.success) {
         await logAudit(shop, restorePerm.actor, "THEME_RESTORED", {
           resourceType: "Theme",
@@ -297,7 +376,7 @@ export const action = async ({ request, params }) => {
           details: {
             themeName: themeData.activeTheme.name,
             mode,
-            filesRestored: res.filesRestored || (selectedFilenames ? selectedFilenames.length : themeData.files.length),
+            filesRestored: filesCount,
           },
           request,
         });
@@ -314,7 +393,25 @@ export const action = async ({ request, params }) => {
       const cols = Array.isArray(restorePoint?.collectionData) ? restorePoint.collectionData : [];
       const target = cols[colIndex];
       if (!target) return { success: false, message: "Collection not found in snapshot." };
+      const startTime = new Date();
       const res = await restoreCollection(admin, target);
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "COLLECTIONS",
+        totalItems: 1,
+        successCount: res.success ? 1 : 0,
+        failedCount: res.success ? 0 : 1,
+        startTime,
+        results: [{
+          productId: target.id || String(colIndex),
+          productTitle: `Collection: ${target.title}`,
+          status: res.success ? "SUCCESS" : "FAILED",
+          errorMessage: res.error || (res.success ? null : "Failed to restore collection"),
+        }],
+      });
+
       if (res.success) {
         await logAudit(shop, restorePerm.actor, "COLLECTION_RESTORED", {
           resourceType: "Collection",
@@ -335,7 +432,25 @@ export const action = async ({ request, params }) => {
       const pages = Array.isArray(restorePoint?.pageData) ? restorePoint.pageData : [];
       const target = pages[pageIndex];
       if (!target) return { success: false, message: "Page not found in snapshot." };
+      const startTime = new Date();
       const res = await restorePage(admin, target);
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "PAGES",
+        totalItems: 1,
+        successCount: res.success ? 1 : 0,
+        failedCount: res.success ? 0 : 1,
+        startTime,
+        results: [{
+          productId: target.id || String(pageIndex),
+          productTitle: `Page: ${target.title}`,
+          status: res.success ? "SUCCESS" : "FAILED",
+          errorMessage: res.error || (res.success ? null : "Failed to restore page"),
+        }],
+      });
+
       if (res.success) {
         await logAudit(shop, restorePerm.actor, "PAGE_RESTORED", {
           resourceType: "Page",
@@ -356,7 +471,25 @@ export const action = async ({ request, params }) => {
       const articles = restorePoint?.articleData?.articles || [];
       const target = articles[articleIndex];
       if (!target) return { success: false, message: "Article not found in snapshot." };
+      const startTime = new Date();
       const res = await restoreArticle(admin, target);
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "BLOGS",
+        totalItems: 1,
+        successCount: res?.success ? 1 : 0,
+        failedCount: res?.success ? 0 : 1,
+        startTime,
+        results: [{
+          productId: target.id || String(articleIndex),
+          productTitle: `Article: ${target.title}`,
+          status: res?.success ? "SUCCESS" : "FAILED",
+          errorMessage: res?.error || (res?.success ? null : "Failed to restore article"),
+        }],
+      });
+
       if (res?.success) {
         await logAudit(shop, restorePerm.actor, "ARTICLE_RESTORED", {
           resourceType: "Article",
@@ -374,8 +507,10 @@ export const action = async ({ request, params }) => {
       });
       const cols = Array.isArray(restorePoint?.collectionData) ? restorePoint.collectionData : [];
       if (cols.length === 0) return { success: false, message: "No collections found in snapshot." };
+      const startTime = new Date();
       let successCount = 0;
       let failedCount = 0;
+      const results = [];
       for (const target of cols) {
         const res = await restoreCollection(admin, target);
         if (res.success) {
@@ -383,7 +518,25 @@ export const action = async ({ request, params }) => {
         } else {
           failedCount++;
         }
+        results.push({
+          productId: target.id || target.handle || "collection",
+          productTitle: `Collection: ${target.title}`,
+          status: res.success ? "SUCCESS" : "FAILED",
+          errorMessage: res.error || null,
+        });
       }
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "COLLECTIONS",
+        totalItems: cols.length,
+        successCount,
+        failedCount,
+        startTime,
+        results,
+      });
+
       await logAudit(shop, restorePerm.actor, "COLLECTIONS_BULK_RESTORED", {
         resourceType: "Collection",
         resourceId: String(rpId),
@@ -402,8 +555,10 @@ export const action = async ({ request, params }) => {
       });
       const pages = Array.isArray(restorePoint?.pageData) ? restorePoint.pageData : [];
       if (pages.length === 0) return { success: false, message: "No pages found in snapshot." };
+      const startTime = new Date();
       let successCount = 0;
       let failedCount = 0;
+      const results = [];
       for (const target of pages) {
         const res = await restorePage(admin, target);
         if (res.success) {
@@ -411,7 +566,25 @@ export const action = async ({ request, params }) => {
         } else {
           failedCount++;
         }
+        results.push({
+          productId: target.id || target.handle || "page",
+          productTitle: `Page: ${target.title}`,
+          status: res.success ? "SUCCESS" : "FAILED",
+          errorMessage: res.error || null,
+        });
       }
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "PAGES",
+        totalItems: pages.length,
+        successCount,
+        failedCount,
+        startTime,
+        results,
+      });
+
       await logAudit(shop, restorePerm.actor, "PAGES_BULK_RESTORED", {
         resourceType: "Page",
         resourceId: String(rpId),
@@ -432,7 +605,25 @@ export const action = async ({ request, params }) => {
       const menus = Array.isArray(restorePoint?.menuData) ? restorePoint.menuData : [];
       const target = menus[menuIndex];
       if (!target) return { success: false, message: "Navigation menu not found in snapshot." };
+      const startTime = new Date();
       const res = await restoreMenu(admin, target);
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "MENUS",
+        totalItems: 1,
+        successCount: res.success ? 1 : 0,
+        failedCount: res.success ? 0 : 1,
+        startTime,
+        results: [{
+          productId: target.id || String(menuIndex),
+          productTitle: `Menu: ${target.title}`,
+          status: res.success ? "SUCCESS" : "FAILED",
+          errorMessage: res.error || (res.success ? null : "Failed to restore menu"),
+        }],
+      });
+
       if (res.success) {
         await logAudit(shop, restorePerm.actor, "MENU_RESTORED", {
           resourceType: "Menu",
@@ -451,8 +642,10 @@ export const action = async ({ request, params }) => {
       });
       const menus = Array.isArray(restorePoint?.menuData) ? restorePoint.menuData : [];
       if (menus.length === 0) return { success: false, message: "No navigation menus found in snapshot." };
+      const startTime = new Date();
       let successCount = 0;
       let failedCount = 0;
+      const results = [];
       for (const target of menus) {
         const res = await restoreMenu(admin, target);
         if (res.success) {
@@ -460,7 +653,25 @@ export const action = async ({ request, params }) => {
         } else {
           failedCount++;
         }
+        results.push({
+          productId: target.id || target.handle || "menu",
+          productTitle: `Menu: ${target.title}`,
+          status: res.success ? "SUCCESS" : "FAILED",
+          errorMessage: res.error || null,
+        });
       }
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "MENUS",
+        totalItems: menus.length,
+        successCount,
+        failedCount,
+        startTime,
+        results,
+      });
+
       await logAudit(shop, restorePerm.actor, "MENUS_BULK_RESTORED", {
         resourceType: "Menu",
         resourceId: String(rpId),
@@ -495,11 +706,54 @@ export const action = async ({ request, params }) => {
       const requestedMode = formData.get("metafieldMode");
       const mode = METAFIELD_RESTORE_MODES.includes(requestedMode) ? requestedMode : "SKIP_EXISTING";
       const definitionsOnly = intent === "restore_metafield_definitions";
+      const startTime = new Date();
 
       const res = await restoreMetafieldBackup(admin, shop, metafieldData, {
         mode,
         includeDefinitions: true,
         includeValues: !definitionsOnly,
+      });
+
+      const writtenCount =
+        (res.summary?.metafieldsWritten || 0) +
+        (res.summary?.definitionsUpdated || 0) +
+        (res.summary?.definitionsCreated || 0);
+      const failCount = (res.summary?.failed || 0) + (res.summary?.definitionsFailed || 0);
+      const results = [];
+      if (res.summary?.definitionsUpdated > 0 || res.summary?.definitionsCreated > 0) {
+        results.push({
+          productId: "metafield_definitions",
+          productTitle: `Metafield Definitions (${(res.summary?.definitionsCreated || 0) + (res.summary?.definitionsUpdated || 0)} applied)`,
+          status: "SUCCESS",
+        });
+      }
+      if (res.summary?.metafieldsWritten > 0) {
+        results.push({
+          productId: "metafield_values",
+          productTitle: `Metafield Values (${res.summary.metafieldsWritten} values restored)`,
+          status: "SUCCESS",
+        });
+      }
+      if (res.summary?.errors?.length > 0) {
+        res.summary.errors.slice(0, 20).forEach((e, idx) => {
+          results.push({
+            productId: `metafield_err_${idx}`,
+            productTitle: `Metafield Notice: ${String(e).slice(0, 120)}`,
+            status: "FAILED",
+            errorMessage: String(e),
+          });
+        });
+      }
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "METAFIELDS",
+        totalItems: writtenCount + failCount || 1,
+        successCount: writtenCount,
+        failedCount: failCount,
+        startTime,
+        results,
       });
 
       await logAudit(shop, restorePerm.actor, "METAFIELDS_RESTORED", {
@@ -518,8 +772,10 @@ export const action = async ({ request, params }) => {
       });
       const articles = restorePoint?.articleData?.articles || [];
       if (articles.length === 0) return { success: false, message: "No articles found in snapshot." };
+      const startTime = new Date();
       let successCount = 0;
       let failedCount = 0;
+      const results = [];
       for (const target of articles) {
         const res = await restoreArticle(admin, target);
         if (res?.success) {
@@ -527,7 +783,25 @@ export const action = async ({ request, params }) => {
         } else {
           failedCount++;
         }
+        results.push({
+          productId: target.id || String(target.title),
+          productTitle: `Article: ${target.title}`,
+          status: res?.success ? "SUCCESS" : "FAILED",
+          errorMessage: res?.error || null,
+        });
       }
+
+      await recordRestoreRollbackJob({
+        shop,
+        restorePointId: rpId,
+        resourceType: "BLOGS",
+        totalItems: articles.length,
+        successCount,
+        failedCount,
+        startTime,
+        results,
+      });
+
       await logAudit(shop, restorePerm.actor, "ARTICLES_BULK_RESTORED", {
         resourceType: "Article",
         resourceId: String(rpId),
@@ -588,6 +862,7 @@ export const action = async ({ request, params }) => {
         restorePointId: rpId,
         status: "RUNNING",
         totalProducts: targetProducts.length,
+        fieldsToRestore: { resourceType: "PRODUCTS" },
       },
     });
 
@@ -603,7 +878,19 @@ export const action = async ({ request, params }) => {
       const productId = saved.productId;
       const savedSnap = saved.snapshotData || saved;
       const current = currentMap[productId];
-      if (!current) continue;
+      if (!current) {
+        await prisma.rollbackResult.create({
+          data: {
+            rollbackJobId: job.id,
+            productId,
+            productTitle: savedSnap.title || productId,
+            status: "FAILED",
+            errorMessage: "Product not found in current catalog baseline",
+          },
+        });
+        failedCount++;
+        continue;
+      }
 
       const mockEvents = [];
       const fieldKeys = ["title", "status", "vendor", "tags", "handle", "bodyHtml", "templateSuffix"];

@@ -112,6 +112,59 @@ export const action = async ({ request }) => {
         return { success: false, message: res.message };
       }
 
+      if (mode === "RESTORE_NOW") {
+        try {
+          const lr = res.summary?.liveResults || {};
+          const totalLiveRestored =
+            (lr.collections || 0) +
+            (lr.pages || 0) +
+            (lr.menus || 0) +
+            (lr.articles || 0) +
+            (lr.themeStagingCreated ? 1 : 0);
+
+          const rollbackJob = await prisma.rollbackJob.create({
+            data: {
+              shop,
+              restorePointId: res.restorePoint?.id || null,
+              status: "COMPLETED",
+              totalProducts: totalLiveRestored || 1,
+              processedCount: totalLiveRestored || 1,
+              successCount: totalLiveRestored || 1,
+              failedCount: 0,
+              fieldsToRestore: { resourceType: "IMPORT" },
+              createdAt: new Date(),
+              completedAt: new Date(),
+            },
+          });
+
+          const importResults = [];
+          if (lr.pages > 0) importResults.push({ productId: "import_pages", productTitle: `Import: ${lr.pages} Pages restored live`, status: "SUCCESS" });
+          if (lr.menus > 0) importResults.push({ productId: "import_menus", productTitle: `Import: ${lr.menus} Navigation Menus restored live`, status: "SUCCESS" });
+          if (lr.collections > 0) importResults.push({ productId: "import_collections", productTitle: `Import: ${lr.collections} Collections restored live`, status: "SUCCESS" });
+          if (lr.articles > 0) importResults.push({ productId: "import_articles", productTitle: `Import: ${lr.articles} Articles restored live`, status: "SUCCESS" });
+          if (lr.themeStagingCreated) importResults.push({ productId: "import_theme", productTitle: `Import: Staging Theme created with restored files`, status: "SUCCESS" });
+
+          if (importResults.length === 0) {
+            importResults.push({
+              productId: "import_archive",
+              productTitle: `Imported Archive: Items restored live`,
+              status: "SUCCESS",
+            });
+          }
+
+          await prisma.rollbackResult.createMany({
+            data: importResults.map((r) => ({
+              rollbackJobId: rollbackJob.id,
+              productId: r.productId,
+              productTitle: r.productTitle,
+              status: r.status,
+            })),
+          });
+        } catch (jobErr) {
+          console.error("Failed to record import rollback job:", jobErr);
+        }
+      }
+
       await logAudit(shop, perm.actor, "DATA_IMPORTED", {
         resourceType: "Import",
         resourceId: res.restorePoint?.id,

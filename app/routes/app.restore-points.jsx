@@ -432,12 +432,11 @@ export const action = async ({ request }) => {
         return { success: false, message: "Restore point not found or access denied." };
       }
 
-      // Rollback jobs reference the restore point, so clear them first or the
-      // FK constraint rejects the delete.
-      await prisma.rollbackResult.deleteMany({
-        where: { rollbackJob: { restorePointId: rpId } },
+      // Decouple rollback jobs from the deleted restore point to preserve the permanent audit trail
+      await prisma.rollbackJob.updateMany({
+        where: { restorePointId: rpId },
+        data: { restorePointId: null },
       });
-      await prisma.rollbackJob.deleteMany({ where: { restorePointId: rpId } });
       await prisma.restorePoint.delete({ where: { id: rpId } });
 
       await logAudit(shop, perm.actor, "BACKUP_DELETED", {

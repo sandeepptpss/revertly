@@ -78,7 +78,12 @@ export const action = async ({ request, params }) => {
         data: { status: "IGNORED", resolvedAt: new Date() },
       });
       const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
-      await logAudit(shop, session, "INCIDENT_IGNORE", { incidentId, name: incident?.name });
+      await logAudit(shop, session, "INCIDENT_IGNORE", {
+        resourceType: "Incident",
+        resourceId: incidentId,
+        details: { name: incident?.name },
+        request,
+      });
       return { success: true, message: "Incident marked as ignored." };
     }
 
@@ -88,7 +93,12 @@ export const action = async ({ request, params }) => {
         data: { status: "OPEN", resolvedAt: null },
       });
       const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
-      await logAudit(shop, session, "INCIDENT_REOPEN", { incidentId, name: incident?.name });
+      await logAudit(shop, session, "INCIDENT_REOPEN", {
+        resourceType: "Incident",
+        resourceId: incidentId,
+        details: { name: incident?.name },
+        request,
+      });
       return { success: true, message: "Incident reopened as Open." };
     }
 
@@ -120,6 +130,7 @@ export const action = async ({ request, params }) => {
           incidentId,
           status: "RUNNING",
           totalProducts: productCount,
+          fieldsToRestore: { resourceType: "INCIDENT" },
         },
       });
 
@@ -160,9 +171,20 @@ export const action = async ({ request, params }) => {
         },
       });
 
-      await prisma.incident.update({
+      const updatedIncident = await prisma.incident.update({
         where: { id: incidentId },
         data: { status: "ROLLED_BACK", resolvedAt: new Date() },
+      });
+
+      await logAudit(shop, session, "INCIDENT_ROLLBACK", {
+        resourceType: "Incident",
+        resourceId: incidentId,
+        details: {
+          name: updatedIncident?.name,
+          successCount,
+          failedCount,
+        },
+        request,
       });
 
       return {
