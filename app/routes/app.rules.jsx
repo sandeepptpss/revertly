@@ -97,26 +97,27 @@ export const action = async ({ request }) => {
       }
 
       const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
-      if (rule && rule.shop === shop) {
-        const willBeActive = !rule.isActive;
-
-        if (willBeActive) {
-          const limitCheck = await checkRuleLimit(shop);
-          if (!limitCheck.allowed) {
-            return {
-              success: false,
-              message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate another rule or upgrade your plan to activate this rule.`,
-            };
-          }
-        }
-
-        await prisma.detectionRule.update({
-          where: { id: ruleId },
-          data: { isActive: willBeActive },
-        });
-        return { success: true, message: `Rule "${rule.name}" is now ${willBeActive ? "Active" : "Disabled"}.` };
+      if (!rule || rule.shop !== shop) {
+        return { success: false, message: "Detection rule not found." };
       }
-      return { success: true, message: "Rule status updated." };
+
+      const willBeActive = !rule.isActive;
+
+      if (willBeActive) {
+        const limitCheck = await checkRuleLimit(shop);
+        if (!limitCheck.allowed) {
+          return {
+            success: false,
+            message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate another rule or upgrade your plan to activate this rule.`,
+          };
+        }
+      }
+
+      await prisma.detectionRule.update({
+        where: { id: ruleId },
+        data: { isActive: willBeActive },
+      });
+      return { success: true, message: `Rule "${rule.name}" is now ${willBeActive ? "Active" : "Disabled"}.` };
     }
 
     if (intent === "delete") {
@@ -127,16 +128,17 @@ export const action = async ({ request }) => {
       }
 
       const rule = await prisma.detectionRule.findUnique({ where: { id: ruleId } });
-      if (rule && rule.shop === shop) {
-        // Disconnect triggeredRuleId on any incidents first to satisfy foreign key constraint
-        await prisma.incident.updateMany({
-          where: { triggeredRuleId: ruleId },
-          data: { triggeredRuleId: null },
-        });
-        await prisma.detectionRule.delete({ where: { id: ruleId } });
-        return { success: true, message: `Rule "${rule.name}" deleted successfully.` };
+      if (!rule || rule.shop !== shop) {
+        return { success: false, message: "Detection rule not found." };
       }
-      return { success: true, message: "Rule deleted." };
+
+      // Disconnect triggeredRuleId on any incidents first to satisfy foreign key constraint
+      await prisma.incident.updateMany({
+        where: { triggeredRuleId: ruleId },
+        data: { triggeredRuleId: null },
+      });
+      await prisma.detectionRule.delete({ where: { id: ruleId } });
+      return { success: true, message: `Rule "${rule.name}" deleted successfully.` };
     }
 
     if (intent === "seed_defaults") {

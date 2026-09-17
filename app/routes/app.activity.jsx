@@ -10,8 +10,6 @@ import {
   RefreshCwIcon,
   SearchIcon,
   BoxIcon,
-  ArrowRightIcon,
-  ArrowLeftIcon,
   FilterIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
@@ -120,7 +118,6 @@ export default function Activity() {
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isRestoring = fetcher.state !== "idle";
-  const totalPages = Math.ceil(total / perPage);
 
   return (
     <s-page heading="Activity Log" inlineSize="large">

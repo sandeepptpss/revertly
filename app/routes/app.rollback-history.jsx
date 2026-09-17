@@ -13,8 +13,6 @@ import {
   FileCodeIcon,
   DatabaseIcon,
   UploadIcon,
-  CheckCircleIcon,
-  AlertTriangleIcon,
   SearchIcon,
 } from "../components/Icons.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";

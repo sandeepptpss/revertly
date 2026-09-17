@@ -147,7 +147,7 @@ async function testCloudSync() {
   const { serializeRestorePoint, getCloudProviderStatus, isProviderConfigured, syncRestorePointToCloud } =
     await import("../app/cloudSync.server.js");
 
-  await prisma.appSettings.create({ data: { shop: SHOP_CLOUD } });
+  await prisma.appSettings.create({ data: { shop: SHOP_CLOUD, planId: "growth" } });
 
   const rp = await prisma.restorePoint.create({
     data: {

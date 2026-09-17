@@ -24,7 +24,6 @@ import {
   DownloadIcon,
   Trash2Icon,
   SparklesIcon,
-  ArrowLeftIcon,
   ArrowRightIcon,
   CloudUploadIcon,
   GoogleDriveIcon,

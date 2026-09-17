@@ -11,8 +11,6 @@ import {
   CheckCircleIcon,
   RefreshCwIcon,
   SearchIcon,
-  AlertTriangleIcon,
-  FilterIcon,
   XIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";

@@ -63,9 +63,26 @@ async function run() {
   assert(parsedDb.searchParams.get("state"), "State parameter must be present");
   console.log("  ✓ Dropbox authorize URL is fully constructed with token_access_type=offline & state");
 
-  // 5. Live request against running dev server on localhost:44499
+  // 5. Live request against running dev server
+  async function findActivePort() {
+    if (process.env.DEV_PORT) return process.env.DEV_PORT;
+    const candidates = [45405, 35239, 40279, 44499, 3000];
+    for (const p of candidates) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${p}/auth/cloud/google_drive`, { redirect: "manual" });
+        if (r.status === 302 || r.status === 200) return p;
+      } catch {
+        // try next
+      }
+    }
+    return 45405;
+  }
+
+  const port = await findActivePort();
+  console.log(`  Connecting to live dev server on port ${port}...`);
+
   try {
-    const respGd = await fetch(`http://127.0.0.1:44499/auth/cloud/google_drive?token=${encodeURIComponent(gdToken)}`, {
+    const respGd = await fetch(`http://127.0.0.1:${port}/auth/cloud/google_drive?token=${encodeURIComponent(gdToken)}`, {
       redirect: "manual",
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -77,7 +94,7 @@ async function run() {
     assert(locationGd && locationGd.startsWith("https://accounts.google.com/o/oauth2/v2/auth"), `Redirect location must point to Google: ${locationGd}`);
     console.log("  ✓ Live test: /auth/cloud/google_drive with launch token returns 302 redirecting to Google OAuth!");
 
-    const respDb = await fetch(`http://127.0.0.1:44499/auth/cloud/dropbox?token=${encodeURIComponent(dbToken)}`, {
+    const respDb = await fetch(`http://127.0.0.1:${port}/auth/cloud/dropbox?token=${encodeURIComponent(dbToken)}`, {
       redirect: "manual",
       headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

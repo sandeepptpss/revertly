@@ -2,9 +2,7 @@ import { Link } from "react-router";
 import {
   SaveIcon,
   HistoryIcon,
-  DownloadIcon,
   DatabaseIcon,
-  MailIcon,
   AlertTriangleIcon,
   ClockIcon,
   FilterIcon,
@@ -12,7 +10,6 @@ import {
   ShieldCheckIcon,
   SettingsIcon,
   UsersIcon,
-  HelpCircleIcon,
 } from "./Icons.jsx";
 
 const HUB_CONFIG = {

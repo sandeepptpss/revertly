@@ -43,11 +43,14 @@ export default function ConfirmModal({
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="confirm-modal-title"
+      role="presentation"
       onClick={(e) => {
         if (e.target === e.currentTarget && !isSubmitting && onClose) {
+          onClose();
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !isSubmitting && onClose) {
           onClose();
         }
       }}
@@ -65,6 +68,9 @@ export default function ConfirmModal({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-title"
         style={{
           background: "#ffffff",
           borderRadius: "var(--rv-radius-md, 10px)",

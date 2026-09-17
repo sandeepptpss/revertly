@@ -620,7 +620,6 @@ export default function Plan() {
     hasUsedTrial,
     trialEndsAt,
     productLimitReachedAt,
-    discount,
     storeDiscount,
     globalDiscount,
     freeGrowth,
@@ -1413,8 +1412,14 @@ export default function Plan() {
       {/* ── Downgrade Confirmation Modal ── */}
       {confirmModal && (
         <div
+          role="presentation"
           onClick={(e) => {
             if (e.target === e.currentTarget && !isSubmitting) {
+              setConfirmModal(null);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !isSubmitting) {
               setConfirmModal(null);
             }
           }}
@@ -1430,6 +1435,9 @@ export default function Plan() {
           }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="downgrade-modal-title"
             style={{
               background: "#ffffff",
               borderRadius: "var(--rv-radius-md)",

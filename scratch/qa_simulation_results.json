@@ -11,7 +11,7 @@
     "scenario": "Limits verification for tier: free",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.free",
-    "actual": "All limits matched ({\"products\":100,\"restorePoints\":2,\"rules\":1,\"retentionDays\":7,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false})",
+    "actual": "All limits matched ({\"products\":100,\"restorePoints\":2,\"rules\":1,\"retentionDays\":7,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":false,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false})",
     "status": "PASS",
     "notes": ""
   },
@@ -27,7 +27,7 @@
     "scenario": "Limits verification for tier: starter",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.starter",
-    "actual": "All limits matched ({\"products\":1000,\"restorePoints\":10,\"rules\":3,\"retentionDays\":30,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false})",
+    "actual": "All limits matched ({\"products\":1000,\"restorePoints\":10,\"rules\":3,\"retentionDays\":30,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":true,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false})",
     "status": "PASS",
     "notes": ""
   },
@@ -43,7 +43,7 @@
     "scenario": "Limits verification for tier: growth",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.growth",
-    "actual": "All limits matched ({\"products\":5000,\"restorePoints\":50,\"rules\":10,\"retentionDays\":90,\"vaultOrders\":2500,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":true})",
+    "actual": "All limits matched ({\"products\":5000,\"restorePoints\":50,\"rules\":10,\"retentionDays\":90,\"vaultOrders\":2500,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":10000,\"marketingFlows\":false,\"metafieldBackup\":true})",
     "status": "PASS",
     "notes": ""
   },
@@ -59,7 +59,7 @@
     "scenario": "Limits verification for tier: business",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.business",
-    "actual": "All limits matched ({\"products\":20000,\"restorePoints\":100,\"rules\":null,\"retentionDays\":180,\"vaultOrders\":15000,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true})",
+    "actual": "All limits matched ({\"products\":20000,\"restorePoints\":100,\"rules\":null,\"retentionDays\":180,\"vaultOrders\":15000,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":50000,\"marketingFlows\":true,\"metafieldBackup\":true})",
     "status": "PASS",
     "notes": ""
   },
@@ -75,7 +75,7 @@
     "scenario": "Limits verification for tier: enterprise",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.enterprise",
-    "actual": "All limits matched ({\"products\":null,\"restorePoints\":null,\"rules\":null,\"retentionDays\":365,\"vaultOrders\":null,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true})",
+    "actual": "All limits matched ({\"products\":null,\"restorePoints\":null,\"rules\":null,\"retentionDays\":365,\"vaultOrders\":null,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":null,\"marketingFlows\":true,\"metafieldBackup\":true})",
     "status": "PASS",
     "notes": ""
   },
@@ -243,7 +243,7 @@
     "scenario": "Data persistence after downgrading to Free",
     "group": "Downgrade",
     "expected": "Existing product snapshots and restore points remain intact",
-    "actual": "Snapshots: 1 (was 1), Restore Points: 1 (was 1)",
+    "actual": "Snapshots: 1 (was 1), Restore Points: 2 (was 2)",
     "status": "PASS",
     "notes": ""
   },
@@ -283,7 +283,7 @@
     "scenario": "Starting 14-day trial initializes trialEndsAt and hasUsedTrial",
     "group": "Trial",
     "expected": "trialEndsAt is set 14 days in future, hasUsedTrial is true",
-    "actual": "trialEndsAt: 2026-09-30T09:11:33.158Z, hasUsedTrial: true",
+    "actual": "trialEndsAt: 2026-10-01T14:19:29.769Z, hasUsedTrial: true",
     "status": "PASS",
     "notes": ""
   },
@@ -331,7 +331,7 @@
     "scenario": "productLimitReachedAt banner triggers when limit exceeded",
     "group": "Feature Limits",
     "expected": "productLimitReachedAt is stored and triggers alert banner in UI",
-    "actual": "productLimitReachedAt set to 2026-09-16T09:11:33.197Z",
+    "actual": "productLimitReachedAt set to 2026-09-17T14:19:29.798Z",
     "status": "PASS",
     "notes": ""
   },

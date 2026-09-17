@@ -122,7 +122,14 @@ async function runAllTests() {
 
   // ── TEST 7: Admin-configured discounts application ──
   console.log("\n[TEST 7] Verifying Admin-configured discounts...");
-  // Test when no discount is configured
+  const initialPlatformSettings = await prisma.platformSettings.findUnique({ where: { id: 1 } });
+
+  // Baseline: ensure global discount is inactive
+  await prisma.platformSettings.update({
+    where: { id: 1 },
+    data: { globalDiscountActive: false },
+  });
+
   const noDiscount = await resolveBestDiscount("quickstart-749ac396.myshopify.com");
   console.log("  Discount when none active:", noDiscount);
   assert.strictEqual(noDiscount, null, "No discount should be active initially");
@@ -149,11 +156,18 @@ async function runAllTests() {
   assert.strictEqual(starterFinalYearly, 86.4, "Starter 20% off yearly should be 86.4");
   assert.strictEqual(starterFinalMonthlyEq, 7.2, "Starter 20% off monthly eq should be 7.2");
 
-  // Clean up: turn off global discount
-  await prisma.platformSettings.update({
-    where: { id: 1 },
-    data: { globalDiscountActive: false },
-  });
+  // Clean up: restore original platform settings
+  if (initialPlatformSettings) {
+    await prisma.platformSettings.update({
+      where: { id: 1 },
+      data: {
+        globalDiscountActive: initialPlatformSettings.globalDiscountActive,
+        globalDiscountPercent: initialPlatformSettings.globalDiscountPercent,
+        globalDiscountExpiresAt: initialPlatformSettings.globalDiscountExpiresAt,
+        globalDiscountNote: initialPlatformSettings.globalDiscountNote,
+      },
+    });
+  }
 
   console.log("  ✓ Test 7 passed: Admin-configured discounts are accurately applied.");
 
