@@ -8,7 +8,12 @@
  */
 import { redirect } from "react-router";
 import { authenticate } from "../shopify.server.js";
-import { getProvider, isProviderConfigured } from "../cloudSync.server.js";
+import {
+  getProvider,
+  isProviderConfigured,
+  checkCloudSyncAccess,
+  CLOUD_SYNC_UPGRADE_MESSAGE,
+} from "../cloudSync.server.js";
 import { buildAuthorizeUrl, verifyLaunchToken } from "../cloudOAuth.server.js";
 
 export const loader = async ({ request, params }) => {
@@ -49,6 +54,14 @@ export const loader = async ({ request, params }) => {
 
   if (!shop) {
     return redirect(`/app/settings?cloud_error=${encodeURIComponent("Could not identify the store for this cloud connection.")}`);
+  }
+
+  // Checked after the shop is resolved and before the redirect out to the
+  // provider: a merchant must never be walked through a Google/Dropbox consent
+  // screen for a connection their plan cannot keep.
+  const cloudAccess = await checkCloudSyncAccess(shop);
+  if (!cloudAccess.allowed) {
+    return redirect(`/app/settings?cloud_error=${encodeURIComponent(CLOUD_SYNC_UPGRADE_MESSAGE)}`);
   }
 
   const forwardedHost = request.headers.get("x-forwarded-host");

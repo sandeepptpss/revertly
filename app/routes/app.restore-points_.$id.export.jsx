@@ -71,6 +71,7 @@ export const loader = async ({ request, params }) => {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Content-Disposition": `attachment; filename="${filename}"`,
+      "Access-Control-Expose-Headers": "Content-Disposition",
       "Cache-Control": "no-store, no-cache, must-revalidate",
     },
   });

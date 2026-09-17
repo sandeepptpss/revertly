@@ -301,10 +301,63 @@ export default function ImportExportHub() {
     processFile(file);
   };
 
+  const [downloadingType, setDownloadingType] = useState(null);
+  const [downloadError, setDownloadError] = useState("");
+
   const getExportUrl = (type) => {
     const base = `/app/export?type=${type}`;
     if (selectedRpId) return `${base}&rpId=${selectedRpId}`;
     return base;
+  };
+
+  const handleDownload = async (type, fallbackFilename) => {
+    try {
+      setDownloadingType(type);
+      setDownloadError("");
+      const url = getExportUrl(type);
+
+      // fetch() within Shopify App Bridge automatically attaches Authorization: Bearer <session-token>
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Export request failed with status ${res.status}`);
+      }
+
+      const contentType = res.headers.get("Content-Type") || "";
+      const blob = await res.blob();
+
+      // Guard against HTML redirect/bounce responses
+      if (contentType.includes("text/html")) {
+        const text = await blob.text();
+        if (text.includes("app-bridge") || text.includes("<html") || text.includes("<script")) {
+          throw new Error("Authentication session expired or unauthorized. Please refresh the page and try again.");
+        }
+      }
+
+      // Extract exact filename from Content-Disposition header if exposed
+      let filename = fallbackFilename;
+      const disposition = res.headers.get("Content-Disposition");
+      if (disposition && disposition.includes("filename=")) {
+        const matches = disposition.match(/filename="?([^"]+)"?/);
+        if (matches && matches[1]) {
+          filename = matches[1].replace(/['"]/g, "").trim();
+        }
+      }
+
+      // Trigger standard browser download of the verified binary/text blob
+      const blobUrl = window.URL.createObjectURL(blob);
+      const tempLink = document.createElement("a");
+      tempLink.href = blobUrl;
+      tempLink.setAttribute("download", filename);
+      document.body.appendChild(tempLink);
+      tempLink.click();
+      document.body.removeChild(tempLink);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error("Export download error:", err);
+      setDownloadError(`Export download failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      setDownloadingType(null);
+    }
   };
 
   return (
@@ -377,6 +430,12 @@ export default function ImportExportHub() {
       {activeTab === "export" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           {/* Source Selector Bar */}
+          {downloadError && (
+            <Banner tone="critical" title="Export Download Error">
+              {downloadError}
+            </Banner>
+          )}
+
           <div className="rv-card">
             <div className="rv-card-body" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "14px" }}>
@@ -458,17 +517,27 @@ export default function ImportExportHub() {
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
                   The definitive backup archive. Bundles Products, Liquid Themes, Collections, Pages, Navigation Menus, and Blog Articles into an encrypted portable JSON file.
                 </p>
-                <a
-                  href={getExportUrl("full_json")}
-                  download
+                <button
+                  type="button"
+                  disabled={downloadingType === "full_json"}
+                  onClick={() =>
+                    handleDownload(
+                      "full_json",
+                      selectedRp ? `revertly-backup-rp${selectedRp.id}.json` : "revertly-live-backup.json"
+                    )
+                  }
                   className="rv-btn rv-btn-primary rv-btn-lg"
                   style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
                 >
                   <DownloadIcon size={16} />
                   <span>
-                    {selectedRp ? `Download Snapshot #${selectedRp.id} Archive (.json)` : "Download Complete Live Backup (.json)"}
+                    {downloadingType === "full_json"
+                      ? "Downloading..."
+                      : selectedRp
+                      ? `Download Snapshot #${selectedRp.id} Archive (.json)`
+                      : "Download Complete Live Backup (.json)"}
                   </span>
-                </a>
+                </button>
               </div>
             </div>
 
@@ -492,24 +561,26 @@ export default function ImportExportHub() {
                   Export your product catalog with variant pricing, inventory policies, tags, and metafields. Available in spreadsheet-friendly CSV or developer JSON.
                 </p>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <a
-                    href={getExportUrl("products_csv")}
-                    download
+                  <button
+                    type="button"
+                    disabled={downloadingType === "products_csv"}
+                    onClick={() => handleDownload("products_csv", "revertly-products.csv")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>CSV Spreadsheet</span>
-                  </a>
-                  <a
-                    href={getExportUrl("products_json")}
-                    download
+                    <span>{downloadingType === "products_csv" ? "Downloading..." : "CSV Spreadsheet"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={downloadingType === "products_json"}
+                    onClick={() => handleDownload("products_json", "revertly-products.json")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>JSON Raw</span>
-                  </a>
+                    <span>{downloadingType === "products_json" ? "Downloading..." : "JSON Raw"}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -533,15 +604,16 @@ export default function ImportExportHub() {
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
                   Export all theme layouts, Liquid template files, settings_data.json, and sections. Perfect for sharing with developers or auditing template modifications.
                 </p>
-                <a
-                  href={getExportUrl("themes_json")}
-                  download
+                <button
+                  type="button"
+                  disabled={downloadingType === "themes_json"}
+                  onClick={() => handleDownload("themes_json", "revertly-themes.json")}
                   className="rv-btn rv-btn-secondary"
-                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+                  style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
                 >
                   <DownloadIcon size={14} />
-                  <span>Download Themes Backup (.json)</span>
-                </a>
+                  <span>{downloadingType === "themes_json" ? "Downloading..." : "Download Themes Backup (.json)"}</span>
+                </button>
               </div>
             </div>
 
@@ -565,24 +637,26 @@ export default function ImportExportHub() {
                   Export all smart collection condition rules, rule sets, sorting priorities, and custom collection memberships.
                 </p>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <a
-                    href={getExportUrl("collections_csv")}
-                    download
+                  <button
+                    type="button"
+                    disabled={downloadingType === "collections_csv"}
+                    onClick={() => handleDownload("collections_csv", "revertly-collections.csv")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>CSV Spreadsheet</span>
-                  </a>
-                  <a
-                    href={getExportUrl("collections_json")}
-                    download
+                    <span>{downloadingType === "collections_csv" ? "Downloading..." : "CSV Spreadsheet"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={downloadingType === "collections_json"}
+                    onClick={() => handleDownload("collections_json", "revertly-collections.json")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>JSON Raw</span>
-                  </a>
+                    <span>{downloadingType === "collections_json" ? "Downloading..." : "JSON Raw"}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -607,24 +681,26 @@ export default function ImportExportHub() {
                   Export all content pages (Terms, Privacy, About, Landing pages) and online store navigation menu trees.
                 </p>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <a
-                    href={getExportUrl("pages_csv")}
-                    download
+                  <button
+                    type="button"
+                    disabled={downloadingType === "pages_csv"}
+                    onClick={() => handleDownload("pages_csv", "revertly-pages-menus.csv")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>CSV Spreadsheet</span>
-                  </a>
-                  <a
-                    href={getExportUrl("pages_json")}
-                    download
+                    <span>{downloadingType === "pages_csv" ? "Downloading..." : "CSV Spreadsheet"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={downloadingType === "pages_json"}
+                    onClick={() => handleDownload("pages_json", "revertly-pages-menus.json")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>JSON Raw</span>
-                  </a>
+                    <span>{downloadingType === "pages_json" ? "Downloading..." : "JSON Raw"}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -649,24 +725,26 @@ export default function ImportExportHub() {
                   Export all published and draft blog articles, tags, authors, summaries, and HTML article bodies for safe archiving.
                 </p>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <a
-                    href={getExportUrl("blogs_csv")}
-                    download
+                  <button
+                    type="button"
+                    disabled={downloadingType === "blogs_csv"}
+                    onClick={() => handleDownload("blogs_csv", "revertly-blogs-articles.csv")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>CSV Spreadsheet</span>
-                  </a>
-                  <a
-                    href={getExportUrl("blogs_json")}
-                    download
+                    <span>{downloadingType === "blogs_csv" ? "Downloading..." : "CSV Spreadsheet"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={downloadingType === "blogs_json"}
+                    onClick={() => handleDownload("blogs_json", "revertly-blogs-articles.json")}
                     className="rv-btn rv-btn-secondary"
                     style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                   >
                     <DownloadIcon size={14} />
-                    <span>JSON Raw</span>
-                  </a>
+                    <span>{downloadingType === "blogs_json" ? "Downloading..." : "JSON Raw"}</span>
+                  </button>
                 </div>
               </div>
             </div>

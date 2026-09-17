@@ -89,8 +89,12 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
   // Cloud Auto-Sync if enabled. This performs a real upload; it must never
   // stamp SYNCED without one, or merchants believe they have an offsite copy
   // that does not exist.
+  // A store that drops to Free keeps its stored connection, so the entitlement
+  // is re-checked on every run rather than trusted from the saved flags.
+  const cloudSyncAccess = await checkFeatureAccess(shop, "cloudSync");
+
   let cloudSync = null;
-  if (settings.cloudSyncConnected && settings.cloudSyncAutoUpload && rp) {
+  if (cloudSyncAccess.allowed && settings.cloudSyncConnected && settings.cloudSyncAutoUpload && rp) {
     try {
       cloudSync = await syncRestorePointToCloud(shop, rp.id);
       if (!cloudSync.success) {

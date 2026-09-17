@@ -8,6 +8,7 @@ import {
   restoreThemeFilesWithSafety,
   restoreCollection,
   restorePage,
+  restoreMenu,
   restoreArticle,
   restoreProductMetafields,
   computeDiffLines,
@@ -412,6 +413,55 @@ export const action = async ({ request, params }) => {
       };
     }
 
+    if (intent === "restore_menu") {
+      const menuIndex = parseInt(formData.get("menuIndex"), 10);
+      const restorePoint = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+      });
+      const menus = Array.isArray(restorePoint?.menuData) ? restorePoint.menuData : [];
+      const target = menus[menuIndex];
+      if (!target) return { success: false, message: "Navigation menu not found in snapshot." };
+      const res = await restoreMenu(admin, target);
+      if (res.success) {
+        await logAudit(shop, restorePerm.actor, "MENU_RESTORED", {
+          resourceType: "Menu",
+          resourceId: target.id || String(menuIndex),
+          details: { title: target.title, handle: target.handle },
+          request,
+        });
+        return { success: true, message: `Navigation menu "${target.title}" successfully restored.` };
+      }
+      return res;
+    }
+
+    if (intent === "restore_all_menus") {
+      const restorePoint = await prisma.restorePoint.findFirst({
+        where: { id: rpId, shop },
+      });
+      const menus = Array.isArray(restorePoint?.menuData) ? restorePoint.menuData : [];
+      if (menus.length === 0) return { success: false, message: "No navigation menus found in snapshot." };
+      let successCount = 0;
+      let failedCount = 0;
+      for (const target of menus) {
+        const res = await restoreMenu(admin, target);
+        if (res.success) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      }
+      await logAudit(shop, restorePerm.actor, "MENUS_BULK_RESTORED", {
+        resourceType: "Menu",
+        resourceId: String(rpId),
+        details: { total: menus.length, successCount, failedCount },
+        request,
+      });
+      return {
+        success: successCount > 0,
+        message: `Restored ${successCount} menus successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
+      };
+    }
+
     if (intent === "restore_all_articles") {
       const restorePoint = await prisma.restorePoint.findFirst({
         where: { id: rpId, shop },
@@ -658,6 +708,7 @@ export default function RestorePointDetail() {
     themeDiffFiles,
     collectionData,
     pageData,
+    menuData = [],
     articleData,
   } = useLoaderData();
   const fetcher = useFetcher();
@@ -685,24 +736,24 @@ export default function RestorePointDetail() {
     const type = restorePoint.backupType;
     if (type === "THEMES" && themeData?.activeTheme) return "theme";
     if (type === "COLLECTIONS" && collectionData.length > 0) return "collections";
-    if (type === "PAGES" && pageData.length > 0) return "pages";
+    if (type === "PAGES" && (pageData.length > 0 || menuData.length > 0)) return "pages";
     if (type === "BLOGS" && (articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)) return "articles";
     if (differences.length > 0) return "products";
     if (themeData?.activeTheme) return "theme";
     if (savedCount > 0) return "products";
     if (collectionData.length > 0) return "collections";
-    if (pageData.length > 0) return "pages";
+    if (pageData.length > 0 || menuData.length > 0) return "pages";
     if (articleData?.articles?.length > 0) return "articles";
     return "products";
   });
 
   const tabs = [
     ...(themeData?.activeTheme ? [{ id: "theme", label: "Theme Code", count: filesList.length }] : []),
-    ...((savedCount > 0 || differences.length > 0 || ["FULL", "PRODUCTS"].includes(restorePoint.backupType) || (!themeData?.activeTheme && collectionData.length === 0 && pageData.length === 0 && (!articleData?.articles || articleData.articles.length === 0)))
+    ...((savedCount > 0 || differences.length > 0 || ["FULL", "PRODUCTS"].includes(restorePoint.backupType) || (!themeData?.activeTheme && collectionData.length === 0 && pageData.length === 0 && menuData.length === 0 && (!articleData?.articles || articleData.articles.length === 0)))
       ? [{ id: "products", label: "Products", count: differences.length }]
       : []),
     ...(collectionData.length > 0 ? [{ id: "collections", label: "Collections", count: collectionData.length }] : []),
-    ...(pageData.length > 0 ? [{ id: "pages", label: "Pages & Menus", count: pageData.length }] : []),
+    ...(pageData.length > 0 || menuData.length > 0 ? [{ id: "pages", label: "Pages & Menus", count: pageData.length + menuData.length }] : []),
     ...((articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)
       ? [{ id: "articles", label: "Articles", count: articleData.articles?.length || 0 }]
       : []),
@@ -751,6 +802,9 @@ export default function RestorePointDetail() {
             )}
             {pageData.length > 0 && (
               <span className="rv-badge rv-badge-neutral rv-badge-sm">{pageData.length} Pages</span>
+            )}
+            {menuData.length > 0 && (
+              <span className="rv-badge rv-badge-neutral rv-badge-sm">{menuData.length} Menus</span>
             )}
             {articleData?.articles?.length > 0 && (
               <span className="rv-badge rv-badge-success rv-badge-sm">{articleData.articles.length} Articles</span>
@@ -1419,117 +1473,213 @@ export default function RestorePointDetail() {
       )}
 
       {/* ── Pages Backup Section ── */}
-      {activeTab === "pages" && pageData.length > 0 && (
-        <div className="rv-card">
-          <div className="rv-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
-            <div>
-              <h3 className="rv-card-title">
-                <span>Protected Content Pages ({pageData.length})</span>
-              </h3>
-              <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
-                Pages, handles, and content preserved in this snapshot.
-              </p>
-            </div>
-            <button
-              type="button"
-              disabled={isRestoring}
-              onClick={() => {
-                setConfirmDialog({
-                  title: `Restore All ${pageData.length} Pages`,
-                  message: `Are you sure you want to restore all ${pageData.length} pages to their snapshot state in Shopify?`,
-                  dangerNote: "Page content and metadata will be updated in Shopify.",
-                  confirmLabel: `Restore All (${pageData.length}) Pages`,
-                  tone: "primary",
-                  onConfirm: () => {
-                    fetcher.submit({ intent: "restore_all_pages" }, { method: "POST" });
-                  },
-                });
-              }}
-              className="rv-btn rv-btn-primary rv-btn-md"
-            >
-              <span>{isRestoring && fetcher.formData?.get("intent") === "restore_all_pages" ? "Restoring All..." : `Restore All (${pageData.length}) Pages`}</span>
-            </button>
-          </div>
-          <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
-            <table className="rv-table">
-              <thead>
-                <tr>
-                  <th>Page Title</th>
-                  <th>Handle</th>
-                  <th>Assigned Template</th>
-                  <th>Snapshot Content</th>
-                  <th style={{ textAlign: "right" }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageData.map((p, idx) => {
-                  const plainText = (p.body || p.bodyHtml || "").replace(/<[^>]*>/g, "").trim();
-                  const hasContent = Boolean(plainText || p.body || p.bodyHtml);
-
-                  return (
-                    <tr key={p.id || idx}>
-                      <td style={{ fontWeight: 600 }}>{p.title}</td>
-                      <td style={{ color: "var(--rv-text-subdued)" }}>/{p.handle}</td>
-                      <td>
-                        <span className={`rv-badge rv-badge-sm ${p.templateSuffix ? "rv-badge-info" : "rv-badge-neutral"}`}>
-                          {p.templateSuffix ? p.templateSuffix : "Default page"}
-                        </span>
-                      </td>
-                      <td>
-                        {hasContent ? (
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                            <span className="rv-badge rv-badge-success rv-badge-sm">
-                              Saved ({plainText.length} chars)
-                            </span>
-                            <span
-                              style={{
-                                maxWidth: "260px",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                fontSize: "12px",
-                                color: "var(--rv-text-subdued)",
-                              }}
-                              title={plainText}
-                            >
-                              {plainText || "HTML content"}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ opacity: 0.7 }}>
-                            Empty (No Content in Snapshot)
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ textAlign: "right" }}>
-                        <button
-                          type="button"
-                          disabled={isRestoring}
-                          onClick={() => {
-                            setConfirmDialog({
-                              title: `Restore Page: "${p.title}"`,
-                              message: `Are you sure you want to restore content page "${p.title}" in Shopify?`,
-                              dangerNote: hasContent
-                                ? "Page content and settings will be restored to their snapshot state."
-                                : "Warning: This snapshot has empty content for this page.",
-                              confirmLabel: "Restore Page",
-                              tone: "primary",
-                              onConfirm: () => {
-                                fetcher.submit({ intent: "restore_page", pageIndex: String(idx) }, { method: "POST" });
-                              },
-                            });
-                          }}
-                          className="rv-btn rv-btn-secondary rv-btn-sm"
-                        >
-                          <span>Restore Page</span>
-                        </button>
-                      </td>
+      {activeTab === "pages" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {pageData.length > 0 && (
+            <div className="rv-card">
+              <div className="rv-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+                <div>
+                  <h3 className="rv-card-title">
+                    <span>Protected Content Pages ({pageData.length})</span>
+                  </h3>
+                  <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                    Pages, handles, and content preserved in this snapshot.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={isRestoring}
+                  onClick={() => {
+                    setConfirmDialog({
+                      title: `Restore All ${pageData.length} Pages`,
+                      message: `Are you sure you want to restore all ${pageData.length} pages to their snapshot state in Shopify?`,
+                      dangerNote: "Page content and metadata will be updated in Shopify.",
+                      confirmLabel: `Restore All (${pageData.length}) Pages`,
+                      tone: "primary",
+                      onConfirm: () => {
+                        fetcher.submit({ intent: "restore_all_pages" }, { method: "POST" });
+                      },
+                    });
+                  }}
+                  className="rv-btn rv-btn-primary rv-btn-md"
+                >
+                  <span>{isRestoring && fetcher.formData?.get("intent") === "restore_all_pages" ? "Restoring All..." : `Restore All (${pageData.length}) Pages`}</span>
+                </button>
+              </div>
+              <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+                <table className="rv-table">
+                  <thead>
+                    <tr>
+                      <th>Page Title</th>
+                      <th>Handle</th>
+                      <th>Assigned Template</th>
+                      <th>Snapshot Content</th>
+                      <th style={{ textAlign: "right" }}>Action</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody>
+                    {pageData.map((p, idx) => {
+                      const plainText = (p.body || p.bodyHtml || "").replace(/<[^>]*>/g, "").trim();
+                      const hasContent = Boolean(plainText || p.body || p.bodyHtml);
+
+                      return (
+                        <tr key={p.id || idx}>
+                          <td style={{ fontWeight: 600 }}>{p.title}</td>
+                          <td style={{ color: "var(--rv-text-subdued)" }}>/{p.handle}</td>
+                          <td>
+                            <span className={`rv-badge rv-badge-sm ${p.templateSuffix ? "rv-badge-info" : "rv-badge-neutral"}`}>
+                              {p.templateSuffix ? p.templateSuffix : "Default page"}
+                            </span>
+                          </td>
+                          <td>
+                            {hasContent ? (
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                <span className="rv-badge rv-badge-success rv-badge-sm">
+                                  Saved ({plainText.length} chars)
+                                </span>
+                                <span
+                                  style={{
+                                    maxWidth: "260px",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                    fontSize: "12px",
+                                    color: "var(--rv-text-subdued)",
+                                  }}
+                                  title={plainText}
+                                >
+                                  {plainText || "HTML content"}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ opacity: 0.7 }}>
+                                Empty (No Content in Snapshot)
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ textAlign: "right" }}>
+                            <button
+                              type="button"
+                              disabled={isRestoring}
+                              onClick={() => {
+                                setConfirmDialog({
+                                  title: `Restore Page: "${p.title}"`,
+                                  message: `Are you sure you want to restore content page "${p.title}" in Shopify?`,
+                                  dangerNote: hasContent
+                                    ? "Page content and settings will be restored to their snapshot state."
+                                    : "Warning: This snapshot has empty content for this page.",
+                                  confirmLabel: "Restore Page",
+                                  tone: "primary",
+                                  onConfirm: () => {
+                                    fetcher.submit({ intent: "restore_page", pageIndex: String(idx) }, { method: "POST" });
+                                  },
+                                });
+                              }}
+                              className="rv-btn rv-btn-secondary rv-btn-sm"
+                            >
+                              <span>Restore Page</span>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {menuData.length > 0 && (
+            <div className="rv-card">
+              <div className="rv-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+                <div>
+                  <h3 className="rv-card-title">
+                    <span>Protected Navigation Menus ({menuData.length})</span>
+                  </h3>
+                  <p style={{ margin: "4px 0 0", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                    Navigation menus, handles, and link structures preserved in this snapshot.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={isRestoring}
+                  onClick={() => {
+                    setConfirmDialog({
+                      title: `Restore All ${menuData.length} Navigation Menus`,
+                      message: `Are you sure you want to restore all ${menuData.length} navigation menus to their snapshot state in Shopify?`,
+                      dangerNote: "Existing menu items and links will be updated or recreated in Shopify.",
+                      confirmLabel: `Restore All (${menuData.length}) Menus`,
+                      tone: "primary",
+                      onConfirm: () => {
+                        fetcher.submit({ intent: "restore_all_menus" }, { method: "POST" });
+                      },
+                    });
+                  }}
+                  className="rv-btn rv-btn-primary rv-btn-md"
+                >
+                  <span>{isRestoring && fetcher.formData?.get("intent") === "restore_all_menus" ? "Restoring All..." : `Restore All (${menuData.length}) Menus`}</span>
+                </button>
+              </div>
+              <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
+                <table className="rv-table">
+                  <thead>
+                    <tr>
+                      <th>Menu Title</th>
+                      <th>Handle</th>
+                      <th>Items Count</th>
+                      <th>Hierarchy Preview</th>
+                      <th style={{ textAlign: "right" }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {menuData.map((m, idx) => {
+                      const items = Array.isArray(m.items) ? m.items : [];
+                      const itemTitles = items.map((it) => it.title).filter(Boolean);
+                      const previewStr = itemTitles.slice(0, 5).join(" · ") + (itemTitles.length > 5 ? ` +${itemTitles.length - 5} more` : "");
+
+                      return (
+                        <tr key={m.id || idx}>
+                          <td style={{ fontWeight: 600 }}>{m.title}</td>
+                          <td style={{ color: "var(--rv-text-subdued)" }}>{m.handle || "default"}</td>
+                          <td>
+                            <span className="rv-badge rv-badge-info rv-badge-sm">
+                              {items.length} items
+                            </span>
+                          </td>
+                          <td>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                              {previewStr || "Empty menu"}
+                            </span>
+                          </td>
+                          <td style={{ textAlign: "right" }}>
+                            <button
+                              type="button"
+                              disabled={isRestoring}
+                              onClick={() => {
+                                setConfirmDialog({
+                                  title: `Restore Navigation Menu: "${m.title}"`,
+                                  message: `Are you sure you want to recreate or update menu "${m.title}" in Shopify?`,
+                                  dangerNote: "Menu hierarchy and links will be updated in Shopify.",
+                                  confirmLabel: "Restore Menu",
+                                  tone: "primary",
+                                  onConfirm: () => {
+                                    fetcher.submit({ intent: "restore_menu", menuIndex: String(idx) }, { method: "POST" });
+                                  },
+                                });
+                              }}
+                              className="rv-btn rv-btn-secondary rv-btn-sm"
+                            >
+                              <span>Restore Menu</span>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

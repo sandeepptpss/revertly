@@ -23,6 +23,7 @@ export const loader = async ({ request }) => {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": `attachment; filename="revertly-orders-vault-${cleanShop}-${dateStr}.csv"`,
+        "Access-Control-Expose-Headers": "Content-Disposition",
         "Cache-Control": "no-store, no-cache, must-revalidate",
       },
     });
@@ -99,6 +100,7 @@ export const loader = async ({ request }) => {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Content-Disposition": `attachment; filename="revertly-vault-evidence-${cleanShop}-${dateStr}.json"`,
+      "Access-Control-Expose-Headers": "Content-Disposition",
       "Cache-Control": "no-store, no-cache, must-revalidate",
     },
   });

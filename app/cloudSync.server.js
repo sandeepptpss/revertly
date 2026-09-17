@@ -9,6 +9,7 @@
  *  - Supports both manual sync and auto-upload after backups
  */
 import prisma from "./db.server.js";
+import { checkFeatureAccess } from "./billing.server.js";
 
 const GOOGLE_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files";
 const GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
@@ -39,6 +40,22 @@ export const CLOUD_PROVIDERS = {
     clientSecretEnv: "DROPBOX_APP_SECRET",
   },
 };
+
+/**
+ * Offsite Cloud Storage Sync is a paid-plan entitlement (`cloudSync`).
+ *
+ * The gate lives here rather than in each route because upload, list and import
+ * are reachable from four places — the Settings page, both restore-point views,
+ * the /api/cloud-sync endpoint and the automated scheduler. Guarding the
+ * transport entry points means a Free store cannot reach a provider through any
+ * of them, including a hand-crafted POST to the API route.
+ */
+export const CLOUD_SYNC_UPGRADE_MESSAGE =
+  "Offsite Cloud Storage Sync (Google Drive & Dropbox) is not included in the Free plan. Upgrade to Starter, Growth, Business, or Enterprise in Plans & Billing to keep backups in your own cloud storage.";
+
+export async function checkCloudSyncAccess(shop) {
+  return checkFeatureAccess(shop, "cloudSync");
+}
 
 /** Resolves a provider descriptor, or null for unknown/NONE. */
 export function getProvider(providerId) {
@@ -318,6 +335,11 @@ async function uploadToDropbox(accessToken, folder, fileName, content) {
  * Lists backup files from a cloud provider folder
  */
 export async function listCloudBackups(shop) {
+  const access = await checkCloudSyncAccess(shop);
+  if (!access.allowed) {
+    return { success: false, error: CLOUD_SYNC_UPGRADE_MESSAGE, upgradeRequired: true };
+  }
+
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
   if (!settings?.cloudSyncConnected) {
     return { success: false, error: "Cloud sync not connected" };
@@ -419,6 +441,14 @@ export async function downloadCloudBackup(shop, fileId) {
  * Syncs a specific restore point to the connected cloud provider
  */
 export async function syncRestorePointToCloud(shop, restorePointId) {
+  // Checked before anything is written, and deliberately *not* inside the try
+  // below: a plan that does not include cloud sync is not a failed upload, so
+  // the restore point must not be stamped FAILED over it.
+  const access = await checkCloudSyncAccess(shop);
+  if (!access.allowed) {
+    return { success: false, error: CLOUD_SYNC_UPGRADE_MESSAGE, upgradeRequired: true };
+  }
+
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
   if (!settings?.cloudSyncConnected) {
     return { success: false, error: "Cloud sync is not connected. Connect a provider in Settings." };
@@ -496,6 +526,11 @@ export async function syncRestorePointToCloud(shop, restorePointId) {
  * Imports a backup from cloud storage and creates a restore point from it
  */
 export async function importBackupFromCloud(shop, fileId) {
+  const access = await checkCloudSyncAccess(shop);
+  if (!access.allowed) {
+    throw new Error(CLOUD_SYNC_UPGRADE_MESSAGE);
+  }
+
   const data = await downloadCloudBackup(shop, fileId);
   if (!data?.restorePoint) {
     throw new Error("Invalid backup file format — missing restorePoint");

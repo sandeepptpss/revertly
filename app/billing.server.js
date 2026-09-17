@@ -41,6 +41,7 @@ export const PLAN_LIMITS = {
     circuitBreaker: false,
     slack: false,
     bulkRollback: false,
+    cloudSync: false,
   },
   starter: {
     products: 1000,
@@ -52,6 +53,7 @@ export const PLAN_LIMITS = {
     circuitBreaker: false,
     slack: false,
     bulkRollback: false,
+    cloudSync: true,
   },
   growth: {
     products: 5000,
@@ -63,6 +65,7 @@ export const PLAN_LIMITS = {
     circuitBreaker: false,
     slack: false,
     bulkRollback: true,
+    cloudSync: true,
   },
   business: {
     products: 20000,
@@ -74,6 +77,7 @@ export const PLAN_LIMITS = {
     circuitBreaker: true,
     slack: true,
     bulkRollback: true,
+    cloudSync: true,
   },
   enterprise: {
     products: Infinity,
@@ -85,6 +89,7 @@ export const PLAN_LIMITS = {
     circuitBreaker: true,
     slack: true,
     bulkRollback: true,
+    cloudSync: true,
   },
 };
 

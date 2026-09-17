@@ -61,6 +61,7 @@ export const loader = async ({ request }) => {
       headers: {
         "Content-Type": contentType,
         "Content-Disposition": `attachment; filename="${filename}"`,
+        "Access-Control-Expose-Headers": "Content-Disposition",
         "Cache-Control": "no-store, no-cache, must-revalidate",
       },
     });

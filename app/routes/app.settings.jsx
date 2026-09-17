@@ -7,7 +7,11 @@ import { getThemeEmbedStatus } from "../themeEmbed.server.js";
 import { EMBED_ACTIVE, EMBED_UNKNOWN } from "../monitoring.constants.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { checkFeatureAccess } from "../billing.server.js";
-import { getCloudProviderStatus, listCloudBackups } from "../cloudSync.server.js";
+import {
+  getCloudProviderStatus,
+  listCloudBackups,
+  CLOUD_SYNC_UPGRADE_MESSAGE,
+} from "../cloudSync.server.js";
 import { createLaunchToken } from "../cloudOAuth.server.js";
 import { checkPermission, PERMISSIONS } from "../team.server.js";
 import {
@@ -36,10 +40,11 @@ export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const [settings, cbAccess, slackAccess, lastChangeEvent] = await Promise.all([
+  const [settings, cbAccess, slackAccess, cloudAccess, lastChangeEvent] = await Promise.all([
     getOrCreateSettings(shop),
     checkFeatureAccess(shop, "circuitBreaker"),
     checkFeatureAccess(shop, "slack"),
+    checkFeatureAccess(shop, "cloudSync"),
     // Real evidence that the webhook listeners are alive, rather than a
     // hardcoded "operating normally" claim.
     prisma.changeEvent.findFirst({
@@ -52,11 +57,14 @@ export const loader = async ({ request }) => {
   // Drives an honest "needs configuration" state instead of a Connect button
   // that could only fail. The missing-env detail is for operators only — the
   // merchant-facing banner must not mention server configuration.
+  // No launch URL without the entitlement: /auth/cloud/:provider refuses the
+  // same case, so offering the link could only end in a redirect back here.
   const cloudProviders = getCloudProviderStatus().map((p) => ({
     ...p,
-    launchUrl: p.configured
-      ? `/auth/cloud/${p.id.toLowerCase()}?token=${createLaunchToken(shop, p.id)}`
-      : null,
+    launchUrl:
+      p.configured && cloudAccess.allowed
+        ? `/auth/cloud/${p.id.toLowerCase()}?token=${createLaunchToken(shop, p.id)}`
+        : null,
   }));
   for (const p of cloudProviders) {
     if (!p.configured) {
@@ -83,6 +91,7 @@ export const loader = async ({ request }) => {
     settings,
     hasCircuitBreakerAccess: cbAccess.allowed,
     hasSlackAccess: slackAccess.allowed,
+    hasCloudSyncAccess: cloudAccess.allowed,
     plan: cbAccess.plan,
     themeEmbedStatus: themeEmbed.status,
     activeThemeName: themeEmbed.themeName || "your live theme",
@@ -218,6 +227,11 @@ export const action = async ({ request }) => {
     }
 
     if (intent === "testCloudSync") {
+      const cloudCheck = await checkFeatureAccess(shop, "cloudSync");
+      if (!cloudCheck.allowed) {
+        return { success: false, message: CLOUD_SYNC_UPGRADE_MESSAGE };
+      }
+
       // A real round-trip against the provider, so a failure is reported as one.
       const res = await listCloudBackups(shop);
       if (!res.success) {
@@ -231,9 +245,10 @@ export const action = async ({ request }) => {
       };
     }
 
-    const [cbCheck, slackCheck, existing] = await Promise.all([
+    const [cbCheck, slackCheck, cloudCheck, existing] = await Promise.all([
       checkFeatureAccess(shop, "circuitBreaker"),
       checkFeatureAccess(shop, "slack"),
+      checkFeatureAccess(shop, "cloudSync"),
       getOrCreateSettings(shop),
     ]);
 
@@ -301,9 +316,15 @@ export const action = async ({ request }) => {
       ? (formData.get("cloudSyncFolder")?.trim() || "Revertly_Backups")
       : (existing.cloudSyncFolder || "Revertly_Backups");
 
-    const cloudSyncAutoUpload = formData.has("cloudSyncAutoUpload")
-      ? formData.get("cloudSyncAutoUpload") === "true"
-      : existing.cloudSyncAutoUpload;
+    // Forced off without the entitlement, exactly as circuitBreakerEnabled is
+    // above. A store that downgrades must not keep a saved flag that reads as
+    // "your backups are going offsite" when the scheduler will no longer send
+    // them.
+    const cloudSyncAutoUpload = cloudCheck.allowed
+      ? (formData.has("cloudSyncAutoUpload")
+        ? formData.get("cloudSyncAutoUpload") === "true"
+        : existing.cloudSyncAutoUpload)
+      : false;
 
     const nextAutoBackupAt = computeNextAutoBackup(autoBackupSchedule, autoBackupTime);
 
@@ -390,6 +411,7 @@ export default function Settings() {
     settings,
     hasCircuitBreakerAccess = false,
     hasSlackAccess = false,
+    hasCloudSyncAccess = false,
     plan = "free",
     themeEmbedStatus = EMBED_UNKNOWN,
     activeThemeName = "your live theme",
@@ -431,11 +453,11 @@ export default function Settings() {
       autoBackupSchedule: settings?.autoBackupSchedule || "DAILY",
       autoBackupTime: settings?.autoBackupTime || "02:00",
       cloudSyncFolder: settings?.cloudSyncFolder || "Revertly_Backups",
-      cloudSyncAutoUpload: settings?.cloudSyncAutoUpload ?? false,
+      cloudSyncAutoUpload: Boolean(hasCloudSyncAccess && settings?.cloudSyncAutoUpload),
       bulkThreshold: Number(settings?.bulkThreshold ?? 20),
       bulkWindowMinutes: Number(settings?.bulkWindowMinutes ?? 10),
     }),
-    [settings, hasCircuitBreakerAccess],
+    [settings, hasCircuitBreakerAccess, hasCloudSyncAccess],
   );
 
   // Navigation tab
@@ -602,7 +624,7 @@ export default function Settings() {
       title: "Data & Backups",
       items: [
         { id: "schedules", label: "Scheduled Backups", icon: ClockIcon, statusBadge: savedCadenceBadge, statusTone: saved.autoBackupSchedule !== "OFF" ? "success" : "neutral" },
-        { id: "cloud", label: "Cloud Storage Sync", icon: CloudUploadIcon, statusBadge: isCloudConnected ? (activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox") : "Not Linked", statusTone: isCloudConnected ? "success" : "warning" },
+        { id: "cloud", label: "Cloud Storage Sync", icon: CloudUploadIcon, statusBadge: !hasCloudSyncAccess ? "Paid Plans" : isCloudConnected ? (activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox") : "Not Linked", statusTone: !hasCloudSyncAccess ? "neutral" : isCloudConnected ? "success" : "warning" },
       ],
     },
     {
@@ -1086,12 +1108,46 @@ export default function Settings() {
                       </p>
                     </div>
                   </div>
-                  <span className={`rv-badge ${isCloudConnected ? "rv-badge-success" : "rv-badge-warning"}`}>
-                    {isCloudConnected ? `${activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} Linked` : "Not Linked"}
+                  <span className={`rv-badge ${!hasCloudSyncAccess ? "rv-badge-neutral" : isCloudConnected ? "rv-badge-success" : "rv-badge-warning"}`}>
+                    {!hasCloudSyncAccess
+                      ? "Paid Plans"
+                      : isCloudConnected
+                        ? `${activeCloudProvider === "GOOGLE_DRIVE" ? "Google Drive" : "Dropbox"} Linked` : "Not Linked"}
                   </span>
                 </div>
 
                 <div className="rv-card-body">
+                  {!hasCloudSyncAccess && (
+                    <div
+                      style={{
+                        background: "var(--rv-warning-surface)",
+                        border: "1px solid var(--rv-warning-border)",
+                        borderRadius: "var(--rv-radius-sm)",
+                        padding: "14px 18px",
+                        fontSize: "13px",
+                        color: "var(--rv-text)",
+                        marginBottom: "20px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "14px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <AlertTriangleIcon size={18} style={{ color: "var(--rv-warning)", flexShrink: 0 }} />
+                        <span>
+                          Offsite Cloud Storage Sync to Google Drive and Dropbox is included on every
+                          paid plan, from <strong>Starter</strong> upwards. Your backups are still
+                          stored safely in Revertly on the Free plan.
+                        </span>
+                      </div>
+                      <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+                        Upgrade to Starter ($9/mo)
+                      </Link>
+                    </div>
+                  )}
+
                   {isCloudConnected ? (
                     <div>
                       {/* Connected State Box */}
@@ -1143,7 +1199,7 @@ export default function Settings() {
                             // These branches return before the save path, so an
                             // invalid number elsewhere on the form must not block them.
                             formNoValidate
-                            disabled={fetcher.state !== "idle"}
+                            disabled={fetcher.state !== "idle" || !hasCloudSyncAccess}
                             className="rv-btn rv-btn-secondary rv-btn-sm"
                           >
                             <RefreshCwIcon size={14} />
@@ -1201,11 +1257,12 @@ export default function Settings() {
                               Automatically push every new restore point to cloud storage.
                             </span>
                           </div>
-                          <div className="rv-switch">
+                          <div className={`rv-switch ${!hasCloudSyncAccess ? "disabled" : ""}`}>
                             <input
                               id="set-cloud-autoupload"
                               type="checkbox"
                               checked={cloudSyncAutoUpload}
+                              disabled={!hasCloudSyncAccess}
                               onChange={(e) => setCloudSyncAutoUpload(e.target.checked)}
                             />
                             <label htmlFor="set-cloud-autoupload" className="rv-switch-slider">
@@ -1280,7 +1337,11 @@ export default function Settings() {
                         })}
                       </fieldset>
 
-                      {/* Real OAuth handoff */}
+                      {/* Real OAuth handoff. Suppressed without the entitlement:
+                          the upgrade notice above the provider cards already
+                          explains why, and /auth/cloud/:provider would only
+                          redirect straight back here. */}
+                      {hasCloudSyncAccess && (
                       <div
                         style={{
                           padding: "16px 20px",
@@ -1336,6 +1397,7 @@ export default function Settings() {
                           </Banner>
                         )}
                       </div>
+                      )}
                     </div>
                   )}
                 </div>
