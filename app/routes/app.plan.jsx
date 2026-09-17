@@ -38,6 +38,26 @@ function formatDate(d) {
 }
 
 // ── Plan definitions ────────────────────────────────────────────────────────
+//
+// Every line below must correspond to something the app actually enforces.
+// The numeric allowances mirror PLAN_LIMITS in billing.server.js, and each
+// capability line maps to a boolean flag there:
+//
+//   cloudSync        → Starter and above  (cloudSync.server.js, auth.cloud.$provider)
+//   bulkRollback     → Growth and above   (app.incidents_.$id.jsx)
+//   vaultOrders>0    → Growth and above   (checkVaultAccess, app.vault.jsx)
+//   marketingBackup  → Growth and above   (checkMarketingBackupAccess)
+//   marketingProfiles→ Growth and above   (checkMarketingBackupAccess)
+//   themes           → Business and above (restore-points, scheduler)
+//   circuitBreaker   → Business and above (monitor.server.js)
+//   slack            → Business and above (app.settings.jsx)
+//   marketingFlows   → Business and above (checkMarketingBackupAccess)
+//
+// Anything the app ships without a plan gate — scheduled backups, incidents,
+// uptime monitoring, health checks, team roles, the audit log, offline
+// JSON/CSV export and import — belongs on the Free card, because that is
+// genuinely where a merchant gets it. Adding an ungated capability to a paid
+// card only would advertise a lock that does not exist.
 const PLANS = [
   {
     id: "free",
@@ -52,7 +72,14 @@ const PLANS = [
       "7 days change history retention",
       "Up to 2 restore points",
       "1 active detection rule",
-      "Manual single-product rollback",
+      "Manual single-product rollback & deleted product recovery",
+      "Scheduled backups — daily, twice-daily or weekly",
+      "Products, Collections, Pages, Menus & Blog backup",
+      "Email drift & bulk-anomaly alerts",
+      "Incidents, Activity & Rollback History logs",
+      "Uptime Monitoring & Store Health Check",
+      "Team roles, permissions & audit log",
+      "Offline JSON & CSV export and import",
     ],
   },
   {
@@ -64,13 +91,14 @@ const PLANS = [
     subtext: "14-day free trial",
     footerText: "For boutiques & small stores",
     features: [
+      "Everything in Free, plus:",
       "Up to 1,000 products monitored",
       "30 days change history retention",
       "Up to 10 restore points",
       "3 active detection rules",
-      "Single & multi-product rollback",
-      "Email catalog drift alerts",
-      "Automated daily catalog sync",
+      "Offsite Cloud Backup — Google Drive & Dropbox",
+      "Auto-push every new snapshot to your cloud",
+      "Restore directly from a Drive or Dropbox archive",
     ],
   },
   {
@@ -82,16 +110,18 @@ const PLANS = [
     subtext: "14-day free trial",
     footerText: "For growing retail stores",
     features: [
+      "Everything in Starter, plus:",
       "Up to 5,000 products monitored",
       "90 days change history retention",
       "Up to 50 restore points",
       "10 active detection rules",
-      "Bulk product rollback (CSV undo)",
-      "1-Click Deleted Product Recovery",
-      "Collections & Smart Rules Backup",
+      "Bulk multi-product incident rollback (CSV undo)",
       "Orders & Customers Vault (2,500 orders)",
-      "Accountant-ready Tax CSV export",
-      "Email & Audit log reports",
+      "Klaviyo & Mailchimp Backup — 10,000 subscriber profiles",
+      "Lists, audiences, segments & profile fields captured",
+      "Restore a deleted list or re-import lost subscribers",
+      "Accountant-ready Tax Audit CSV export",
+      "Chargeback Dispute Evidence Pack (JSON)",
     ],
   },
   {
@@ -103,15 +133,18 @@ const PLANS = [
     subtext: "14-day free trial",
     footerText: "For scaling brands & agencies",
     features: [
+      "Everything in Growth, plus:",
       "Up to 20,000 products monitored",
       "180 days (6 months) retention",
       "Up to 100 restore points",
+      "Unlimited detection rules",
       "Full Store Themes & Liquid Code Backup",
       "1-Click Theme Code & Asset Rollback",
+      "Themes captured in every scheduled backup",
       "Orders & Customers Vault (15,000 orders)",
-      "Chargeback Dispute Proof Pack (JSON)",
-      "Emergency Circuit Breaker (Auto-Draft)",
-      "Unlimited detection rules",
+      "Klaviyo & Mailchimp Backup — 50,000 subscriber profiles",
+      "Klaviyo Flows & Mailchimp Journeys automation backup",
+      "Emergency Circuit Breaker (Auto-Draft / Auto-Revert)",
       "Real-time Slack Webhook Alerts",
     ],
   },
@@ -124,15 +157,14 @@ const PLANS = [
     subtext: "14-day free trial",
     footerText: "For Shopify Plus & high volume",
     features: [
+      "Everything in Business, plus:",
       "Unlimited products monitored",
       "365 days (1 full year) retention",
       "Unlimited restore points",
       "Unlimited Themes, Code & Assets",
       "Unlimited Orders & Customers Vault",
-      "Dedicated GDPR & Tax compliance exports",
-      "High-speed GraphQL rate allocation",
-      "Multi-store staging & priority SLA",
-      "Priority 24/7 Developer Support",
+      "Unlimited Klaviyo & Mailchimp profiles, flows & journeys",
+      "Priority support queue for your store",
     ],
   },
 ];
@@ -854,6 +886,23 @@ export default function Plan() {
               {limits.retentionDays} Days
             </strong>
           </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Offsite Cloud Backup</div>
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+              {limits.cloudSync ? "Google Drive & Dropbox" : "Not in Plan"}
+            </strong>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Email Marketing Backup</div>
+            {/* The profile allowance, not a usage count: nothing in the app
+                stores synced ESP profiles yet, so a "0 / 10,000" here would
+                report a real figure the store has no way to move. */}
+            <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
+              {limits.marketingBackup
+                ? `Klaviyo & Mailchimp · ${limits.marketingProfiles === Infinity ? "Unlimited" : limits.marketingProfiles.toLocaleString()} profiles`
+                : "Not in Plan"}
+            </strong>
+          </div>
         </div>
       </div>
 
@@ -863,7 +912,11 @@ export default function Plan() {
           Choose Your Store Protection Plan
         </h3>
         <p style={{ fontSize: "13px", color: "var(--rv-text-subdued)", margin: 0 }}>
-          Scale your catalog guardrails as your store expands. All paid plans include a 14-day free trial. Upgrade, downgrade, or cancel anytime.
+          Scale your catalog guardrails as your store expands.{" "}
+          {hasUsedTrial
+            ? "Your store has already used its one free trial, so a new plan is billed from day one."
+            : "All paid plans include a 14-day free trial."}{" "}
+          Upgrade, downgrade, or cancel anytime.
         </p>
       </div>
 
@@ -970,8 +1023,23 @@ export default function Plan() {
           const isAnnualSelected = billingCycle === "annual";
           const isCurrentPlanId = activePlan === plan.id;
           const isCurrentInterval = activeInterval === (isAnnualSelected ? "ANNUAL" : "EVERY_30_DAYS");
-          const isExactCurrent = isCurrentPlanId && (plan.id === "free" || isCurrentInterval);
-          const isSameTierDifferentCycle = isCurrentPlanId && !isCurrentInterval && plan.id !== "free";
+
+          const isGrowth = plan.id === "growth";
+          const isBusiness = plan.id === "business";
+          const isEnterprise = plan.id === "enterprise";
+          const isFreeGrowthCard = Boolean(activeFreeGrowth) && isGrowth;
+
+          // A promotional Growth seat has no billing interval to switch — it is
+          // an entitlement, not a subscription. Treating the Yearly toggle as a
+          // "different cycle" on this card offered "Switch to Yearly" beside a
+          // $0 / FREE PROMOTION price, and submitting it opened a real annual
+          // Growth charge for the plan the merchant already holds free. The
+          // card therefore stays current on both toggles; Business and
+          // Enterprise remain genuine paid upgrades.
+          const isExactCurrent =
+            isCurrentPlanId && (plan.id === "free" || isCurrentInterval || isFreeGrowthCard);
+          const isSameTierDifferentCycle =
+            isCurrentPlanId && !isCurrentInterval && plan.id !== "free" && !isFreeGrowthCard;
 
           // True only for the plan the store is actually billed for. For a
           // promotional Growth store that is the Free card, which must not
@@ -980,11 +1048,6 @@ export default function Plan() {
           const planOrder = tier?.order ?? 0;
           const isUpgrade = planOrder > billedOrder;
           const isDowngrade = planOrder < billedOrder;
-
-          const isGrowth = plan.id === "growth";
-          const isBusiness = plan.id === "business";
-          const isEnterprise = plan.id === "enterprise";
-          const isFreeGrowthCard = Boolean(activeFreeGrowth) && isGrowth;
 
           const yearlyDiscountPercent = Math.max(globalDiscount?.percent || 0, storeDiscount?.percent || 0);
 
@@ -1083,8 +1146,12 @@ export default function Plan() {
                             <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>$0</span>
                             <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>forever</span>
                           </div>
+                          {/* This slot is the billing line on every other card
+                              ("Billed monthly · 14-day trial"). It previously
+                              repeated plan.footerText, which renders two lines
+                              below, printing the same sentence twice. */}
                           <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                            Basic protection for new stores
+                            No subscription · no credit card required
                           </div>
                         </div>
                       );
@@ -1176,9 +1243,17 @@ export default function Plan() {
                           </span>
                         </div>
                         <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                          {hasApplicableDiscount
-                            ? `Billed monthly · ${applicableDiscount.percent}% discount applied · 14-day trial`
-                            : "Billed monthly · 14-day trial"}
+                          {/* The trial is once per store, so it cannot be
+                              hardcoded here: on a store that has used it this
+                              line promised a "14-day trial" directly above a
+                              button footer reading "Billed from day one". */}
+                          {[
+                            "Billed monthly",
+                            hasApplicableDiscount && `${applicableDiscount.percent}% discount applied`,
+                            hasUsedTrial ? "billed from day one" : "14-day trial",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </div>
                       </div>
                     );
@@ -1195,12 +1270,33 @@ export default function Plan() {
                     <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
                       What&apos;s Included:
                     </span>
-                    {plan.features.map((feature, idx) => (
-                      <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "12px", lineHeight: 1.4 }}>
-                        <span style={{ color: "var(--rv-primary)", fontWeight: "bold" }}>✓</span>
-                        <span style={{ color: "var(--rv-text)" }}>{feature}</span>
-                      </div>
-                    ))}
+                    {plan.features.map((feature, idx) => {
+                      // "Everything in Starter, plus:" is a roll-up of the tier
+                      // below, not an item of its own — a ✓ beside it would read
+                      // as one more feature rather than as the heading it is.
+                      const isInheritanceLine = feature.endsWith("plus:");
+                      if (isInheritanceLine) {
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              color: "var(--rv-text-subdued)",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {feature}
+                          </div>
+                        );
+                      }
+                      return (
+                        <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "12px", lineHeight: 1.4 }}>
+                          <span style={{ color: "var(--rv-primary)", fontWeight: "bold" }}>✓</span>
+                          <span style={{ color: "var(--rv-text)" }}>{feature}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -1333,7 +1429,7 @@ export default function Plan() {
                 lineHeight: 1.4,
               }}
             >
-              ⚠️ <strong>Note:</strong> Downgrading will lower your monitored product and restore point allowances. Premium capabilities (such as Liquid Theme Backups, Data Vault sync, and Circuit Breaker) will be restricted to the new plan&apos;s limits.
+              ⚠️ <strong>Note:</strong> Downgrading will lower your monitored product and restore point allowances, and shorten how long change history is kept. Premium capabilities — Liquid Theme Backups, Orders &amp; Customers Vault, Klaviyo &amp; Mailchimp backup, Circuit Breaker, Slack alerts, bulk incident rollback, and Offsite Cloud Backup to Google Drive &amp; Dropbox — will be restricted to the new plan&apos;s limits. Backups already stored in Revertly are kept.
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>

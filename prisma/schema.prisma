@@ -263,8 +263,91 @@ model AppSettings {
   cloudSyncAccessToken  String?  @db.Text
   cloudSyncRefreshToken String?  @db.Text
   cloudSyncTokenExpiry  DateTime?
+  // Email marketing (ESP) backup. Klaviyo uses a single private API key;
+  // Mailchimp keys carry their datacenter as a "-usX" suffix, which becomes
+  // the API host, so it is stored alongside rather than re-parsed per call.
+  klaviyoConnected      Boolean  @default(false)
+  klaviyoApiKey         String?  @db.Text
+  klaviyoAccountName    String?  @db.VarChar(255)
+  mailchimpConnected    Boolean  @default(false)
+  mailchimpApiKey       String?  @db.Text
+  mailchimpServerPrefix String?  @db.VarChar(20)
+  mailchimpAccountName  String?  @db.VarChar(255)
+  marketingAutoBackup   Boolean  @default(false)
+  lastMarketingBackupAt DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+}
+
+// ── Email marketing backup ──────────────────────────────────────────────────
+//
+// One row per captured ESP object, scoped by (shop, provider, remote id) so a
+// store can hold Klaviyo and Mailchimp side by side and a re-run updates in
+// place rather than duplicating. `provider` is KLAVIYO | MAILCHIMP.
+//
+// The raw payload is kept in the *Data Json column so a restore can replay
+// fields this schema does not model, exactly as ProductSnapshot and
+// OrderArchive do for Shopify resources.
+
+// A Klaviyo list/segment or a Mailchimp audience/segment.
+model MarketingList {
+  id           Int      @id @default(autoincrement())
+  shop         String   @db.VarChar(255)
+  provider     String   @db.VarChar(20)
+  listId       String   @db.VarChar(255)
+  name         String   @db.VarChar(500)
+  listType     String   @default("LIST") @db.VarChar(20) // LIST | SEGMENT
+  memberCount  Int      @default(0)
+  listData     Json
+  capturedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([shop, provider, listId])
+  @@index([shop, provider])
+  @@index([shop, listType])
+}
+
+// A subscriber profile. Counts against the plan's marketingProfiles cap.
+model MarketingProfile {
+  id           Int      @id @default(autoincrement())
+  shop         String   @db.VarChar(255)
+  provider     String   @db.VarChar(20)
+  profileId    String   @db.VarChar(255)
+  email        String?  @db.VarChar(255)
+  firstName    String?  @db.VarChar(255)
+  lastName     String?  @db.VarChar(255)
+  phone        String?  @db.VarChar(100)
+  status       String?  @db.VarChar(50) // subscribed | unsubscribed | cleaned ...
+  listIds      Json?
+  profileData  Json
+  capturedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([shop, provider, profileId])
+  @@index([shop, provider])
+  @@index([shop, email])
+}
+
+// A Klaviyo flow or a Mailchimp journey/automation. Business and above only
+// (the marketingFlows entitlement), because this is automation logic rather
+// than contact records.
+model MarketingFlow {
+  id           Int      @id @default(autoincrement())
+  shop         String   @db.VarChar(255)
+  provider     String   @db.VarChar(20)
+  flowId       String   @db.VarChar(255)
+  name         String   @db.VarChar(500)
+  status       String?  @db.VarChar(50)
+  triggerType  String?  @db.VarChar(100)
+  flowData     Json
+  capturedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([shop, provider, flowId])
+  @@index([shop, provider])
 }
 
 // A platform-admin-granted discount on a single merchant's subscription.

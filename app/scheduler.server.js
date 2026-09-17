@@ -106,6 +106,24 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
     }
   }
 
+  // Email marketing capture, when the merchant has opted in on the Email
+  // Marketing page. Entitlement is re-checked inside backupAllMarketingProviders
+  // for the same reason as cloud sync: a store that drops to Free keeps its
+  // stored ESP connection, and the saved flag must not be trusted on its own.
+  let marketingSync = null;
+  if (settings.marketingAutoBackup && (settings.klaviyoConnected || settings.mailchimpConnected)) {
+    try {
+      const { backupAllMarketingProviders } = await import("./marketing.server.js");
+      marketingSync = await backupAllMarketingProviders(shop);
+      if (!marketingSync.success) {
+        console.warn(`[Scheduler] Marketing capture skipped for ${shop}: ${marketingSync.message}`);
+      }
+    } catch (mktErr) {
+      marketingSync = { success: false, message: mktErr?.message || String(mktErr) };
+      console.warn(`[Scheduler] Marketing capture error for ${shop}:`, mktErr?.message);
+    }
+  }
+
   // Calculate new nextAutoBackupAt and update lastAutoBackupAt
   const nextBackup = computeNextAutoBackup(settings.autoBackupSchedule, settings.autoBackupTime, now);
   await prisma.appSettings.update({
@@ -145,6 +163,7 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
     nextAutoBackupAt: nextBackup,
     summary: backupRes.summary,
     cloudSync,
+    marketingSync,
   };
 }
 

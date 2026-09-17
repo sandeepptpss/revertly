@@ -1342,61 +1342,61 @@ export default function Settings() {
                           explains why, and /auth/cloud/:provider would only
                           redirect straight back here. */}
                       {hasCloudSyncAccess && (
-                      <div
-                        style={{
-                          padding: "16px 20px",
-                          background: "var(--rv-surface-subdued)",
-                          borderRadius: "var(--rv-radius-sm)",
-                          border: "1px solid var(--rv-border-subtle)",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          flexWrap: "wrap",
-                          gap: "14px",
-                        }}
-                      >
-                        {selectedProviderStatus?.configured ? (
-                          <>
-                            <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.5, flex: 1, minWidth: "260px" }}>
-                              You will be sent to {selectedProviderStatus.label} to approve access. Revertly
-                              only requests permission for the backup files it creates — your account
-                              data remains fully private.
-                            </p>
-                            <a
-                              href={selectedProviderStatus?.launchUrl || `/auth/cloud/${connectProvider.toLowerCase()}`}
-                              target="_top"
-                              rel="noopener"
-                              className="rv-btn rv-btn-primary"
-                              style={{ flexShrink: 0 }}
+                        <div
+                          style={{
+                            padding: "16px 20px",
+                            background: "var(--rv-surface-subdued)",
+                            borderRadius: "var(--rv-radius-sm)",
+                            border: "1px solid var(--rv-border-subtle)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            flexWrap: "wrap",
+                            gap: "14px",
+                          }}
+                        >
+                          {selectedProviderStatus?.configured ? (
+                            <>
+                              <p style={{ fontSize: "12px", color: "var(--rv-text-subdued)", margin: 0, lineHeight: 1.5, flex: 1, minWidth: "260px" }}>
+                                You will be sent to {selectedProviderStatus.label} to approve access. Revertly
+                                only requests permission for the backup files it creates — your account
+                                data remains fully private.
+                              </p>
+                              <a
+                                href={selectedProviderStatus?.launchUrl || `/auth/cloud/${connectProvider.toLowerCase()}`}
+                                target="_top"
+                                rel="noopener"
+                                className="rv-btn rv-btn-primary"
+                                style={{ flexShrink: 0 }}
+                              >
+                                <CloudUploadIcon size={14} />
+                                <span>Connect {selectedProviderStatus.label}</span>
+                              </a>
+                            </>
+                          ) : (
+                            <Banner
+                              tone="warning"
+                              title={`${selectedProviderStatus?.label || "This provider"} isn't available yet`}
                             >
-                              <CloudUploadIcon size={14} />
-                              <span>Connect {selectedProviderStatus.label}</span>
-                            </a>
-                          </>
-                        ) : (
-                          <Banner
-                            tone="warning"
-                            title={`${selectedProviderStatus?.label || "This provider"} isn't available yet`}
-                          >
-                            <p style={{ margin: "0 0 6px" }}>
-                              Offsite sync to {selectedProviderStatus?.label} is being set up for Revertly. Backups are safely stored in your local Revertly database.
-                            </p>
-                            <p style={{ margin: 0, fontSize: "12px" }}>
-                              {otherProviderAvailable ? (
-                                <>
-                                  You can connect{" "}
-                                  <strong>
-                                    {(cloudProviders || []).find((p) => p.configured && p.id !== connectProvider)?.label}
-                                  </strong>{" "}
-                                  now instead.
-                                </>
-                              ) : (
-                                <>We will notify you as soon as this provider is activated.</>
-                              )}
-                            </p>
-                          </Banner>
-                        )}
-                      </div>
+                              <p style={{ margin: "0 0 6px" }}>
+                                Offsite sync to {selectedProviderStatus?.label} is being set up for Revertly. Backups are safely stored in your local Revertly database.
+                              </p>
+                              <p style={{ margin: 0, fontSize: "12px" }}>
+                                {otherProviderAvailable ? (
+                                  <>
+                                    You can connect{" "}
+                                    <strong>
+                                      {(cloudProviders || []).find((p) => p.configured && p.id !== connectProvider)?.label}
+                                    </strong>{" "}
+                                    now instead.
+                                  </>
+                                ) : (
+                                  <>We will notify you as soon as this provider is activated.</>
+                                )}
+                              </p>
+                            </Banner>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}

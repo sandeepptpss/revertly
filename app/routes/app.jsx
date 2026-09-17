@@ -49,6 +49,7 @@ export default function App() {
         <s-link href="/app/restore-points">Restore Points</s-link>
         <s-link href="/app/import-export">Import &amp; Export</s-link>
         <s-link href="/app/vault">Data Vault</s-link>
+        <s-link href="/app/marketing">Email Marketing</s-link>
         <s-link href="/app/rollback-history">Rollback History</s-link>
         <s-link href="/app/rules">Rules</s-link>
         <s-link href="/app/monitoring">Uptime</s-link>

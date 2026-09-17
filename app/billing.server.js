@@ -30,6 +30,21 @@ export {
   PLAN_TIERS,
 };
 
+// ── Email marketing (ESP) backup ────────────────────────────────────────────
+//
+// Klaviyo and Mailchimp backup is a *customer-data* capability, so it unlocks
+// on the same rung as the Orders & Customers Vault (Growth) rather than with
+// the file-level Offsite Cloud Backup (Starter). Three keys, because the
+// capability is not one switch:
+//
+//   marketingBackup   → the integration itself: connect an ESP account and
+//                       capture lists/audiences, segments and profiles.
+//   marketingProfiles → how many subscriber profiles may be held, the same
+//                       shape as vaultOrders (0 means "not in plan", and the
+//                       flag above must be checked rather than inferred).
+//   marketingFlows    → Klaviyo flows and Mailchimp journeys/automations,
+//                       which are automation *logic* rather than contact
+//                       records and are a Business-and-above differentiator.
 export const PLAN_LIMITS = {
   free: {
     products: 100,
@@ -42,6 +57,9 @@ export const PLAN_LIMITS = {
     slack: false,
     bulkRollback: false,
     cloudSync: false,
+    marketingBackup: false,
+    marketingProfiles: 0,
+    marketingFlows: false,
   },
   starter: {
     products: 1000,
@@ -54,6 +72,9 @@ export const PLAN_LIMITS = {
     slack: false,
     bulkRollback: false,
     cloudSync: true,
+    marketingBackup: false,
+    marketingProfiles: 0,
+    marketingFlows: false,
   },
   growth: {
     products: 5000,
@@ -66,6 +87,9 @@ export const PLAN_LIMITS = {
     slack: false,
     bulkRollback: true,
     cloudSync: true,
+    marketingBackup: true,
+    marketingProfiles: 10000,
+    marketingFlows: false,
   },
   business: {
     products: 20000,
@@ -78,6 +102,9 @@ export const PLAN_LIMITS = {
     slack: true,
     bulkRollback: true,
     cloudSync: true,
+    marketingBackup: true,
+    marketingProfiles: 50000,
+    marketingFlows: true,
   },
   enterprise: {
     products: Infinity,
@@ -90,6 +117,9 @@ export const PLAN_LIMITS = {
     slack: true,
     bulkRollback: true,
     cloudSync: true,
+    marketingBackup: true,
+    marketingProfiles: Infinity,
+    marketingFlows: true,
   },
 };
 
@@ -361,6 +391,26 @@ export async function checkVaultAccess(shop) {
   return {
     allowed,
     maxOrders: limits.vaultOrders,
+    plan,
+  };
+}
+
+/**
+ * Check if the shop has access to Klaviyo / Mailchimp backup, how many
+ * subscriber profiles it may hold, and whether flows and journeys are included.
+ *
+ * `allowed` reads the capability flag rather than inferring it from the profile
+ * cap, so an Enterprise store — whose cap is Infinity, not a number — is never
+ * mistaken for one without the feature.
+ */
+export async function checkMarketingBackupAccess(shop) {
+  const plan = await getEffectivePlanId(shop);
+  const limits = getPlanLimits(plan);
+
+  return {
+    allowed: Boolean(limits.marketingBackup),
+    maxProfiles: limits.marketingProfiles,
+    flowsIncluded: Boolean(limits.marketingFlows),
     plan,
   };
 }
