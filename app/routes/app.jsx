@@ -1,6 +1,7 @@
-import { Outlet, useLoaderData, useRouteError } from "react-router";
+import { Outlet, useLoaderData, useLocation, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
+import { resolveNavHref } from "../navigation.js";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { isPlatformAdmin } from "../platformAdmin.server.js";
@@ -39,17 +40,30 @@ export const loader = async ({ request }) => {
 
 export default function App() {
   const { apiKey, showAdminLink, shop, defaultEmail, planTier } = useLoaderData();
+  const { pathname } = useLocation();
+
+  // <s-link> has no working active/selected attribute — Admin highlights an
+  // item purely by matching its own current URL against each item's href.
+  // We render the owning section's href as the *current* pathname so it
+  // matches exactly while inside that section (hub tabs, detail pages);
+  // every other link keeps its stable, canonical destination. See
+  // navigation.js for the full explanation.
+  const navHref = (canonicalHref) => resolveNavHref(canonicalHref, pathname);
 
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app/desktop">Desktop</s-link>
-        <s-link href="/app/restore-points">Backups &amp; Recovery</s-link>
-        <s-link href="/app/incidents">Store Protection</s-link>
-        <s-link href="/app/settings">Settings &amp; Team</s-link>
-        <s-link href="/app/plan">Plans &amp; Billing</s-link>
-        <s-link href="/app/support">Support</s-link>
-        {showAdminLink && <s-link href="/app/admin">Admin Panel</s-link>}
+        <s-link href={navHref("/app/desktop")}>Desktop</s-link>
+        <s-link href={navHref("/app/restore-points")}>
+          Backups &amp; Recovery
+        </s-link>
+        <s-link href={navHref("/app/incidents")}>Store Protection</s-link>
+        <s-link href={navHref("/app/settings")}>Settings &amp; Team</s-link>
+        <s-link href={navHref("/app/plan")}>Plans &amp; Billing</s-link>
+        <s-link href={navHref("/app/support")}>Support</s-link>
+        {showAdminLink && (
+          <s-link href={navHref("/app/admin")}>Admin Panel</s-link>
+        )}
       </s-app-nav>
       <Outlet />
       <GlobalSupportWidget shop={shop} defaultEmail={defaultEmail} planTier={planTier} />
