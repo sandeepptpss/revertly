@@ -15,7 +15,7 @@ import {
   RefreshCwIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
-import { logAudit } from "../team.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request, params }) => {
   const { session } = await authenticate.admin(request);
@@ -59,29 +59,38 @@ export const action = async ({ request, params }) => {
     if (!incidentId || isNaN(incidentId)) {
       return { success: false, message: "Invalid incident ID." };
     }
+
+    const perm = await checkPermission(shop, session, PERMISSIONS.RESTORE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
+    const incident = await prisma.incident.findFirst({
+      where: { id: incidentId, shop },
+    });
+    if (!incident) {
+      return { success: false, message: "Incident not found or access denied." };
+    }
+
     const formData = await request.formData();
     const intent = formData.get("intent");
 
     if (intent === "resolve") {
       await prisma.incident.update({
-        where: { id: incidentId },
+        where: { id: incident.id },
         data: { status: "RESOLVED", resolvedAt: new Date() },
       });
-      const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
-      await logAudit(shop, session, "INCIDENT_RESOLVE", { incidentId, name: incident?.name });
+      await logAudit(shop, perm.actor, "INCIDENT_RESOLVE", { incidentId: incident.id, name: incident.name, request });
       return { success: true, message: "Incident marked as resolved." };
     }
 
     if (intent === "ignore") {
       await prisma.incident.update({
-        where: { id: incidentId },
+        where: { id: incident.id },
         data: { status: "IGNORED", resolvedAt: new Date() },
       });
-      const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
-      await logAudit(shop, session, "INCIDENT_IGNORE", {
+      await logAudit(shop, perm.actor, "INCIDENT_IGNORE", {
         resourceType: "Incident",
-        resourceId: incidentId,
-        details: { name: incident?.name },
+        resourceId: incident.id,
+        details: { name: incident.name },
         request,
       });
       return { success: true, message: "Incident marked as ignored." };
@@ -89,14 +98,13 @@ export const action = async ({ request, params }) => {
 
     if (intent === "reopen") {
       await prisma.incident.update({
-        where: { id: incidentId },
+        where: { id: incident.id },
         data: { status: "OPEN", resolvedAt: null },
       });
-      const incident = await prisma.incident.findUnique({ where: { id: incidentId } });
-      await logAudit(shop, session, "INCIDENT_REOPEN", {
+      await logAudit(shop, perm.actor, "INCIDENT_REOPEN", {
         resourceType: "Incident",
-        resourceId: incidentId,
-        details: { name: incident?.name },
+        resourceId: incident.id,
+        details: { name: incident.name },
         request,
       });
       return { success: true, message: "Incident reopened as Open." };
@@ -172,13 +180,13 @@ export const action = async ({ request, params }) => {
       });
 
       const updatedIncident = await prisma.incident.update({
-        where: { id: incidentId },
+        where: { id: incident.id },
         data: { status: "ROLLED_BACK", resolvedAt: new Date() },
       });
 
-      await logAudit(shop, session, "INCIDENT_ROLLBACK", {
+      await logAudit(shop, perm.actor, "INCIDENT_ROLLBACK", {
         resourceType: "Incident",
-        resourceId: incidentId,
+        resourceId: incident.id,
         details: {
           name: updatedIncident?.name,
           successCount,

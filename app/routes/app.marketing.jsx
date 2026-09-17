@@ -33,6 +33,7 @@ import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
 import { Pagination, usePagination } from "../components/Pagination.jsx";
+import { checkPermission, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -114,6 +115,9 @@ export const action = async ({ request }) => {
   const intent = String(formData.get("intent") || "");
 
   if (intent === "connect") {
+    const perm = await checkPermission(shop, session, PERMISSIONS.SETTINGS_WRITE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     return saveMarketingConnection(
       shop,
       String(formData.get("provider") || ""),
@@ -122,26 +126,44 @@ export const action = async ({ request }) => {
   }
 
   if (intent === "disconnect") {
+    const perm = await checkPermission(shop, session, PERMISSIONS.SETTINGS_WRITE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     return disconnectMarketingProvider(shop, String(formData.get("provider") || ""));
   }
 
   if (intent === "backup") {
+    const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     return backupMarketingProvider(shop, String(formData.get("provider") || ""));
   }
 
   if (intent === "backupAll") {
+    const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     return backupAllMarketingProviders(shop);
   }
 
   if (intent === "restoreList") {
+    const perm = await checkPermission(shop, session, PERMISSIONS.RESTORE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     return restoreMarketingList(shop, formData.get("listRowId"));
   }
 
   if (intent === "reimport") {
+    const perm = await checkPermission(shop, session, PERMISSIONS.RESTORE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     return reimportMarketingSubscribers(shop, formData.get("listRowId"));
   }
 
   if (intent === "toggleAutoBackup") {
+    const perm = await checkPermission(shop, session, PERMISSIONS.SETTINGS_WRITE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     const enabled = formData.get("enabled") === "true";
     await prisma.appSettings.upsert({
       where: { shop },

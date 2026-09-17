@@ -1,12 +1,25 @@
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { generateOrdersCsv } from "../backup.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
+
+  const perm = await checkPermission(shop, session, PERMISSIONS.VIEW);
+  if (!perm.allowed || perm.actor?.suspended) {
+    throw new Response("Forbidden: Insufficient permissions to export vault data", { status: 403 });
+  }
+
   const url = new URL(request.url);
   const type = url.searchParams.get("type") || "orders_csv";
+
+  await logAudit(shop, perm.actor, "VAULT_EXPORTED", {
+    resourceType: "DataVault",
+    details: { type },
+    request,
+  });
 
   const cleanShop = shop.replace(/^https?:\/\//, "").replace(/[^a-zA-Z0-9_-]/g, "_");
   const dateStr = new Date().toISOString().split("T")[0];

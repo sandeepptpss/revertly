@@ -24,6 +24,7 @@ import { getFreeGrowthOffer, claimFreeGrowthSeat, getFreeGrowthStatus } from "..
 import { DISCOUNT_DURATION_MONTHS } from "../discount.constants.js";
 import { Banner } from "../components/Banner.jsx";
 import { SparklesIcon, ShieldCheckIcon } from "../components/Icons.jsx";
+import { checkPermission, PERMISSIONS } from "../team.server.js";
 
 /** Rounds to cents and drops a trailing ".00" for a cleaner price tag. */
 function formatPrice(amount) {
@@ -299,6 +300,12 @@ function isSimulatedSubscription(subscriptionId) {
 export const action = async ({ request }) => {
   const { session, billing } = await authenticate.admin(request);
   const shop = session.shop;
+
+  const billingPerm = await checkPermission(shop, session, PERMISSIONS.BILLING_MANAGE);
+  if (!billingPerm.allowed) {
+    return { success: false, message: billingPerm.message };
+  }
+
   const formData = await request.formData();
   const isTest = process.env.NODE_ENV !== "production";
 

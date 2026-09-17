@@ -126,14 +126,53 @@ export async function checkService(service) {
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     const startedAt = Date.now();
     try {
-      const resp = await fetch(validation.url, {
-        method: "GET",
-        redirect: "follow",
-        signal: controller.signal,
-        headers: { "User-Agent": "Revertly-Uptime-Monitor/1.0" },
-      });
+      let currentUrl = validation.url;
+      let hops = 0;
+      const MAX_REDIRECTS = 3;
+      let resp = null;
+
+      while (hops <= MAX_REDIRECTS) {
+        resp = await fetch(currentUrl, {
+          method: "GET",
+          redirect: "manual",
+          signal: controller.signal,
+          headers: { "User-Agent": "Revertly-Uptime-Monitor/1.0" },
+        });
+
+        // If not a redirect, we reached our final target
+        if (resp.status < 300 || resp.status >= 400) {
+          break;
+        }
+
+        const location = resp.headers.get("location");
+        if (!location) {
+          // Redirect status without Location header
+          break;
+        }
+
+        hops++;
+        if (hops > MAX_REDIRECTS) {
+          break;
+        }
+
+        // Resolve relative redirects against currentUrl
+        const nextUrl = new URL(location, currentUrl).toString();
+
+        // SSRF Guard: Re-validate redirect target before dialing
+        const targetCheck = await validateServiceUrl(nextUrl);
+        if (!targetCheck.ok) {
+          failed = true;
+          errorMessage = `Redirect rejected: ${targetCheck.error}`;
+          break;
+        }
+
+        currentUrl = targetCheck.url;
+      }
+
       responseTimeMs = Date.now() - startedAt;
-      statusCode = resp.status;
+      if (!failed && resp) {
+        statusCode = resp.status;
+      }
     } catch (err) {
       responseTimeMs = Date.now() - startedAt;
       failed = true;

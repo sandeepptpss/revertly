@@ -12,10 +12,13 @@ import { verifyOAuthState, exchangeCodeForTokens, fetchAccountEmail } from "../c
 
 const returnToShopifyAdmin = (shop, params) => {
   const query = new URLSearchParams(params).toString();
-  if (shop) {
-    const apiKey = process.env.SHOPIFY_API_KEY || "1aa2f8043b53bd114b8814fc368663fd";
-    const cleanShop = shop.replace(".myshopify.com", "");
-    return redirect(`https://admin.shopify.com/store/${cleanShop}/apps/${apiKey}/app/settings?${query}`);
+  if (shop && typeof shop === "string") {
+    const cleanShop = shop.replace(".myshopify.com", "").trim();
+    // Validate store domain format before constructing Shopify Admin redirect URL
+    if (/^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(cleanShop)) {
+      const apiKey = process.env.SHOPIFY_API_KEY || "1aa2f8043b53bd114b8814fc368663fd";
+      return redirect(`https://admin.shopify.com/store/${cleanShop}/apps/${apiKey}/app/settings?${query}`);
+    }
   }
   return redirect(`/app/settings?${query}`);
 };

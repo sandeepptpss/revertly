@@ -17,7 +17,9 @@ import { ROLES, PERMISSIONS, roleCan, permissionsForRole } from "./team.constant
 export { ROLES, PERMISSIONS, roleCan, permissionsForRole };
 
 function sessionEmail(session) {
-  return (session?.email || "").trim().toLowerCase() || null;
+  const email =
+    session?.onlineAccessInfo?.associated_user?.email ?? session?.email ?? "";
+  return String(email).trim().toLowerCase() || null;
 }
 
 /**
@@ -52,7 +54,7 @@ export async function resolveActor(shop, session) {
     });
     if (member) {
       if (member.status === "SUSPENDED") {
-        return { member, role: "VIEWER", email, suspended: true };
+        return { member, role: "NONE", email, suspended: true };
       }
       // Touch activity without blocking the request on it.
       prisma.teamMember
@@ -72,6 +74,16 @@ export async function resolveActor(shop, session) {
  */
 export async function requirePermission(shop, session, permission) {
   const actor = await resolveActor(shop, session);
+
+  if (actor.suspended) {
+    throw new Response(
+      JSON.stringify({
+        success: false,
+        message: "Your account has been suspended. Please contact a store Owner.",
+      }),
+      { status: 403, headers: { "Content-Type": "application/json" } },
+    );
+  }
 
   if (!roleCan(actor.role, permission)) {
     throw new Response(
@@ -94,6 +106,15 @@ export async function requirePermission(shop, session, permission) {
  */
 export async function checkPermission(shop, session, permission) {
   const actor = await resolveActor(shop, session);
+
+  if (actor.suspended) {
+    return {
+      allowed: false,
+      actor,
+      message: "Your account has been suspended. Please contact a store Owner.",
+    };
+  }
+
   if (!roleCan(actor.role, permission)) {
     return {
       allowed: false,

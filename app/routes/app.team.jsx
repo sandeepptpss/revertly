@@ -105,6 +105,10 @@ export const action = async ({ request }) => {
         return { success: false, message: "Only an Owner can grant the Owner role." };
       }
 
+      if (member.role === "OWNER" && perm.actor.role !== "OWNER") {
+        return { success: false, message: "Only an Owner can modify an Owner's role." };
+      }
+
       // Demoting the final owner would leave the shop with nobody who can
       // manage billing or ownership.
       if (member.role === "OWNER" && role !== "OWNER") {
@@ -112,10 +116,10 @@ export const action = async ({ request }) => {
         if (!guard.ok) return { success: false, message: guard.message };
       }
 
-      await prisma.teamMember.update({ where: { id: memberId }, data: { role } });
+      await prisma.teamMember.update({ where: { id: member.id }, data: { role } });
       await logAudit(shop, perm.actor, "TEAM_ROLE_CHANGED", {
         resourceType: "TeamMember",
-        resourceId: memberId,
+        resourceId: member.id,
         details: { email: member.email, from: member.role, to: role },
         request,
       });
@@ -129,7 +133,7 @@ export const action = async ({ request }) => {
       if (!member) return { success: false, message: "Team member not found." };
 
       const updated = await prisma.teamMember.update({
-        where: { id: memberId },
+        where: { id: member.id },
         data: { alertsEnabled: !member.alertsEnabled },
       });
 
@@ -145,11 +149,14 @@ export const action = async ({ request }) => {
       if (!member) return { success: false, message: "Team member not found." };
 
       if (member.role === "OWNER") {
+        if (perm.actor.role !== "OWNER") {
+          return { success: false, message: "Only an Owner can remove an Owner from the team." };
+        }
         const guard = await assertNotLastOwner(shop, memberId);
         if (!guard.ok) return { success: false, message: guard.message };
       }
 
-      await prisma.teamMember.delete({ where: { id: memberId } });
+      await prisma.teamMember.delete({ where: { id: member.id } });
       await logAudit(shop, perm.actor, "TEAM_MEMBER_REMOVED", {
         resourceType: "TeamMember",
         resourceId: memberId,

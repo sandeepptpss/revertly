@@ -15,6 +15,7 @@ import {
   ClockIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
+import { checkPermission, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -27,6 +28,9 @@ export const action = async ({ request }) => {
   try {
     const { session, admin } = await authenticate.admin(request);
     const shop = session.shop;
+
+    const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+    if (!perm.allowed) return { success: false, message: perm.message };
 
     const settings = await prisma.appSettings.findUnique({ where: { shop } });
     const limits = await getEffectiveLimits(shop, settings);

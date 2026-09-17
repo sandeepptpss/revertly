@@ -409,6 +409,10 @@ export async function listCloudBackups(shop) {
  * Downloads a backup file from the cloud and returns parsed JSON
  */
 export async function downloadCloudBackup(shop, fileId) {
+  if (!fileId || typeof fileId !== "string") {
+    throw new Error("Invalid file ID provided.");
+  }
+
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
   if (!settings?.cloudSyncConnected) {
     throw new Error("Cloud sync not connected");
@@ -418,7 +422,8 @@ export async function downloadCloudBackup(shop, fileId) {
   const provider = settings.cloudSyncProvider;
 
   if (provider === "GOOGLE_DRIVE") {
-    const resp = await fetch(`${GOOGLE_DRIVE_FILES_URL}/${fileId}?alt=media`, {
+    const encodedId = encodeURIComponent(fileId.trim());
+    const resp = await fetch(`${GOOGLE_DRIVE_FILES_URL}/${encodedId}?alt=media`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!resp.ok) throw new Error(`Google Drive download failed: ${resp.status}`);
@@ -426,11 +431,15 @@ export async function downloadCloudBackup(shop, fileId) {
   }
 
   if (provider === "DROPBOX") {
+    const trimmed = fileId.trim();
+    if (trimmed.includes("..")) {
+      throw new Error("Invalid Dropbox file path.");
+    }
     const resp = await fetch(DROPBOX_DOWNLOAD_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "Dropbox-API-Arg": JSON.stringify({ path: fileId }),
+        "Dropbox-API-Arg": JSON.stringify({ path: trimmed }),
       },
     });
     if (!resp.ok) throw new Error(`Dropbox download failed: ${resp.status}`);

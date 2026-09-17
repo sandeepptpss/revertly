@@ -33,6 +33,11 @@ export const action = async ({ request }) => {
           customerEmail: "redacted@privacy.shopify.com",
         },
       });
+
+      // 3. Purge customer subscriber profile from MarketingProfile archive
+      await prisma.marketingProfile.deleteMany({
+        where: { shop, email: customerEmail },
+      });
     }
 
     console.log(`GDPR redaction completed for customer ${customerId || customerEmail}`);

@@ -5,7 +5,7 @@ import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { syncOrdersVault, syncCustomersVault } from "../backup.server.js";
 import { checkVaultAccess } from "../billing.server.js";
-import { logAudit } from "../team.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 import {
   DatabaseIcon,
   SearchIcon,
@@ -114,6 +114,9 @@ export const action = async ({ request }) => {
     const { session, admin } = await authenticate.admin(request);
     const shop = session.shop;
 
+    const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     const vaultAccess = await checkVaultAccess(shop);
     if (!vaultAccess.allowed) {
       return {
@@ -136,7 +139,7 @@ export const action = async ({ request }) => {
       const orderCount = ordRes.status === "fulfilled" && ordRes.value?.success ? ordRes.value.count : 0;
       const custCount = custRes.status === "fulfilled" && custRes.value?.success ? custRes.value.count : 0;
 
-      await logAudit(shop, session, "VAULT_SYNC", {
+      await logAudit(shop, perm.actor, "VAULT_SYNC", {
         resourceType: "DataVault",
         resourceId: shop,
         details: { orderCount, custCount, maxAllowance: vaultAccess.maxOrders },

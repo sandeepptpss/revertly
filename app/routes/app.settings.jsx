@@ -88,8 +88,15 @@ export const loader = async ({ request }) => {
   const cleanShopName = shop.replace(".myshopify.com", "");
   const themeEditorUrl = `https://admin.shopify.com/store/${cleanShopName}/themes/current/editor?context=apps`;
 
+  // Defense-in-depth: never transmit raw OAuth access/refresh tokens or ESP API keys to the browser client
+  const safeSettings = settings ? { ...settings } : {};
+  delete safeSettings.cloudSyncAccessToken;
+  delete safeSettings.cloudSyncRefreshToken;
+  delete safeSettings.klaviyoApiKey;
+  delete safeSettings.mailchimpApiKey;
+
   return {
-    settings,
+    settings: safeSettings,
     hasCircuitBreakerAccess: cbAccess.allowed,
     hasSlackAccess: slackAccess.allowed,
     hasCloudSyncAccess: cloudAccess.allowed,

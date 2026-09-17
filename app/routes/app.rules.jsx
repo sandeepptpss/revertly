@@ -14,6 +14,7 @@ import { EmptyState } from "../components/EmptyState.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
 import { HubNav } from "../components/HubNav.jsx";
 import { Pagination, usePagination } from "../components/Pagination.jsx";
+import { checkPermission, PERMISSIONS } from "../team.server.js";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -34,6 +35,10 @@ export const action = async ({ request }) => {
   try {
     const { session } = await authenticate.admin(request);
     const shop = session.shop;
+
+    const perm = await checkPermission(shop, session, PERMISSIONS.SETTINGS_WRITE);
+    if (!perm.allowed) return { success: false, message: perm.message };
+
     const formData = await request.formData();
     const intent = formData.get("intent");
 
