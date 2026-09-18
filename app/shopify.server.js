@@ -52,6 +52,13 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
+  // Required for team roles to mean anything. An offline session identifies the
+  // *store*, not the person, so without this every request arrives anonymous and
+  // team.server.js has to fall back to ADMIN for everyone — making an assigned
+  // VIEWER or EDITOR role unenforceable. Token exchange still stores the offline
+  // session alongside it, so `unauthenticated.admin()` (scheduler, cron) is
+  // unaffected.
+  useOnlineTokens: true,
   future: {
     expiringOfflineAccessTokens: true,
   },

@@ -5,6 +5,11 @@
  * roles are layered on top of the Shopify session. The session's staff email is
  * matched against the TeamMember roster to resolve the acting user.
  *
+ * This depends on `useOnlineTokens: true` in shopify.server.js. An offline
+ * session carries no `associated_user`, so without it sessionEmail() is always
+ * null, the roster is never consulted, and every caller lands on the unlisted
+ * ADMIN branch — silently making every assigned role unenforceable.
+ *
  * Fail-safe rule: if a shop has no roster yet, the current session is treated as
  * the OWNER and provisioned as such. A shop must never be able to lock itself
  * out of its own backups, so an unrecognised session in a shop that HAS a roster
@@ -16,10 +21,48 @@ import { ROLES, PERMISSIONS, roleCan, permissionsForRole } from "./team.constant
 
 export { ROLES, PERMISSIONS, roleCan, permissionsForRole };
 
+/**
+ * The signed-in staff member's address, or null when the request carries no
+ * user identity (an offline session, which identifies only the store).
+ *
+ * Requires `useOnlineTokens` in shopify.server.js — without it this is always
+ * null and every caller falls through to the unlisted-ADMIN branch below.
+ */
 function sessionEmail(session) {
-  const email =
-    session?.onlineAccessInfo?.associated_user?.email ?? session?.email ?? "";
-  return String(email).trim().toLowerCase() || null;
+  const raw = session?.onlineAccessInfo?.associated_user?.email ?? session?.email ?? "";
+  const email = String(raw).trim().toLowerCase();
+  // The Prisma session store stringifies absent columns, so a row without a
+  // user can surface the literal "null"/"undefined" instead of an address.
+  if (!email || email === "null" || email === "undefined") return null;
+  return email;
+}
+
+function sessionName(session) {
+  const user = session?.onlineAccessInfo?.associated_user;
+  const first = user?.first_name ?? session?.firstName;
+  const last = user?.last_name ?? session?.lastName;
+  const name = [first, last]
+    .map((p) => (p == null ? "" : String(p)))
+    .filter((p) => p && p !== "null" && p !== "undefined")
+    .join(" ")
+    .trim();
+  return name || null;
+}
+
+/** Whether this session belongs to the store's Shopify account owner. */
+function sessionIsAccountOwner(session) {
+  return Boolean(
+    session?.onlineAccessInfo?.associated_user?.account_owner ?? session?.accountOwner,
+  );
+}
+
+/**
+ * Address used for the OWNER row when the very first caller could not be
+ * identified. It is a placeholder nobody can ever sign in as, so the real
+ * account owner adopts it on their first identified visit.
+ */
+function placeholderOwnerEmail(shop) {
+  return `owner@${shop}`;
 }
 
 /**
@@ -28,8 +71,7 @@ function sessionEmail(session) {
  */
 export async function resolveActor(shop, session) {
   const email = sessionEmail(session);
-  const name =
-    [session?.firstName, session?.lastName].filter(Boolean).join(" ").trim() || null;
+  const name = sessionName(session);
 
   const memberCount = await prisma.teamMember.count({ where: { shop } });
 
@@ -38,7 +80,7 @@ export async function resolveActor(shop, session) {
     const owner = await prisma.teamMember.create({
       data: {
         shop,
-        email: email || `owner@${shop}`,
+        email: email || placeholderOwnerEmail(shop),
         name: name || "Store Owner",
         role: "OWNER",
         status: "ACTIVE",
@@ -52,20 +94,94 @@ export async function resolveActor(shop, session) {
     const member = await prisma.teamMember.findUnique({
       where: { shop_email: { shop, email } },
     });
+
+    // The Shopify account owner always holds OWNER. They own the store and its
+    // subscription, so no app-level roster row may demote them — otherwise a
+    // stale EDITOR/VIEWER entry (or the placeholder below) locks the store out
+    // of its own billing, which only OWNER can manage.
+    if (sessionIsAccountOwner(session)) {
+      return await ensureAccountOwner(shop, email, name, member);
+    }
+
     if (member) {
       if (member.status === "SUSPENDED") {
         return { member, role: "NONE", email, suspended: true };
       }
-      // Touch activity without blocking the request on it.
+      // Signing in accepts a pending invitation.
+      const activated = member.status === "INVITED";
       prisma.teamMember
-        .update({ where: { id: member.id }, data: { lastActiveAt: new Date() } })
+        .update({
+          where: { id: member.id },
+          data: {
+            lastActiveAt: new Date(),
+            ...(activated ? { status: "ACTIVE" } : {}),
+            ...(name && !member.name ? { name } : {}),
+          },
+        })
         .catch(() => {});
-      return { member, role: member.role, email };
+      return { member, role: member.role, email, activated };
     }
+
+  } else {
+    // Fail-open, but never silently: the roster cannot restrict anyone while
+    // requests arrive without a user identity.
+    console.warn(
+      `[Revertly Team] Request for ${shop} carried no staff identity — granting ADMIN. ` +
+        `Check that useOnlineTokens is enabled in shopify.server.js.`,
+    );
   }
 
   // Authenticated Shopify staff not on the roster: treat as ADMIN, not OWNER.
   return { member: null, role: "ADMIN", email, unlisted: true };
+}
+
+/**
+ * Guarantees the Shopify account owner holds OWNER on the roster, retiring the
+ * placeholder row left by installs that predate online tokens.
+ */
+async function ensureAccountOwner(shop, email, name, member) {
+  let actor;
+
+  if (member?.role === "OWNER" && member.status === "ACTIVE") {
+    prisma.teamMember
+      .update({ where: { id: member.id }, data: { lastActiveAt: new Date() } })
+      .catch(() => {});
+    actor = { member, role: "OWNER", email };
+  } else if (member) {
+    const promoted = await prisma.teamMember.update({
+      where: { id: member.id },
+      data: {
+        role: "OWNER",
+        status: "ACTIVE",
+        name: name || member.name,
+        lastActiveAt: new Date(),
+      },
+    });
+    actor = { member: promoted, role: "OWNER", email, accountOwnerRestored: true };
+  } else {
+    const created = await prisma.teamMember.create({
+      data: {
+        shop,
+        email,
+        name: name || "Store Owner",
+        role: "OWNER",
+        status: "ACTIVE",
+        lastActiveAt: new Date(),
+      },
+    });
+    actor = { member: created, role: "OWNER", email, accountOwnerRestored: true };
+  }
+
+  // Retire the unclaimable placeholder only once a real OWNER exists, so the
+  // shop is never momentarily left without one.
+  const placeholderEmail = placeholderOwnerEmail(shop);
+  if (email !== placeholderEmail) {
+    await prisma.teamMember
+      .deleteMany({ where: { shop, email: placeholderEmail } })
+      .catch(() => {});
+  }
+
+  return actor;
 }
 
 /**
