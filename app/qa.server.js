@@ -79,7 +79,25 @@ async function checkRestorePointIntegrity(shop) {
       name: true,
       status: true,
       createdAt: true,
+      backupType: true,
+      productCount: true,
+      themeCount: true,
+      collectionCount: true,
+      pageCount: true,
+      menuCount: true,
+      articleCount: true,
+      metafieldCount: true,
+      orderCount: true,
+      customerCount: true,
       snapshotData: true,
+      themeData: true,
+      collectionData: true,
+      pageData: true,
+      menuData: true,
+      articleData: true,
+      metafieldData: true,
+      orderData: true,
+      customerData: true,
     },
   });
 
@@ -116,8 +134,246 @@ async function checkRestorePointIntegrity(shop) {
     );
   }
 
+  const type = (rp.backupType || "FULL").toUpperCase();
+
+  // Resource-specific integrity evaluations
+  if (type === "THEMES") {
+    const td = rp.themeData;
+    const hasFiles = td && Array.isArray(td.files) && td.files.length > 0;
+    const hasActiveTheme = Boolean(td && td.activeTheme);
+    if (!td || (!hasFiles && !hasActiveTheme)) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        FAIL,
+        `Backup "${rp.name}" contains no readable theme payload.`,
+        "Delete the corrupt restore point and take a fresh theme backup.",
+      );
+    }
+    const count = hasFiles ? td.files.length : (rp.themeCount || 1);
+    const ageH = (Date.now() - rp.createdAt.getTime()) / 3_600_000;
+    if (ageH > 48) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Newest backup is ${Math.floor(ageH / 24)} days old (${count} theme assets).`,
+        "Enable automated daily backups so a recent restore point always exists.",
+      );
+    }
+    return result(
+      "restore_point_integrity",
+      "Latest backup integrity",
+      PASS,
+      `"${rp.name}" (THEMES) is readable with ${count} restorable theme assets.`,
+    );
+  }
+
+  if (type === "COLLECTIONS") {
+    const cols = Array.isArray(rp.collectionData) ? rp.collectionData : null;
+    if (!cols) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        FAIL,
+        `Backup "${rp.name}" contains no readable collection payload.`,
+        "Delete the corrupt restore point and take a fresh backup.",
+      );
+    }
+    if (cols.length === 0) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Backup "${rp.name}" holds zero collections.`,
+        "Verify your collection inventory before the next backup.",
+      );
+    }
+    const ageH = (Date.now() - rp.createdAt.getTime()) / 3_600_000;
+    if (ageH > 48) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Newest backup is ${Math.floor(ageH / 24)} days old (${cols.length} collections).`,
+        "Enable automated daily backups so a recent restore point always exists.",
+      );
+    }
+    return result(
+      "restore_point_integrity",
+      "Latest backup integrity",
+      PASS,
+      `"${rp.name}" (COLLECTIONS) is readable with ${cols.length} restorable collections.`,
+    );
+  }
+
+  if (type === "PAGES") {
+    const pages = Array.isArray(rp.pageData) ? rp.pageData : null;
+    if (!pages) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        FAIL,
+        `Backup "${rp.name}" contains no readable page payload.`,
+        "Delete the corrupt restore point and take a fresh backup.",
+      );
+    }
+    if (pages.length === 0) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Backup "${rp.name}" holds zero pages.`,
+        "Verify your online store pages before the next backup.",
+      );
+    }
+    const ageH = (Date.now() - rp.createdAt.getTime()) / 3_600_000;
+    if (ageH > 48) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Newest backup is ${Math.floor(ageH / 24)} days old (${pages.length} pages).`,
+        "Enable automated daily backups so a recent restore point always exists.",
+      );
+    }
+    return result(
+      "restore_point_integrity",
+      "Latest backup integrity",
+      PASS,
+      `"${rp.name}" (PAGES) is readable with ${pages.length} restorable pages.`,
+    );
+  }
+
+  if (type === "MENUS") {
+    const menus = Array.isArray(rp.menuData) ? rp.menuData : null;
+    if (!menus) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        FAIL,
+        `Backup "${rp.name}" contains no readable menu payload.`,
+        "Delete the corrupt restore point and take a fresh backup.",
+      );
+    }
+    const ageH = (Date.now() - rp.createdAt.getTime()) / 3_600_000;
+    if (ageH > 48) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Newest backup is ${Math.floor(ageH / 24)} days old (${menus.length} menus).`,
+        "Enable automated daily backups so a recent restore point always exists.",
+      );
+    }
+    return result(
+      "restore_point_integrity",
+      "Latest backup integrity",
+      PASS,
+      `"${rp.name}" (MENUS) is readable with ${menus.length} restorable navigation menus.`,
+    );
+  }
+
+  if (type === "BLOGS") {
+    const artData = rp.articleData;
+    if (!artData || typeof artData !== "object") {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        FAIL,
+        `Backup "${rp.name}" contains no readable blog/article payload.`,
+        "Delete the corrupt restore point and take a fresh backup.",
+      );
+    }
+    const articles = Array.isArray(artData) ? artData : (Array.isArray(artData.articles) ? artData.articles : []);
+    const count = articles.length || rp.articleCount || 0;
+    const ageH = (Date.now() - rp.createdAt.getTime()) / 3_600_000;
+    if (ageH > 48) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Newest backup is ${Math.floor(ageH / 24)} days old (${count} articles).`,
+        "Enable automated daily backups so a recent restore point always exists.",
+      );
+    }
+    return result(
+      "restore_point_integrity",
+      "Latest backup integrity",
+      PASS,
+      `"${rp.name}" (BLOGS) is readable with ${count} restorable blog articles.`,
+    );
+  }
+
+  if (type === "METAFIELDS") {
+    const mf = rp.metafieldData;
+    if (!mf || typeof mf !== "object") {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        FAIL,
+        `Backup "${rp.name}" contains no readable metafield payload.`,
+        "Delete the corrupt restore point and take a fresh backup.",
+      );
+    }
+    const count = rp.metafieldCount || (Array.isArray(mf.definitions) ? mf.definitions.length : 1);
+    const ageH = (Date.now() - rp.createdAt.getTime()) / 3_600_000;
+    if (ageH > 48) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        WARN,
+        `Newest backup is ${Math.floor(ageH / 24)} days old (${count} definitions).`,
+        "Enable automated daily backups so a recent restore point always exists.",
+      );
+    }
+    return result(
+      "restore_point_integrity",
+      "Latest backup integrity",
+      PASS,
+      `"${rp.name}" (METAFIELDS) is readable with ${count} restorable metafield definitions.`,
+    );
+  }
+
+  if (type === "VAULT") {
+    const orderCount = Array.isArray(rp.orderData) ? rp.orderData.length : (rp.orderCount || 0);
+    const customerCount = Array.isArray(rp.customerData) ? rp.customerData.length : (rp.customerCount || 0);
+    const totalVault = orderCount + customerCount;
+    if (!rp.orderData && !rp.customerData && totalVault === 0) {
+      return result(
+        "restore_point_integrity",
+        "Latest backup integrity",
+        FAIL,
+        `Backup "${rp.name}" contains no readable vault payload.`,
+        "Delete the corrupt restore point and take a fresh vault backup.",
+      );
+    }
+    return result(
+      "restore_point_integrity",
+      "Latest backup integrity",
+      PASS,
+      `"${rp.name}" (VAULT) is readable with ${totalVault} archived records.`,
+    );
+  }
+
+  // Default / fallback to PRODUCTS and FULL
   const products = Array.isArray(rp.snapshotData) ? rp.snapshotData : null;
   if (!products) {
+    if (type === "FULL") {
+      const hasTheme = rp.themeData?.activeTheme || (Array.isArray(rp.themeData?.files) && rp.themeData.files.length > 0);
+      const hasCols = Array.isArray(rp.collectionData) && rp.collectionData.length > 0;
+      const hasPages = Array.isArray(rp.pageData) && rp.pageData.length > 0;
+      const hasMenus = Array.isArray(rp.menuData) && rp.menuData.length > 0;
+      if (hasTheme || hasCols || hasPages || hasMenus) {
+        return result(
+          "restore_point_integrity",
+          "Latest backup integrity",
+          PASS,
+          `"${rp.name}" is readable with multi-resource store assets.`,
+        );
+      }
+    }
+
     return result(
       "restore_point_integrity",
       "Latest backup integrity",

@@ -46,7 +46,10 @@ export async function countFreeGrowthSeatsUsed() {
 
 export async function getFreeGrowthStatus() {
   const [settings, used] = await Promise.all([getPlatformSettings(), countFreeGrowthSeatsUsed()]);
-  const limit = Number(settings.freeGrowthSeatLimit) || 20;
+  // A configured limit of 0 closes the promotion and must survive as 0 — `||`
+  // would fall back to 20 and advertise seats that can never be claimed.
+  const rawLimit = Number(settings.freeGrowthSeatLimit);
+  const limit = Number.isFinite(rawLimit) && rawLimit >= 0 ? rawLimit : 20;
   const durationMonths = Number(settings.freeGrowthDurationMonths) || DEFAULT_FREE_GROWTH_DURATION_MONTHS;
   const remaining = Math.max(0, limit - used);
   return {

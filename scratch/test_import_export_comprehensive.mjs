@@ -71,6 +71,39 @@ function createMockAdmin() {
           }),
         };
       }
+      // An import stages theme files into a new unpublished theme rather than
+      // writing over the live storefront, so the mock has to serve the
+      // create + file-upsert pair that path uses.
+      if (query.includes("themeCreate")) {
+        return {
+          json: async () => ({
+            data: {
+              themeCreate: {
+                theme: {
+                  id: "gid://shopify/Theme/999",
+                  name: variables?.name || variables?.input?.name || "Staging Theme",
+                  role: "UNPUBLISHED",
+                },
+                userErrors: [],
+              },
+            },
+          }),
+        };
+      }
+      if (query.includes("themeFilesUpsert")) {
+        return {
+          json: async () => ({
+            data: {
+              themeFilesUpsert: {
+                upsertedThemeFiles: (variables?.files || []).map((f) => ({
+                  filename: f.filename,
+                })),
+                userErrors: [],
+              },
+            },
+          }),
+        };
+      }
       if (query.includes("getThemes") || query.includes("theme(")) {
         return {
           json: async () => ({

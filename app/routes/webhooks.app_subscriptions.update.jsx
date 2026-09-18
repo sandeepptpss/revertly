@@ -53,7 +53,17 @@ export const action = async ({ request }) => {
 
     if (status === "ACTIVE") {
       const planInfo = NAME_TO_PLAN_INFO.get(name.toLowerCase());
-      const targetPlan = planInfo?.planId || "free";
+      if (!planInfo) {
+        // An ACTIVE subscription means the merchant is being charged. If the
+        // name matches no known plan (renamed or legacy tier), downgrading
+        // them to free would strip entitlements they are paying for, so leave
+        // the stored plan untouched and surface it for follow-up instead.
+        console.error(
+          `[Revertly Webhook] ACTIVE subscription "${name}" for ${shop} matches no known plan — leaving stored plan unchanged.`,
+        );
+        return new Response("Unrecognised active plan name; ignored", { status: 200 });
+      }
+      const targetPlan = planInfo.planId;
 
       let targetInterval = planInfo?.interval || INTERVAL_MONTHLY;
       const lineItemInterval = subscription?.line_items?.[0]?.plan?.pricing_details?.interval;

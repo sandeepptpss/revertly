@@ -28,6 +28,10 @@ async function main() {
   await prisma.appSettings.create({
     data: {
       shop: TEST_SHOP,
+      // Cloud sync is a paid feature. Without a plan that includes it the
+      // scheduler skips the upload entirely and the restore point stays
+      // NOT_SYNCED, which would not exercise the failure path below.
+      planId: "starter",
       autoBackupSchedule: "DAILY",
       autoBackupTime: "02:00",
       nextAutoBackupAt: new Date(Date.now() - 10000), // In the past -> DUE

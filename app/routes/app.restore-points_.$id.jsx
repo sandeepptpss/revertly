@@ -276,6 +276,10 @@ async function recordRestoreRollbackJob({
 }
 
 export const action = async ({ request, params }) => {
+  // Tracked outside the try so a throw mid-restore can clear the RESTORING /
+  // RUNNING states. Without this both records stay stuck in-flight forever and
+  // the restore point can never be used again.
+  let inFlightRestore = null;
   try {
     const { session, admin } = await authenticate.admin(request);
     const shop = session.shop;
@@ -870,6 +874,7 @@ export const action = async ({ request, params }) => {
       where: { id: rpId },
       data: { status: "RESTORING" },
     });
+    inFlightRestore = { restorePointId: rpId, jobId: job.id };
 
     let successCount = 0;
     let failedCount = 0;
@@ -1014,16 +1019,39 @@ export const action = async ({ request, params }) => {
       },
     );
 
-    const successLabel = intent === "restore_single_product"
-      ? `Product successfully restored to snapshot state.`
-      : `Restored ${successCount} products successfully (${failedCount} failed).`;
+    // A restore where nothing succeeded is a failure, however cleanly the loop
+    // ran — reporting success would tell a merchant their store was rolled
+    // back when not a single product changed.
+    const anySucceeded = successCount > 0;
+
+    if (intent === "restore_single_product") {
+      return anySucceeded
+        ? { success: true, message: "Product successfully restored to snapshot state." }
+        : {
+            success: false,
+            message: "Product could not be restored. See rollback history for details.",
+          };
+    }
 
     return {
-      success: true,
-      message: successLabel,
+      success: anySucceeded,
+      message: anySucceeded
+        ? `Restored ${successCount} products successfully (${failedCount} failed).`
+        : `No products could be restored (${failedCount} failed). See rollback history for details.`,
     };
   } catch (error) {
     console.error("Restore point detail action error:", error);
+    if (inFlightRestore) {
+      await prisma.restorePoint
+        .update({ where: { id: inFlightRestore.restorePointId }, data: { status: "READY" } })
+        .catch(() => {});
+      await prisma.rollbackJob
+        .update({
+          where: { id: inFlightRestore.jobId },
+          data: { status: "FAILED", completedAt: new Date() },
+        })
+        .catch(() => {});
+    }
     return {
       success: false,
       message: error?.message || "An unexpected error occurred during restoration.",

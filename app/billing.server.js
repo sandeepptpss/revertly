@@ -194,6 +194,10 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
   let activeShopifyPlan = null;
   let activeShopifyInterval = null;
   let subscriptionDiscountPercent = null;
+  // Only a check that actually completed may be used to downgrade a store.
+  // A thrown request, or an ACTIVE subscription under a name this build does
+  // not recognise, tells us nothing about whether the merchant is paying.
+  let noActivePaymentConfirmed = false;
 
   if (billing) {
     try {
@@ -210,6 +214,8 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
         ],
         isTest,
       });
+
+      noActivePaymentConfirmed = !billingCheck?.hasActivePayment;
 
       if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
         // Find active subscription
@@ -250,8 +256,18 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
         }
 
         subscriptionDiscountPercent = readSubscriptionDiscountPercent(activeSub);
+
+        if (!activeShopifyPlan) {
+          // Paying, but the subscription name matched none of the known plans.
+          // Leave the stored plan alone rather than dropping the merchant to
+          // free while Shopify keeps charging them.
+          console.warn(
+            `[Revertly Billing] Unrecognised active subscription name for ${shop}: ${JSON.stringify(subName)} — leaving stored plan unchanged.`,
+          );
+        }
       }
     } catch (err) {
+      noActivePaymentConfirmed = false;
       console.warn("[Revertly Billing] Shopify billing check warning:", err?.message || err);
     }
   }
@@ -274,7 +290,7 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
         },
       });
       currentPlan = activeShopifyPlan;
-    } else if (!activeShopifyPlan && settings && settings.planId !== "free") {
+    } else if (noActivePaymentConfirmed && settings && settings.planId !== "free") {
       // Shopify has no active payment, but DB still says paid plan -> downgrade to free
       await prisma.appSettings.update({
         where: { shop },

@@ -22,6 +22,17 @@ export const PLAN_ENTERPRISE_ANNUAL = "Enterprise (Annual)";
 // Aliases for backwards compatibility
 export const PLAN_PRO = PLAN_GROWTH;
 
+// Webhook HMACs are verified with the API secret. Falling back to a literal
+// that is committed to this repo would let anyone forge a webhook — including
+// shop/redact (wipes a store's data) or app_subscriptions/update (grants a
+// plan). A missing secret in production is a deploy fault, not a default.
+if (process.env.NODE_ENV === "production" && !process.env.SHOPIFY_API_SECRET) {
+  throw new Error(
+    "SHOPIFY_API_SECRET is not set. Refusing to start in production with the placeholder secret, " +
+      "which would accept forged webhooks.",
+  );
+}
+
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY || "1aa2f8043b53bd114b8814fc368663fd",
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "dummy_secret_key_for_testing",

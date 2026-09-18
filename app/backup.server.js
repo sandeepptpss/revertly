@@ -3606,12 +3606,16 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
 
       // Restore theme staging if theme files present
       if (theme && Array.isArray(theme.files) && theme.files.length > 0) {
+        // Must be "draft": an import may carry another store's theme, so the
+        // files go to a new unpublished theme for review. `mode` defaults to
+        // "live", which would overwrite the merchant's published storefront.
         const res = await restoreThemeFilesWithSafety({
           admin,
           shop,
           themeId: theme.activeTheme?.id,
+          themeName: theme.activeTheme?.name,
           files: theme.files,
-          createStaging: true,
+          mode: "draft",
         });
         if (res.success) liveTheme = true;
       }
