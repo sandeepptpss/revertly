@@ -22,6 +22,7 @@ import { ROLES, PERMISSIONS, roleCan, permissionsForRole } from "./team.constant
 
 export { ROLES, PERMISSIONS, roleCan, permissionsForRole };
 
+
 /**
  * The signed-in staff member's address, or null when the request carries no
  * user identity (an offline session, which identifies only the store).
