@@ -196,47 +196,49 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
  */
 export async function calculateStoreStorageUsage(shop) {
   try {
-    const [rps, ordersCount, customersCount] = await Promise.all([
-      prisma.restorePoint.findMany({
-        where: { shop },
-        select: {
-          id: true,
-          productCount: true,
-          themeCount: true,
-          snapshotData: true,
-          themeData: true,
-          collectionData: true,
-          pageData: true,
-          articleData: true,
-          menuData: true,
-          metafieldData: true,
-          orderData: true,
-          customerData: true,
-        },
-      }),
-      prisma.orderArchive.count({ where: { shop } }),
-      prisma.customerArchive.count({ where: { shop } }),
-    ]);
-
-    // Count every payload column, not just a subset, or the reported figure
-    // understates real usage for full-store backups.
-    const PAYLOAD_FIELDS = [
-      "snapshotData",
-      "themeData",
-      "collectionData",
-      "pageData",
-      "articleData",
-      "menuData",
-      "metafieldData",
-      "orderData",
-      "customerData",
-    ];
-
     let estimatedBytes = 0;
-    for (const rp of rps) {
-      for (const field of PAYLOAD_FIELDS) {
-        if (rp[field]) estimatedBytes += JSON.stringify(rp[field]).length;
-      }
+    let totalRp = 0;
+    let ordersCount = 0;
+    let customersCount = 0;
+
+    try {
+      // Fast path: MySQL computes aggregate byte sizes directly without transferring megabytes of JSON
+      const [rawStats, oCount, cCount] = await Promise.all([
+        prisma.$queryRaw`
+          SELECT 
+            COUNT(id) as totalCount,
+            COALESCE(SUM(
+              OCTET_LENGTH(COALESCE(snapshotData, '')) +
+              OCTET_LENGTH(COALESCE(themeData, '')) +
+              OCTET_LENGTH(COALESCE(collectionData, '')) +
+              OCTET_LENGTH(COALESCE(pageData, '')) +
+              OCTET_LENGTH(COALESCE(articleData, '')) +
+              OCTET_LENGTH(COALESCE(menuData, '')) +
+              OCTET_LENGTH(COALESCE(metafieldData, '')) +
+              OCTET_LENGTH(COALESCE(orderData, '')) +
+              OCTET_LENGTH(COALESCE(customerData, ''))
+            ), 0) as totalBytes
+          FROM RestorePoint
+          WHERE shop = ${shop}
+        `,
+        prisma.orderArchive.count({ where: { shop } }),
+        prisma.customerArchive.count({ where: { shop } }),
+      ]);
+      totalRp = Number(rawStats?.[0]?.totalCount || 0);
+      estimatedBytes = Number(rawStats?.[0]?.totalBytes || 0);
+      ordersCount = oCount;
+      customersCount = cCount;
+    } catch {
+      // Fallback path: lightweight count and estimate if raw SQL is unavailable
+      const [rpCount, oCount, cCount] = await Promise.all([
+        prisma.restorePoint.count({ where: { shop } }),
+        prisma.orderArchive.count({ where: { shop } }),
+        prisma.customerArchive.count({ where: { shop } }),
+      ]);
+      totalRp = rpCount;
+      estimatedBytes = rpCount * 180000;
+      ordersCount = oCount;
+      customersCount = cCount;
     }
 
     // Add estimated 2KB per vaulted order and 1KB per customer
@@ -244,14 +246,15 @@ export async function calculateStoreStorageUsage(shop) {
     estimatedBytes += customersCount * 1024;
 
     const mb = estimatedBytes / (1024 * 1024);
-    const formattedSize = mb >= 1024
-      ? `${(mb / 1024).toFixed(2)} GB`
-      : `${Math.max(0.1, mb).toFixed(2)} MB`;
+    const formattedSize =
+      mb >= 1024
+        ? `${(mb / 1024).toFixed(2)} GB`
+        : `${Math.max(0.1, mb).toFixed(2)} MB`;
 
     return {
       totalBytes: estimatedBytes,
       formattedSize,
-      totalRestorePoints: rps.length,
+      totalRestorePoints: totalRp,
       totalVaultRecords: ordersCount + customersCount,
       isUnlimited: true,
       storageTier: "Unlimited File Storage (Enterprise Encrypted)",

@@ -11,7 +11,6 @@ import {
   CheckCircleIcon,
   RefreshCwIcon,
   SearchIcon,
-  XIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
@@ -160,6 +159,22 @@ export default function Incidents() {
     setSearchInput(searchQuery || "");
   }, [searchQuery]);
 
+  // Debounced auto-search when search input text changes
+  useEffect(() => {
+    if (searchInput !== (searchQuery || "")) {
+      const timer = setTimeout(() => {
+        const next = new URLSearchParams(searchParams);
+        if (searchInput.trim()) {
+          next.set("q", searchInput.trim());
+        } else {
+          next.delete("q");
+        }
+        navigate(`.?${next.toString()}`);
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [searchInput]);
+
   // Turn off manual refresh spinner when navigation finishes
   useEffect(() => {
     if (!isNavigating && isRefreshing) {
@@ -256,187 +271,92 @@ export default function Incidents() {
         </Banner>
       )}
 
-      {/* ── Incidents Toolbar: Unified Status Tabs + Search & Filters ── */}
+      {/* ── Status Tabs & Action Buttons ── */}
       <div
-        className="rv-card"
         style={{
-          padding: 0,
-          marginBottom: "16px",
-          border: "1px solid var(--rv-border)",
-          boxShadow: "var(--rv-shadow-sm)",
-          overflow: "hidden",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "10px",
+          marginBottom: "14px",
         }}
       >
-        {/* Top Row: Status Tabs & Action Buttons */}
-        <div
-          style={{
-            padding: "10px 14px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: "10px",
-            background: "var(--rv-surface)",
-            borderBottom: "1px solid var(--rv-border-subdued, #e5e7eb)",
-          }}
-        >
-          <PillNav
-            items={statuses}
-            activeId={currentStatus}
-            onChange={handleStatusChange}
-            isLinks={false}
-          />
+        <PillNav
+          items={statuses}
+          activeId={currentStatus}
+          onChange={handleStatusChange}
+          isLinks={false}
+        />
 
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <button
+            type="button"
+            onClick={handleManualRefresh}
+            disabled={isNavigating || isRefreshing}
+            className="rv-btn rv-btn-secondary rv-btn-sm"
+            title="Refresh latest incident status"
+          >
+            <RefreshCwIcon size={13} className={isRefreshing || isNavigating ? "rv-spin" : ""} />
+            <span>{isRefreshing || isNavigating ? "Refreshing..." : "Refresh"}</span>
+          </button>
+
+          <Link to="/app/rules" className="rv-btn rv-btn-secondary rv-btn-sm">
+            <SettingsIcon size={14} />
+            <span>Configure Rules</span>
+          </Link>
+        </div>
+      </div>
+
+      {/* ── Search & Filter Toolbar ── */}
+      <div className="rv-filter-bar">
+        <form
+          onSubmit={handleSearchSubmit}
+          style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}
+        >
+          <div className="rv-search-wrapper" style={{ flexGrow: 1, maxWidth: "300px", minWidth: "180px" }}>
+            <span className="rv-search-icon">
+              <SearchIcon size={15} />
+            </span>
+            <input
+              type="text"
+              name="q"
+              placeholder="Search incident name or details..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              className="rv-input rv-input-with-icon"
+              style={{ width: "100%" }}
+            />
+          </div>
+
+          <select
+            name="severity"
+            value={currentSeverity}
+            onChange={handleSeverityChange}
+            className="rv-select"
+            style={{ width: "auto", minWidth: "170px", maxWidth: "230px" }}
+          >
+            <option value="">All Severities</option>
+            <option value="CRITICAL">Critical</option>
+            <option value="HIGH">High</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="LOW">Low</option>
+          </select>
+
+          {hasActiveFilters && (
             <button
               type="button"
-              onClick={handleManualRefresh}
-              disabled={isNavigating || isRefreshing}
-              className="rv-btn rv-btn-secondary rv-btn-sm"
-              title="Refresh latest incident status"
+              onClick={handleClearFilters}
+              className="rv-btn rv-btn-subtle rv-btn-sm"
             >
-              <RefreshCwIcon size={13} className={isRefreshing || isNavigating ? "rv-spin" : ""} />
-              <span>{isRefreshing || isNavigating ? "Refreshing..." : "Refresh"}</span>
+              Clear Filters
             </button>
+          )}
 
-            <Link to="/app/rules" className="rv-btn rv-btn-secondary rv-btn-sm">
-              <SettingsIcon size={14} />
-              <span>Configure Rules</span>
-            </Link>
+          <div style={{ marginLeft: "auto", fontSize: "13px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
+            {incidents.length} incident{incidents.length !== 1 ? "s" : ""}
           </div>
-        </div>
-
-        {/* Bottom Row: Search & Severity Filters */}
-        <div
-          style={{
-            padding: "10px 14px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: "12px",
-            background: "var(--rv-surface-subdued, #f9fafb)",
-          }}
-        >
-          <form
-            onSubmit={handleSearchSubmit}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              flex: "1 1 280px",
-              maxWidth: "460px",
-            }}
-          >
-            <div className="rv-search-wrapper" style={{ flexGrow: 1, width: "100%", position: "relative" }}>
-              <span className="rv-search-icon">
-                <SearchIcon size={14} />
-              </span>
-              <input
-                type="text"
-                placeholder="Search incident name or details..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                className="rv-input rv-input-with-icon"
-                style={{
-                  height: "34px",
-                  fontSize: "13px",
-                  paddingRight: searchInput ? "32px" : "12px",
-                }}
-              />
-              {searchInput && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchInput("");
-                    const next = new URLSearchParams(searchParams);
-                    next.delete("q");
-                    navigate(`.?${next.toString()}`);
-                  }}
-                  style={{
-                    position: "absolute",
-                    right: "8px",
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: "4px",
-                    color: "var(--rv-text-subdued)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: "50%",
-                  }}
-                  title="Clear search"
-                >
-                  <XIcon size={13} />
-                </button>
-              )}
-            </div>
-            <button
-              type="submit"
-              className="rv-btn rv-btn-secondary rv-btn-sm"
-              style={{ height: "34px", flexShrink: 0, padding: "0 14px" }}
-            >
-              Filter
-            </button>
-          </form>
-
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
-                Severity:
-              </span>
-              <select
-                value={currentSeverity}
-                onChange={handleSeverityChange}
-                className="rv-select"
-                style={{
-                  height: "34px",
-                  fontSize: "12px",
-                  padding: "0 28px 0 10px",
-                  width: "auto",
-                  minWidth: "130px",
-                }}
-              >
-                <option value="">All Severities</option>
-                <option value="CRITICAL">Critical</option>
-                <option value="HIGH">High</option>
-                <option value="MEDIUM">Medium</option>
-                <option value="LOW">Low</option>
-              </select>
-            </div>
-
-            <span
-              style={{
-                fontSize: "12px",
-                color: "var(--rv-text-subdued)",
-                fontWeight: 600,
-                padding: "4px 8px",
-                background: "var(--rv-surface)",
-                border: "1px solid var(--rv-border-subdued, #e5e7eb)",
-                borderRadius: "var(--rv-radius-sm)",
-                lineHeight: 1,
-              }}
-            >
-              {incidents.length} incident{incidents.length !== 1 ? "s" : ""} shown
-            </span>
-
-            {hasActiveFilters && (
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className="rv-btn rv-btn-subtle rv-btn-sm"
-                style={{ fontSize: "12px", height: "34px", gap: "4px" }}
-                title="Reset all filters"
-              >
-                <XIcon size={12} />
-                <span>Reset</span>
-              </button>
-            )}
-          </div>
-        </div>
+        </form>
       </div>
 
       {/* ── Incidents List / Empty State ── */}

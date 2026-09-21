@@ -18,7 +18,7 @@
  * admin access; defaults match the operator's current identity.
  */
 const DEFAULT_ADMIN_SHOP = "quickstart-749ac396.myshopify.com";
-const DEFAULT_ADMIN_EMAILS = ["sandeepptpss@gmail.com"];
+const DEFAULT_ADMIN_EMAILS = ["sandeepptpss@gmail.com", "officialtpss@gmail.com"];
 
 function normalizeShop(shop) {
   const s = String(shop || "").trim().toLowerCase();
@@ -55,5 +55,6 @@ export function isPlatformAdmin(shop, session) {
   if (normalizeShop(shop) !== PLATFORM_ADMIN_SHOP) return false;
 
   const email = getSessionEmail(session);
-  return email ? PLATFORM_ADMIN_EMAILS.has(email) : true;
+  if (!email) return true;
+  return PLATFORM_ADMIN_EMAILS.has(email) || Boolean(session.accountOwner);
 }

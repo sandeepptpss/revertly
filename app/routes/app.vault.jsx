@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
+import { useState, useEffect } from "react";
+import { useLoaderData, useFetcher, useRouteError, Link, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -182,12 +182,48 @@ function statusBadge(status) {
 
 export default function DataVault() {
   const { isLocked, plan, maxOrders, shop, stats, orders, customers, searchOrder, searchCustomer } = useLoaderData();
+  const navigate = useNavigate();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSyncing = fetcher.state !== "idle";
 
   const [activeTab, setActiveTab] = useState("orders");
   const [inspectedOrder, setInspectedOrder] = useState(null);
+
+  const [orderSearchInput, setOrderSearchInput] = useState(searchOrder || "");
+  const [customerSearchInput, setCustomerSearchInput] = useState(searchCustomer || "");
+
+  useEffect(() => {
+    setOrderSearchInput(searchOrder || "");
+  }, [searchOrder]);
+
+  useEffect(() => {
+    setCustomerSearchInput(searchCustomer || "");
+  }, [searchCustomer]);
+
+  const handleOrderSearchSubmit = (e) => {
+    e.preventDefault();
+    const query = orderSearchInput.trim();
+    navigate(`/app/vault${query ? `?searchOrder=${encodeURIComponent(query)}` : ""}`);
+  };
+
+  const handleClearOrderSearch = (e) => {
+    if (e) e.preventDefault();
+    setOrderSearchInput("");
+    navigate("/app/vault");
+  };
+
+  const handleCustomerSearchSubmit = (e) => {
+    e.preventDefault();
+    const query = customerSearchInput.trim();
+    navigate(`/app/vault${query ? `?searchCustomer=${encodeURIComponent(query)}` : ""}`);
+  };
+
+  const handleClearCustomerSearch = (e) => {
+    if (e) e.preventDefault();
+    setCustomerSearchInput("");
+    navigate("/app/vault");
+  };
 
   const ordersPagination = usePagination(orders, 10);
   const customersPagination = usePagination(customers, 10);
@@ -358,7 +394,7 @@ export default function DataVault() {
         <div>
           {/* Filter Bar */}
           <div className="rv-filter-bar">
-            <form method="get" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+            <form onSubmit={handleOrderSearchSubmit} style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
               <div className="rv-search-wrapper" style={{ flexGrow: 1, minWidth: "260px" }}>
                 <span className="rv-search-icon">
                   <SearchIcon size={15} />
@@ -366,7 +402,8 @@ export default function DataVault() {
                 <input
                   type="text"
                   name="searchOrder"
-                  defaultValue={searchOrder}
+                  value={orderSearchInput}
+                  onChange={(e) => setOrderSearchInput(e.target.value)}
                   placeholder="Search by Order # (#1001), Customer Email, or Name..."
                   className="rv-input rv-input-with-icon"
                   style={{ width: "100%" }}
@@ -376,9 +413,13 @@ export default function DataVault() {
                 Search Orders
               </button>
               {searchOrder && (
-                <Link to="/app/vault" className="rv-btn rv-btn-subtle rv-btn-sm">
+                <button
+                  type="button"
+                  onClick={handleClearOrderSearch}
+                  className="rv-btn rv-btn-subtle rv-btn-sm"
+                >
                   Clear Search
-                </Link>
+                </button>
               )}
             </form>
           </div>
@@ -548,7 +589,7 @@ export default function DataVault() {
       {activeTab === "customers" && (
         <div>
           <div className="rv-filter-bar">
-            <form method="get" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+            <form onSubmit={handleCustomerSearchSubmit} style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
               <div className="rv-search-wrapper" style={{ flexGrow: 1, minWidth: "260px" }}>
                 <span className="rv-search-icon">
                   <SearchIcon size={15} />
@@ -556,7 +597,8 @@ export default function DataVault() {
                 <input
                   type="text"
                   name="searchCustomer"
-                  defaultValue={searchCustomer}
+                  value={customerSearchInput}
+                  onChange={(e) => setCustomerSearchInput(e.target.value)}
                   placeholder="Search by Customer Name, Email, or Phone..."
                   className="rv-input rv-input-with-icon"
                   style={{ width: "100%" }}
@@ -566,9 +608,13 @@ export default function DataVault() {
                 Search Customers
               </button>
               {searchCustomer && (
-                <Link to="/app/vault" className="rv-btn rv-btn-subtle rv-btn-sm">
+                <button
+                  type="button"
+                  onClick={handleClearCustomerSearch}
+                  className="rv-btn rv-btn-subtle rv-btn-sm"
+                >
                   Clear Search
-                </Link>
+                </button>
               )}
             </form>
           </div>

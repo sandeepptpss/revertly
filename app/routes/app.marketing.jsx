@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
+import { useState, useEffect } from "react";
+import { useLoaderData, useFetcher, useRouteError, Link, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -198,11 +198,30 @@ export default function Marketing() {
     flows,
     search,
   } = useLoaderData();
+  const navigate = useNavigate();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSubmitting = fetcher.state !== "idle";
   const [tab, setTab] = useState("lists");
   const [keyDraft, setKeyDraft] = useState({ KLAVIYO: "", MAILCHIMP: "" });
+
+  const [searchInput, setSearchInput] = useState(search || "");
+
+  useEffect(() => {
+    setSearchInput(search || "");
+  }, [search]);
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    const query = searchInput.trim();
+    navigate(`/app/marketing${query ? `?search=${encodeURIComponent(query)}` : ""}`);
+  };
+
+  const handleClearSearch = (e) => {
+    if (e) e.preventDefault();
+    setSearchInput("");
+    navigate("/app/marketing");
+  };
 
   const listsPagination = usePagination(lists, 10);
   const profilesPagination = usePagination(profiles, 10);
@@ -525,11 +544,12 @@ export default function Marketing() {
           {tab === "profiles" && (
             <div className="rv-card">
               <div className="rv-card-body">
-                <form method="GET" style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
+                <form onSubmit={handleSearchSubmit} style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
                   <input
                     type="search"
                     name="search"
-                    defaultValue={search}
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
                     placeholder="Search by email or name"
                     className="rv-input"
                     style={{ maxWidth: "320px" }}
@@ -538,6 +558,15 @@ export default function Marketing() {
                     <SearchIcon size={14} />
                     <span>Search</span>
                   </button>
+                  {search && (
+                    <button
+                      type="button"
+                      onClick={handleClearSearch}
+                      className="rv-btn rv-btn-subtle"
+                    >
+                      Clear
+                    </button>
+                  )}
                 </form>
 
                 {profiles.length === 0 ? (

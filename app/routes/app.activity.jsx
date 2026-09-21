@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError, Link, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -10,29 +11,47 @@ import {
   RefreshCwIcon,
   SearchIcon,
   BoxIcon,
-  FilterIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { HubNav } from "../components/HubNav.jsx";
 import { Pagination } from "../components/Pagination.jsx";
 
+function fieldLabel(fieldName) {
+  if (!fieldName) return "Field";
+  const clean = fieldName.startsWith("variant.")
+    ? fieldName.replace("variant.", "")
+    : fieldName.startsWith("metafield.")
+    ? fieldName.replace("metafield.", "Metafield: ")
+    : fieldName;
+  if (clean === "bodyHtml") return "Description";
+  if (clean === "compareAtPrice") return "Compare-at Price";
+  if (clean === "inventoryQuantity") return "Inventory";
+  if (clean.toLowerCase() === "sku") return fieldName.startsWith("variant.") ? "Variant SKU" : "SKU";
+  const formatted = clean
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (s) => s.toUpperCase())
+    .trim();
+  return fieldName.startsWith("variant.") ? `Variant ${formatted}` : formatted;
+}
+
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
   const url = new URL(request.url);
-  const page = parseInt(url.searchParams.get("page") || "1");
+  const rawPage = parseInt(url.searchParams.get("page") || "1", 10);
+  const page = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
   const field = (url.searchParams.get("field") || "").trim();
   const product = (url.searchParams.get("product") || "").trim();
-  const perPage = 50;
+  const perPage = 10;
 
   const where = {
     shop,
-    ...(field ? { fieldName: { contains: field } } : {}),
+    ...(field ? { fieldName: field } : {}),
     ...(product ? { productTitle: { contains: product } } : {}),
   };
 
-  const [changes, total, deletedProducts] = await Promise.all([
+  const [changes, total, deletedProducts, distinctFields] = await Promise.all([
     prisma.changeEvent.findMany({
       where,
       orderBy: { changedAt: "desc" },
@@ -45,9 +64,33 @@ export const loader = async ({ request }) => {
       orderBy: { deletedAt: "desc" },
       take: 20,
     }),
+    prisma.changeEvent.groupBy({
+      by: ["fieldName"],
+      where: { shop },
+      _count: { id: true },
+      orderBy: { fieldName: "asc" },
+    }),
   ]);
 
-  return { changes, total, page, perPage, field, product, deletedProducts, shop };
+  const availableFields = distinctFields
+    .filter((f) => Boolean(f.fieldName))
+    .map((f) => ({
+      value: f.fieldName,
+      label: fieldLabel(f.fieldName),
+      count: f._count.id,
+    }));
+
+  return {
+    changes,
+    total,
+    page,
+    perPage,
+    field,
+    product,
+    deletedProducts,
+    shop,
+    availableFields,
+  };
 };
 
 export const action = async ({ request }) => {
@@ -94,30 +137,62 @@ function formatTime(date) {
   return new Date(date).toLocaleString();
 }
 
-function fieldLabel(fieldName) {
-  if (!fieldName) return "Field";
-  const clean = fieldName.startsWith("variant.")
-    ? fieldName.replace("variant.", "")
-    : fieldName.startsWith("metafield.")
-    ? fieldName.replace("metafield.", "Metafield: ")
-    : fieldName;
-  if (clean === "bodyHtml") return "Description";
-  if (clean === "compareAtPrice") return "Compare-at Price";
-  if (clean === "inventoryQuantity") return "Inventory";
-  const formatted = clean
-    .replace(/([A-Z])/g, " $1")
-    .replace(/^./, (s) => s.toUpperCase())
-    .trim();
-  return fieldName.startsWith("variant.") ? `Variant ${formatted}` : formatted;
-}
-
 export default function Activity() {
-  const { changes, total, page, perPage, field, product, deletedProducts, shop } = useLoaderData();
+  const { changes, total, page, perPage, field, product, deletedProducts, shop, availableFields = [] } = useLoaderData();
   const navigate = useNavigate();
   const cleanShop = (shop || "").replace(".myshopify.com", "");
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isRestoring = fetcher.state !== "idle";
+
+  const [productInput, setProductInput] = useState(product || "");
+  const [fieldInput, setFieldInput] = useState(field || "");
+
+  useEffect(() => {
+    setProductInput(product || "");
+  }, [product]);
+
+  useEffect(() => {
+    setFieldInput(field || "");
+  }, [field]);
+
+  const updateFilters = ({ product: nextProduct, field: nextField }) => {
+    const params = new URLSearchParams();
+    const prod = (nextProduct !== undefined ? nextProduct : productInput).trim();
+    const fld = (nextField !== undefined ? nextField : fieldInput).trim();
+    if (prod) params.set("product", prod);
+    if (fld) params.set("field", fld);
+    const query = params.toString();
+    navigate(`/app/activity${query ? `?${query}` : ""}`);
+  };
+
+  // Automatically update results when product search text changes (debounced)
+  useEffect(() => {
+    if (productInput !== (product || "")) {
+      const timer = setTimeout(() => {
+        updateFilters({ product: productInput, field: fieldInput });
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [productInput]);
+
+  const handleFieldChange = (e) => {
+    const nextField = e.target.value;
+    setFieldInput(nextField);
+    updateFilters({ field: nextField, product: productInput });
+  };
+
+  const handleFilterSubmit = (e) => {
+    e.preventDefault();
+    updateFilters({ product: productInput, field: fieldInput });
+  };
+
+  const handleClearFilters = (e) => {
+    if (e) e.preventDefault();
+    setProductInput("");
+    setFieldInput("");
+    navigate("/app/activity");
+  };
 
   return (
     <s-page heading="Activity Log" inlineSize="large">
@@ -202,7 +277,7 @@ export default function Activity() {
 
       {/* ── Search & Filter Toolbar ── */}
       <div className="rv-filter-bar">
-        <form method="get" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+        <form onSubmit={handleFilterSubmit} style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
           <div className="rv-search-wrapper" style={{ flexGrow: 1, maxWidth: "300px", minWidth: "180px" }}>
             <span className="rv-search-icon">
               <SearchIcon size={15} />
@@ -211,7 +286,8 @@ export default function Activity() {
               type="text"
               name="product"
               placeholder="Search product title..."
-              defaultValue={product}
+              value={productInput}
+              onChange={(e) => setProductInput(e.target.value)}
               className="rv-input rv-input-with-icon"
               style={{ width: "100%" }}
             />
@@ -219,32 +295,30 @@ export default function Activity() {
 
           <select
             name="field"
-            defaultValue={field}
+            value={fieldInput}
+            onChange={handleFieldChange}
             className="rv-select"
             style={{ width: "auto", minWidth: "170px", maxWidth: "230px" }}
           >
             <option value="">All Field Types</option>
-            <option value="price">Price Changes</option>
-            <option value="compareAtPrice">Compare At Price</option>
-            <option value="inventory">Inventory Changes</option>
-            <option value="title">Product Title</option>
-            <option value="bodyHtml">Product Description</option>
-            <option value="status">Status Changes</option>
-            <option value="vendor">Vendor</option>
-            <option value="tags">Tags</option>
-            <option value="sku">SKU Changes</option>
-            <option value="metafield">Metafields</option>
+            {fieldInput && !availableFields.some((f) => f.value === fieldInput) && (
+              <option value={fieldInput}>{fieldLabel(fieldInput)}</option>
+            )}
+            {availableFields.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label} ({f.count})
+              </option>
+            ))}
           </select>
 
-          <button type="submit" className="rv-btn rv-btn-secondary rv-btn-sm">
-            <FilterIcon size={13} />
-            <span>Apply Filters</span>
-          </button>
-
           {(field || product) && (
-            <Link to="/app/activity" className="rv-btn rv-btn-subtle rv-btn-sm">
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              className="rv-btn rv-btn-subtle rv-btn-sm"
+            >
               Clear Filters
-            </Link>
+            </button>
           )}
 
           <div style={{ marginLeft: "auto", fontSize: "13px", color: "var(--rv-text-subdued)", fontWeight: 500 }}>
@@ -265,9 +339,13 @@ export default function Activity() {
           }
           action={
             (field || product) && (
-              <Link to="/app/activity" className="rv-btn rv-btn-secondary">
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="rv-btn rv-btn-secondary"
+              >
                 Reset Filter
-              </Link>
+              </button>
             )
           }
         />
