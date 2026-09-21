@@ -18,6 +18,7 @@ import { PLAN_TIERS, INTERVAL_MONTHLY, INTERVAL_ANNUAL } from "../billing.consta
 import {
   getStorePlan,
   normalizePlanId,
+  PLAN_LIMITS,
 } from "../billing.server.js";
 import { resolveBestDiscount, resolveDiscounts, getClaimableVipOffer, claimVipOffer } from "../storeDiscount.server.js";
 import { getFreeGrowthOffer, claimFreeGrowthSeat, getFreeGrowthStatus } from "../freeGrowth.server.js";
@@ -38,6 +39,22 @@ function formatDate(d) {
   return new Date(d).toISOString().slice(0, 10);
 }
 
+/**
+ * Groups a number for display, pinned to en-US.
+ *
+ * A bare `toLocaleString()` follows whatever locale the *runtime* has, which
+ * is not the merchant's. On the server that is the host's locale, so a store
+ * on an en-IN box renders "2,00,000" for every merchant on earth; in the
+ * browser it is the viewer's, so the same number arrives from the loader
+ * grouped one way and re-renders grouped another, which is a hydration
+ * mismatch on top of the wrong digits. Pinning the locale makes the output
+ * depend on nothing but the value.
+ */
+function formatNumber(n) {
+  if (n === Infinity) return "Unlimited";
+  return Number(n).toLocaleString("en-US");
+}
+
 // ── Plan definitions ────────────────────────────────────────────────────────
 //
 // Every line below must correspond to something the app actually enforces.
@@ -50,7 +67,7 @@ function formatDate(d) {
 //   marketingBackup  → Growth and above   (checkMarketingBackupAccess)
 //   marketingProfiles→ Growth and above   (checkMarketingBackupAccess)
 //   metafieldBackup  → Growth and above   (restore-points, app.export, scheduler)
-//   themes           → Business and above (restore-points, scheduler)
+//   themes           → Growth and above (1 active theme on Growth, unlimited on Business+)
 //   circuitBreaker   → Business and above (monitor.server.js)
 //   slack            → Business and above (app.settings.jsx)
 //   marketingFlows   → Business and above (checkMarketingBackupAccess)
@@ -58,7 +75,14 @@ function formatDate(d) {
 // A feature row is normally a plain string. An object of the shape
 // { label, badge } renders the same row with a badge after it, used to call
 // out a headline capability of the tier. The badge is cosmetic only: the gate
-// is always the matching flag in PLAN_LIMITS, never this field.
+// is always the matching flag in PLAN_LIMITS, never this field. Reserve it for
+// a tier that carries no card-level badge of its own — a bullet badge on a
+// card that already says "Most Popular" reads as a second promotion competing
+// with the first.
+//
+// { label, kind: "boundary" } renders a muted, unchecked row naming the tier a
+// capability starts at. Use it where a gap between adjacent cards would
+// otherwise look accidental.
 //
 // Anything the app ships without a plan gate — scheduled backups, incidents,
 // uptime monitoring, health checks, team roles, the audit log, offline
@@ -107,6 +131,11 @@ const PLANS = [
       "Offsite Cloud Backup — Google Drive & Dropbox",
       "Auto-push every new snapshot to your cloud",
       "Restore directly from a Drive or Dropbox archive",
+      // Starter has no vault (PLAN_LIMITS.starter.vaultOrders === 0). Stating
+      // the boundary here is what keeps the omission from reading as an
+      // oversight — a merchant comparing cards should not have to infer it
+      // from the absence of a row.
+      { label: "Orders & Customers Vault starts at Growth", kind: "boundary" },
     ],
   },
   {
@@ -125,12 +154,13 @@ const PLANS = [
       "10 active detection rules",
       "Bulk multi-product incident rollback (CSV undo)",
       "Orders & Customers Vault (2,500 orders)",
-      { label: "Metafield Backups — values & definitions", badge: "Featured" },
+      "Metafield Backups — values & definitions",
       "Shop, product, collection, page, blog & article metafields",
       "Safe restore that never overwrites live metafield values",
       "Klaviyo & Mailchimp Backup — 10,000 subscriber profiles",
       "Lists, audiences, segments & profile fields captured",
       "Restore a deleted list or re-import lost subscribers",
+      "1 Active Theme Backup (Templates, Sections & Settings)",
       "Accountant-ready Tax Audit CSV export",
       "Chargeback Dispute Evidence Pack (JSON)",
     ],
@@ -149,8 +179,8 @@ const PLANS = [
       "180 days (6 months) retention",
       "Up to 100 restore points",
       "Unlimited detection rules",
-      "Full Store Themes & Liquid Code Backup",
-      "1-Click Theme Code & Asset Rollback",
+      "Unlimited Themes & Liquid Code Backup",
+      "1-Click Theme Code & Asset Rollback (Live & Draft Staging)",
       "Themes captured in every scheduled backup",
       "Orders & Customers Vault (15,000 orders)",
       "Klaviyo & Mailchimp Backup — 50,000 subscriber profiles",
@@ -169,7 +199,11 @@ const PLANS = [
     footerText: "For Shopify Plus & high volume",
     features: [
       "Everything in Business, plus:",
-      "Up to 200,000 products monitored",
+      // The webhook stops tracking once currentCount >= limits.products
+      // (webhooks.products.update.jsx), so 200,000 itself is covered by
+      // Enterprise and 200,001 is not. The wording has to say so, because the
+      // Enterprise Plus banner below draws the same line from the other side.
+      "Up to and including 200,000 products monitored",
       "365 days (1 full year) retention",
       "Unlimited restore points",
       "Unlimited Themes, Code & Assets",
@@ -235,6 +269,10 @@ export const loader = async ({ request }) => {
     paidPlan,
     billingInterval: billingInterval || INTERVAL_MONTHLY,
     limits,
+    // The standard Enterprise ceiling, sent rather than hardcoded in the view
+    // so the cards, the limit-reached banner and the Enterprise Plus upsell
+    // can never drift apart from PLAN_LIMITS or from each other.
+    enterpriseProductCap: PLAN_LIMITS.enterprise.products,
     usage: { productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount },
     shop,
     hasUsedTrial: Boolean(settings?.hasUsedTrial),
@@ -402,7 +440,7 @@ export const action = async ({ request }) => {
 
     return {
       success: true,
-      message: `VIP discount activated — ${claimed.discountPercent}% off for the next ${DISCOUNT_DURATION_MONTHS} months, through ${new Date(claimed.expiresAt).toLocaleDateString()}.`,
+      message: `VIP discount activated — ${claimed.discountPercent}% off for the next ${DISCOUNT_DURATION_MONTHS} months, through ${formatDate(claimed.expiresAt)}.`,
     };
   }
 
@@ -429,7 +467,7 @@ export const action = async ({ request }) => {
       return {
         success: true,
         planId: "enterprise",
-        message: `Custom Enterprise Plus (${customQuota.toLocaleString()} products) is active under your direct contract.`,
+        message: `Custom Enterprise Plus (${formatNumber(customQuota)} products) is active under your direct contract.`,
       };
     }
 
@@ -472,7 +510,7 @@ export const action = async ({ request }) => {
       return {
         success: true,
         planId: "enterprise",
-        message: `Custom Enterprise Plus plan ($${customPrice}/mo for ${customQuota.toLocaleString()} products) activated successfully!`,
+        message: `Custom Enterprise Plus plan ($${customPrice}/mo for ${formatNumber(customQuota)} products) activated successfully!`,
       };
     }
   }
@@ -717,9 +755,18 @@ export default function Plan() {
     vipOffer,
     freeGrowthOffer,
     shop,
+    enterpriseProductCap,
   } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
+
+  // The catalog ceiling in force for this store: their approved custom quota
+  // if they have one, otherwise the standard Enterprise cap. `>` and not `>=`
+  // because the cap itself is included — webhooks.products.update.jsx stops
+  // tracking at `currentCount >= limits.products`, so the first count the cap
+  // cannot serve is cap + 1.
+  const catalogCap = limits?.isCustomLimit ? limits.products : enterpriseProductCap;
+  const isOverCatalogCap = catalogCap !== Infinity && usage.productCount > catalogCap;
   const activePlan = result?.planId || currentPlan;
   const activeInterval = result?.billingInterval || billingInterval || "EVERY_30_DAYS";
   const activeFreeGrowth = result?.freeGrowth || freeGrowth;
@@ -750,7 +797,7 @@ export default function Plan() {
   function trialSubtext(plan) {
     if (plan.id === "free") return plan.subtext;
     if (activePlan === plan.id && trialStillActive) {
-      return `Trial active until ${new Date(trialEndsAt).toLocaleDateString()}`;
+      return `Trial active until ${formatDate(trialEndsAt)}`;
     }
     // The trial is once per store, so keep advertising it only while it is
     // still on offer — see the trialDays override in the action.
@@ -787,8 +834,12 @@ export default function Plan() {
             ) : null
           }
         >
+          {/* A store on a custom quota is still planId "enterprise", so quoting
+              a fixed 200,000 here told a merchant with an approved 500,000
+              capacity that they had run out at 200,000. The ceiling they
+              actually hit is the one in their own limits. */}
           {currentPlan === "enterprise"
-            ? "Your store has reached the 200,000 product limit for the Enterprise plan. Newly added products are no longer tracked. Contact us for a Custom Enterprise Plus setup tailored for high-volume catalogs."
+            ? `Your store has reached the ${formatNumber(limits.products)} product limit for your ${limits.isCustomLimit ? "custom Enterprise quota" : "Enterprise plan"}. Newly added products are no longer tracked. Contact us for a Custom Enterprise Plus setup tailored for high-volume catalogs.`
             : "You've reached your plan's monitored product limit — newly added products are no longer being tracked. Upgrade below to resume 24/7 protection across all products."}
         </Banner>
       )}
@@ -800,7 +851,7 @@ export default function Plan() {
           title="Custom Enterprise Quota Active"
         >
           Your store has an approved custom capacity of{" "}
-          <strong>{limits.products.toLocaleString()} products</strong>
+          <strong>{formatNumber(limits.products)} products</strong>
           {limits.customPriceAmount ? (
             <span> at <strong>${limits.customPriceAmount}/month</strong> ({limits.customBillingMethod === "EXTERNAL" ? "Direct Contract" : "Shopify Billing"})</span>
           ) : null}
@@ -836,12 +887,12 @@ export default function Plan() {
                 </span>
               </div>
               <h3 style={{ margin: "0 0 4px", fontSize: "17px", fontWeight: 800, color: "var(--rv-text)" }}>
-                Your Custom Enterprise Plus Plan ({customPlanOffer.products.toLocaleString()} Products) is Ready!
+                Your Custom Enterprise Plus Plan ({formatNumber(customPlanOffer.products)} Products) is Ready!
               </h3>
               <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
                 {customPlanOffer.note
                   ? customPlanOffer.note
-                  : `Your store has been approved for a tailored catalog capacity of ${customPlanOffer.products.toLocaleString()} products with full Enterprise protections, priority sync queue, and 365-day change retention.`}
+                  : `Your store has been approved for a tailored catalog capacity of ${formatNumber(customPlanOffer.products)} products with full Enterprise protections, priority sync queue, and 365-day change retention.`}
               </p>
             </div>
             <fetcher.Form method="POST">
@@ -981,7 +1032,7 @@ export default function Plan() {
           {storeDiscount.needsApply ? (
             <>
               Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount
-              {storeDiscount.expiresAt && <> is valid through {new Date(storeDiscount.expiresAt).toLocaleDateString()}</>},
+              {storeDiscount.expiresAt && <> is valid through {formatDate(storeDiscount.expiresAt)}</>},
               but your current subscription is still being charged at full price. Use{" "}
               <strong>Apply my {storeDiscount.percent}% discount</strong> on your active plan below to switch to
               the discounted price.
@@ -990,7 +1041,7 @@ export default function Plan() {
             <>
               Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount is active and
               applied to your store subscriptions
-              {storeDiscount.expiresAt && <>, valid through {new Date(storeDiscount.expiresAt).toLocaleDateString()}</>}.
+              {storeDiscount.expiresAt && <>, valid through {formatDate(storeDiscount.expiresAt)}</>}.
               {storeDiscount.note && <div style={{ marginTop: "4px", fontStyle: "italic" }}>{storeDiscount.note}</div>}
             </>
           )}
@@ -1006,7 +1057,7 @@ export default function Plan() {
           className="rv-fade-in"
         >
           A {globalDiscount.percent}% Global Yearly Discount is active on all yearly plans
-          {globalDiscount.expiresAt && <>, valid through {new Date(globalDiscount.expiresAt).toLocaleDateString()}</>}.
+          {globalDiscount.expiresAt && <>, valid through {formatDate(globalDiscount.expiresAt)}</>}.
           Choose <strong>Yearly Billing</strong> below to lock in {globalDiscount.percent}% savings.
         </Banner>
       )}
@@ -1051,7 +1102,7 @@ export default function Plan() {
           <div>
             <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Products Monitored</div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
-              {usage.productCount.toLocaleString()} / {limits.products === Infinity ? "Unlimited" : limits.products.toLocaleString()}
+              {formatNumber(usage.productCount)} / {formatNumber(limits.products)}
             </strong>
           </div>
           <div>
@@ -1069,7 +1120,7 @@ export default function Plan() {
           <div>
             <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Orders in Vault</div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
-              {usage.vaultOrderCount.toLocaleString()} / {limits.vaultOrders === Infinity ? "Unlimited" : limits.vaultOrders === 0 ? "Not in Plan" : limits.vaultOrders.toLocaleString()}
+              {formatNumber(usage.vaultOrderCount)} / {limits.vaultOrders === 0 ? "Not in Plan" : formatNumber(limits.vaultOrders)}
             </strong>
           </div>
           <div>
@@ -1091,7 +1142,7 @@ export default function Plan() {
                 report a real figure the store has no way to move. */}
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
               {limits.marketingBackup
-                ? `Klaviyo & Mailchimp · ${limits.marketingProfiles === Infinity ? "Unlimited" : limits.marketingProfiles.toLocaleString()} profiles`
+                ? `Klaviyo & Mailchimp · ${formatNumber(limits.marketingProfiles)} profiles`
                 : "Not in Plan"}
             </strong>
           </div>
@@ -1258,12 +1309,20 @@ export default function Plan() {
           let boxShadow = "var(--rv-shadow-sm)";
           let tierBadge = null;
 
-          if (isGrowth) {
-            tierBadge = <span className="rv-badge rv-badge-info rv-badge-sm">Most Popular</span>;
-          } else if (isBusiness) {
-            tierBadge = <span className="rv-badge rv-badge-warning rv-badge-sm">Store Shield</span>;
-          } else if (isEnterprise) {
-            tierBadge = <span className="rv-badge rv-badge-neutral rv-badge-sm">Shopify Plus</span>;
+          // One badge per card. The promotional tier badge is a shopping cue
+          // for a plan the merchant might move to, so on the plan they are
+          // already on it yields to "Current" rather than stacking beside it —
+          // otherwise Enterprise alone renders two badges while every other
+          // card renders one. The tier labels survive as the footer line
+          // ("For Shopify Plus & high volume"), so nothing is lost.
+          if (!isExactCurrent) {
+            if (isGrowth) {
+              tierBadge = <span className="rv-badge rv-badge-info rv-badge-sm">Most Popular</span>;
+            } else if (isBusiness) {
+              tierBadge = <span className="rv-badge rv-badge-warning rv-badge-sm">Store Shield</span>;
+            } else if (isEnterprise) {
+              tierBadge = <span className="rv-badge rv-badge-neutral rv-badge-sm">Shopify Plus</span>;
+            }
           }
 
           if (isExactCurrent) {
@@ -1463,9 +1522,26 @@ export default function Plan() {
                       What&apos;s Included:
                     </span>
                     {plan.features.map((feature, idx) => {
-                      // A row is either a plain string or { label, badge }.
+                      // A row is either a plain string or { label, badge } /
+                      // { label, kind }.
                       const label = typeof feature === "string" ? feature : feature.label;
                       const badge = typeof feature === "string" ? null : feature.badge;
+                      const kind = typeof feature === "string" ? null : feature.kind;
+
+                      // A boundary row states where a capability *starts*, so
+                      // it must not carry a ✓ — that would claim the tier
+                      // includes the very thing the row says it does not.
+                      if (kind === "boundary") {
+                        return (
+                          <div
+                            key={idx}
+                            style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "12px", lineHeight: 1.4 }}
+                          >
+                            <span style={{ color: "var(--rv-text-subdued)", fontWeight: "bold" }}>↑</span>
+                            <span style={{ color: "var(--rv-text-subdued)" }}>{label}</span>
+                          </div>
+                        );
+                      }
 
                       // "Everything in Starter, plus:" is a roll-up of the tier
                       // below, not an item of its own — a ✓ beside it would read
@@ -1585,14 +1661,18 @@ export default function Plan() {
         })}
       </div>
 
-      {/* ── Custom Enterprise Plus (> 200,000 Products) Dynamic Section ── */}
+      {/* ── Custom Enterprise Plus (above the Enterprise cap) Dynamic Section ── */}
+      {/* The trigger is the ceiling this store actually has: a merchant already
+          on an approved custom quota has bought the very thing this section
+          sells, so pitching it to them at 200,001 of their 500,000 products
+          reads as the page not knowing what they pay for. */}
       <div
         className="rv-card rv-fade-in"
         style={{
           marginTop: "24px",
-          background: usage.productCount > 200000 ? "linear-gradient(135deg, rgba(124, 58, 237, 0.08) 0%, rgba(79, 70, 229, 0.05) 100%)" : "var(--rv-surface)",
-          border: usage.productCount > 200000 ? "2px solid #7c3aed" : "1px solid var(--rv-border)",
-          boxShadow: usage.productCount > 200000 ? "0 8px 24px rgba(124, 58, 237, 0.15)" : "var(--rv-shadow-sm)",
+          background: isOverCatalogCap ? "linear-gradient(135deg, rgba(124, 58, 237, 0.08) 0%, rgba(79, 70, 229, 0.05) 100%)" : "var(--rv-surface)",
+          border: isOverCatalogCap ? "2px solid #7c3aed" : "1px solid var(--rv-border)",
+          boxShadow: isOverCatalogCap ? "0 8px 24px rgba(124, 58, 237, 0.15)" : "var(--rv-shadow-sm)",
           padding: "24px",
           borderRadius: "12px",
         }}
@@ -1614,25 +1694,27 @@ export default function Plan() {
               >
                 ENTERPRISE PLUS
               </span>
-              {usage.productCount > 200000 ? (
+              {isOverCatalogCap ? (
                 <span className="rv-badge rv-badge-warning" style={{ fontWeight: 700 }}>
-                  High Volume Catalog: {usage.productCount.toLocaleString()} Products
+                  High Volume Catalog: {formatNumber(usage.productCount)} Products
                 </span>
               ) : (
-                <span className="rv-badge rv-badge-neutral">Catalogs Exceeding 200,000 Products</span>
+                <span className="rv-badge rv-badge-neutral">
+                  Catalogs of More Than {formatNumber(catalogCap)} Products
+                </span>
               )}
             </div>
 
             <h3 style={{ margin: "0 0 8px", fontSize: "18px", fontWeight: 800, color: "var(--rv-text)" }}>
-              {usage.productCount > 200000
+              {isOverCatalogCap
                 ? "Custom High-Capacity Tier Recommended for Your Store"
-                : "Need More Than 200,000 Products or Custom Retention?"}
+                : `Tracking More Than ${formatNumber(catalogCap)} Products, or Need Custom Retention?`}
             </h3>
 
             <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6, maxWidth: "680px" }}>
-              {usage.productCount > 200000
-                ? `Your store currently has ${usage.productCount.toLocaleString()} products, which exceeds the standard 200k Enterprise plan limit. Our dedicated engineering team provides isolated sync clusters, custom API rate allocations, and tailored retention pipelines for mega-catalogs.`
-                : "For mega-catalogs with 300,000 to 1,000,000+ SKUs, multi-year compliance archives, and customized disaster recovery SLAs, we offer tailored Enterprise Plus solutions with dedicated infrastructure."}
+              {isOverCatalogCap
+                ? `Your store currently has ${formatNumber(usage.productCount)} products, which exceeds your ${formatNumber(catalogCap)} ${limits?.isCustomLimit ? "custom quota" : "Enterprise plan limit"}. Our dedicated engineering team provides isolated sync clusters, custom API rate allocations, and tailored retention pipelines for mega-catalogs.`
+                : `Enterprise covers catalogs up to and including ${formatNumber(catalogCap)} products. Above that — mega-catalogs of ${formatNumber(catalogCap + 1)} to 1,000,000+ SKUs, multi-year compliance archives, and customized disaster recovery SLAs — we offer tailored Enterprise Plus solutions with dedicated infrastructure.`}
             </p>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px", marginTop: "12px" }}>
@@ -1658,9 +1740,9 @@ export default function Plan() {
           <div style={{ alignSelf: "center", display: "flex", flexDirection: "column", gap: "8px", minWidth: "220px" }}>
             <Link
               to={`/app/support?category=Billing&priority=HIGH&subject=${encodeURIComponent(
-                `Custom Enterprise Plus Quote (${usage.productCount.toLocaleString()} products)`
+                `Custom Enterprise Plus Quote (${formatNumber(usage.productCount)} products)`
               )}&products=${usage.productCount}&message=${encodeURIComponent(
-                `Hi Revertly Team,\n\nOur store (${shop}) has approximately ${usage.productCount.toLocaleString()} products. We would like to request a Custom Enterprise Plus quote with dedicated infrastructure and custom limits.\n\nLooking forward to hearing from you.`
+                `Hi Revertly Team,\n\nOur store (${shop}) has approximately ${formatNumber(usage.productCount)} products. We would like to request a Custom Enterprise Plus quote with dedicated infrastructure and custom limits.\n\nLooking forward to hearing from you.`
               )}`}
               className="rv-btn"
               style={{
@@ -1675,7 +1757,7 @@ export default function Plan() {
                 display: "inline-block",
               }}
             >
-              {usage.productCount > 200000 ? "Request Custom Plus Quote →" : "Contact Enterprise Sales →"}
+              {isOverCatalogCap ? "Request Custom Plus Quote →" : "Contact Enterprise Sales →"}
             </Link>
             <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", textAlign: "center" }}>
               Fast response • Quotes within 24 hours
