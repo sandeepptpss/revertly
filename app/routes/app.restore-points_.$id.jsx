@@ -318,7 +318,7 @@ export const action = async ({ request, params }) => {
     if (intent === "restore_theme") {
       const themeAccess = await checkFeatureAccess(shop, "themes");
       if (!themeAccess.allowed) {
-        return { success: false, message: "Theme restoration requires a Business or Enterprise plan." };
+        return { success: false, message: "Theme restoration requires a Growth, Business or Enterprise plan." };
       }
 
       const restorePoint = await prisma.restorePoint.findFirst({

@@ -189,11 +189,13 @@ async function runAsyncTests() {
     assert.strictEqual(access.plan, "growth");
   });
 
-  await itAsync("Growth Plan: themes and slack remain locked (Business+ required)", async () => {
+  await itAsync("Growth Plan: themes is unlocked (1 active theme) while slack and circuitBreaker remain locked", async () => {
     const themes = await checkFeatureAccess(testShop, "themes");
     const slack = await checkFeatureAccess(testShop, "slack");
-    assert.strictEqual(themes.allowed, false);
+    const cb = await checkFeatureAccess(testShop, "circuitBreaker");
+    assert.strictEqual(themes.allowed, true);
     assert.strictEqual(slack.allowed, false);
+    assert.strictEqual(cb.allowed, false);
   });
 
   // Test with Business plan

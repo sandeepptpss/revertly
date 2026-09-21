@@ -61,6 +61,19 @@ export {
 // The flag must be re-checked at restore time, not just at backup time: a
 // store can capture a metafield backup on Growth and then downgrade, and the
 // snapshot outlives the subscription.
+// ── Theme backup & rollback ──────────────────────────────────────────────────
+//
+// Theme protection starts at Growth with 1 Active Theme backup, giving retail
+// merchants essential protection against accidental theme breaks or app overwrites.
+// Business and Enterprise unlock Unlimited Themes, draft theme backups, and 1-click
+// live/draft code rollback.
+//
+//   themes            → active theme backup & restore on Growth and above.
+//   themeLimit        → 1 active theme on Growth; Infinity on Business+.
+//                       The single source of truth for how many themes a tier
+//                       may capture. checkThemeAccess derives `unlimitedThemes`
+//                       from it (themeLimit === Infinity), so the two can never
+//                       contradict each other.
 export const PLAN_LIMITS = {
   free: {
     products: 100,
@@ -69,6 +82,7 @@ export const PLAN_LIMITS = {
     retentionDays: 7,
     vaultOrders: 0,
     themes: false,
+    themeLimit: 0,
     circuitBreaker: false,
     slack: false,
     bulkRollback: false,
@@ -85,6 +99,7 @@ export const PLAN_LIMITS = {
     retentionDays: 30,
     vaultOrders: 0,
     themes: false,
+    themeLimit: 0,
     circuitBreaker: false,
     slack: false,
     bulkRollback: false,
@@ -100,7 +115,8 @@ export const PLAN_LIMITS = {
     rules: 10,
     retentionDays: 90,
     vaultOrders: 2500,
-    themes: false,
+    themes: true,
+    themeLimit: 1,
     circuitBreaker: false,
     slack: false,
     bulkRollback: true,
@@ -117,6 +133,7 @@ export const PLAN_LIMITS = {
     retentionDays: 180,
     vaultOrders: 15000,
     themes: true,
+    themeLimit: Infinity,
     circuitBreaker: true,
     slack: true,
     bulkRollback: true,
@@ -133,6 +150,7 @@ export const PLAN_LIMITS = {
     retentionDays: 365,
     vaultOrders: 100000,
     themes: true,
+    themeLimit: Infinity,
     circuitBreaker: true,
     slack: true,
     bulkRollback: true,
@@ -532,3 +550,27 @@ export async function checkFeatureAccess(shop, feature) {
     feature,
   };
 }
+
+/**
+ * Check if the shop has access to theme backups, how many themes it can back up,
+ * and whether unlimited/draft theme backups are included.
+ *
+ * `unlimitedThemes` is derived from `themeLimit` rather than stored beside it.
+ * Held as two independent fields the pair can disagree — a tier set to
+ * `themeLimit: 5, unlimitedThemes: true` would advertise a cap that nothing
+ * enforces — so the count is the single source of truth and "unlimited" is
+ * simply the absence of one.
+ */
+export async function checkThemeAccess(shop) {
+  const plan = await getEffectivePlanId(shop);
+  const limits = getPlanLimits(plan);
+  const themeLimit = limits.themes ? (limits.themeLimit ?? 0) : 0;
+
+  return {
+    allowed: Boolean(limits.themes),
+    themeLimit,
+    unlimitedThemes: themeLimit === Infinity,
+    plan,
+  };
+}
+

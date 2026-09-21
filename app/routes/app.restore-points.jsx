@@ -13,7 +13,7 @@ import {
   backupMenus,
   backupMetafields,
 } from "../backup.server.js";
-import { checkRestorePointLimit, checkFeatureAccess } from "../billing.server.js";
+import { checkRestorePointLimit, checkFeatureAccess, checkThemeAccess } from "../billing.server.js";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 import { syncRestorePointToCloud } from "../cloudSync.server.js";
 import {
@@ -68,7 +68,7 @@ export const loader = async ({ request }) => {
       },
     }),
     checkRestorePointLimit(shop),
-    checkFeatureAccess(shop, "themes"),
+    checkThemeAccess(shop),
     checkFeatureAccess(shop, "metafieldBackup"),
     prisma.appSettings.findUnique({ where: { shop } }),
   ]);
@@ -99,6 +99,8 @@ export const loader = async ({ request }) => {
     restorePoints,
     limitInfo,
     hasThemeAccess: themeAccess.allowed,
+    themeLimit: themeAccess.themeLimit,
+    unlimitedThemes: themeAccess.unlimitedThemes,
     hasMetafieldAccess: metafieldAccess.allowed,
     metafieldPlan: metafieldAccess.plan,
     themes,
@@ -211,9 +213,9 @@ export const action = async ({ request }) => {
       const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
       if (!perm.allowed) return { success: false, message: perm.message };
 
-      const themeCheck = await checkFeatureAccess(shop, "themes");
+      const themeCheck = await checkThemeAccess(shop);
       if (!themeCheck.allowed) {
-        return { success: false, message: "Theme backups require a Business or Enterprise plan." };
+        return { success: false, message: "Theme backups require a Growth, Business or Enterprise plan." };
       }
 
       const limitCheck = await checkRestorePointLimit(shop);
@@ -222,6 +224,48 @@ export const action = async ({ request }) => {
       }
 
       const themeId = formData.get("themeId") || null;
+      // On a capped plan only the live theme may be captured. This is an
+      // entitlement check, so every path that does not positively confirm the
+      // target is the MAIN theme has to deny: a thrown request, a malformed
+      // response or a theme the query cannot see all leave the role unknown,
+      // and treating unknown as permitted hands a Business capability to a
+      // Growth store whenever the Admin API hiccups.
+      //
+      // A null themeId is safe to allow — fetchThemeBackup falls back to the
+      // MAIN theme when it is given no target.
+      if (!themeCheck.unlimitedThemes && themeId) {
+        let role = null;
+        try {
+          const themeRes = await admin.graphql(
+            `#graphql
+            query checkThemeRole($id: ID!) {
+              theme(id: $id) {
+                id
+                role
+                name
+              }
+            }`,
+            { variables: { id: themeId.startsWith("gid://") ? themeId : `gid://shopify/Theme/${themeId}` } }
+          );
+          const tData = await themeRes.json();
+          role = tData.data?.theme?.role ?? null;
+        } catch (err) {
+          console.warn(
+            `[Revertly] Theme role lookup failed for ${shop} (theme ${themeId}): ${err?.message}`,
+          );
+        }
+
+        if (role !== "MAIN") {
+          return {
+            success: false,
+            message:
+              role === null
+                ? "We could not confirm which theme this is, so the backup was not run. Please try again — your plan covers your live theme."
+                : `Your ${themeCheck.plan === "growth" ? "Growth" : "current"} plan covers your live theme backup. Upgrade to Business for draft theme backups.`,
+          };
+        }
+      }
+
       const rawName = formData.get("name")?.trim();
       const result = await backupTheme({ admin, shop, themeId, name: rawName });
 
@@ -485,7 +529,7 @@ function formatTime(date) {
 }
 
 export default function RestorePoints() {
-  const { restorePoints, limitInfo, hasThemeAccess, hasMetafieldAccess, themes = [] } = useLoaderData();
+  const { restorePoints, limitInfo, hasThemeAccess, unlimitedThemes, hasMetafieldAccess, themes = [] } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activeIntent = fetcher.state !== "idle" ? fetcher.formData?.get("intent") : null;
@@ -752,18 +796,18 @@ export default function RestorePoints() {
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <FileCodeIcon size={16} style={{ color: "#8b5cf6" }} />
-                    <strong style={{ fontSize: "14px" }}>Full Theme Backup</strong>
+                    <strong style={{ fontSize: "14px" }}>Theme Backup</strong>
                   </div>
                   {isThemeSubmitting ? (
                     <span className="rv-badge rv-badge-sm" style={{ background: "#ede9fe", color: "#6d28d9", display: "inline-flex", alignItems: "center", gap: "4px" }}>
                       <SparklesIcon size={10} className="rv-spin" /> Running...
                     </span>
                   ) : (
-                    !hasThemeAccess && <span className="rv-badge rv-badge-warning rv-badge-sm">Business+</span>
+                    !hasThemeAccess && <span className="rv-badge rv-badge-warning rv-badge-sm">Growth+</span>
                   )}
                 </div>
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                  Liquid templates, JSON configs, layouts, and theme assets.
+                  {unlimitedThemes ? "Liquid templates, JSON configs, layouts, and all theme assets (Live & Drafts)." : "Active storefront theme liquid templates, JSON configs & assets."}
                 </p>
                 {themes.length > 1 && (
                   <div style={{ marginTop: "8px" }}>
@@ -775,11 +819,16 @@ export default function RestorePoints() {
                       disabled={isAnySubmitting}
                     >
                       {themes.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name} {t.role === "MAIN" ? "(Active)" : `(${t.role})`}
+                        <option key={t.id} value={t.id} disabled={!unlimitedThemes && t.role !== "MAIN"}>
+                          {t.name} {t.role === "MAIN" ? "(Active)" : `(${t.role}) ${!unlimitedThemes ? "— Business+" : ""}`}
                         </option>
                       ))}
                     </select>
+                    {!unlimitedThemes && hasThemeAccess && (
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block", marginTop: "4px" }}>
+                        Growth covers your <strong>Active theme</strong>. Upgrade to Business for draft themes.
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -1189,12 +1238,12 @@ export default function RestorePoints() {
                         <strong style={{ fontSize: "13px" }}>Active Theme</strong>
                         {!hasThemeAccess && (
                           <span className="rv-badge rv-badge-warning rv-badge-sm">
-                            Business+
+                            Growth+
                           </span>
                         )}
                       </span>
                       <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>
-                        {hasThemeAccess ? "Liquid, JSON & Assets" : "Requires Business or Enterprise"}
+                        {hasThemeAccess ? (unlimitedThemes ? "Liquid, JSON & Assets (Unlimited Themes)" : "Active Theme Liquid & Settings") : "Requires Growth, Business or Enterprise"}
                       </span>
                     </label>
                   </div>

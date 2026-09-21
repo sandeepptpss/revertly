@@ -11,7 +11,7 @@
     "scenario": "Limits verification for tier: free",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.free",
-    "actual": "All limits matched ({\"products\":100,\"restorePoints\":2,\"rules\":1,\"retentionDays\":7,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":false,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false})",
+    "actual": "All limits matched ({\"products\":100,\"restorePoints\":2,\"rules\":1,\"retentionDays\":7,\"vaultOrders\":0,\"themes\":false,\"themeLimit\":0,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":false,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -27,7 +27,7 @@
     "scenario": "Limits verification for tier: starter",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.starter",
-    "actual": "All limits matched ({\"products\":1000,\"restorePoints\":10,\"rules\":3,\"retentionDays\":30,\"vaultOrders\":0,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":true,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false})",
+    "actual": "All limits matched ({\"products\":1000,\"restorePoints\":10,\"rules\":3,\"retentionDays\":30,\"vaultOrders\":0,\"themes\":false,\"themeLimit\":0,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":true,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -43,7 +43,7 @@
     "scenario": "Limits verification for tier: growth",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.growth",
-    "actual": "All limits matched ({\"products\":5000,\"restorePoints\":50,\"rules\":10,\"retentionDays\":90,\"vaultOrders\":2500,\"themes\":false,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":10000,\"marketingFlows\":false,\"metafieldBackup\":true})",
+    "actual": "All limits matched ({\"products\":5000,\"restorePoints\":50,\"rules\":10,\"retentionDays\":90,\"vaultOrders\":2500,\"themes\":true,\"themeLimit\":1,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":10000,\"marketingFlows\":false,\"metafieldBackup\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -59,7 +59,7 @@
     "scenario": "Limits verification for tier: business",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.business",
-    "actual": "All limits matched ({\"products\":20000,\"restorePoints\":100,\"rules\":null,\"retentionDays\":180,\"vaultOrders\":15000,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":50000,\"marketingFlows\":true,\"metafieldBackup\":true})",
+    "actual": "All limits matched ({\"products\":30000,\"restorePoints\":100,\"rules\":null,\"retentionDays\":180,\"vaultOrders\":15000,\"themes\":true,\"themeLimit\":null,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":50000,\"marketingFlows\":true,\"metafieldBackup\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -75,7 +75,7 @@
     "scenario": "Limits verification for tier: enterprise",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.enterprise",
-    "actual": "All limits matched ({\"products\":null,\"restorePoints\":null,\"rules\":null,\"retentionDays\":365,\"vaultOrders\":null,\"themes\":true,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":null,\"marketingFlows\":true,\"metafieldBackup\":true})",
+    "actual": "All limits matched ({\"products\":200000,\"restorePoints\":null,\"rules\":null,\"retentionDays\":365,\"vaultOrders\":100000,\"themes\":true,\"themeLimit\":null,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":250000,\"marketingFlows\":true,\"metafieldBackup\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -147,7 +147,7 @@
     "scenario": "Upgrade activation: growth -> business",
     "group": "Upgrade",
     "expected": "Plan updated to business with updated limits",
-    "actual": "Plan is business, products limit: 20000",
+    "actual": "Plan is business, products limit: 30000",
     "status": "PASS",
     "notes": ""
   },
@@ -163,15 +163,15 @@
     "scenario": "Price verification for Enterprise",
     "group": "Upgrade",
     "expected": "Configured amount is $79",
-    "actual": "Configured amount is $79",
-    "status": "PASS",
+    "actual": "Configured amount is $99",
+    "status": "FAIL",
     "notes": ""
   },
   {
     "scenario": "Upgrade activation: business -> enterprise",
     "group": "Upgrade",
     "expected": "Plan updated to enterprise with updated limits",
-    "actual": "Plan is enterprise, products limit: Infinity",
+    "actual": "Plan is enterprise, products limit: 200000",
     "status": "PASS",
     "notes": ""
   },
@@ -283,7 +283,7 @@
     "scenario": "Starting 14-day trial initializes trialEndsAt and hasUsedTrial",
     "group": "Trial",
     "expected": "trialEndsAt is set 14 days in future, hasUsedTrial is true",
-    "actual": "trialEndsAt: 2026-10-02T08:48:51.474Z, hasUsedTrial: true",
+    "actual": "trialEndsAt: 2026-10-05T13:41:47.702Z, hasUsedTrial: true",
     "status": "PASS",
     "notes": ""
   },
@@ -331,7 +331,7 @@
     "scenario": "productLimitReachedAt banner triggers when limit exceeded",
     "group": "Feature Limits",
     "expected": "productLimitReachedAt is stored and triggers alert banner in UI",
-    "actual": "productLimitReachedAt set to 2026-09-18T08:48:51.500Z",
+    "actual": "productLimitReachedAt set to 2026-09-21T13:41:47.722Z",
     "status": "PASS",
     "notes": ""
   },
@@ -442,9 +442,9 @@
   {
     "scenario": "Premium feature gating for growth",
     "group": "Feature Limits",
-    "expected": "Themes:false, Vault:2500, CB:false, Slack:false, BulkRollback:true",
-    "actual": "Exact match verified",
-    "status": "PASS",
+    "expected": "Themes:false, Vault:2500, CB:false, Slack:false",
+    "actual": "Mismatch: themes:true, vault:2500, cb:false, slack:false",
+    "status": "FAIL",
     "notes": ""
   },
   {
@@ -458,9 +458,9 @@
   {
     "scenario": "Premium feature gating for enterprise",
     "group": "Feature Limits",
-    "expected": "Themes:true, Vault:Infinity, CB:true, Slack:true, BulkRollback:true",
-    "actual": "Exact match verified",
-    "status": "PASS",
+    "expected": "Themes:true, Vault:Infinity, CB:true, Slack:true",
+    "actual": "Mismatch: themes:true, vault:100000, cb:true, slack:true",
+    "status": "FAIL",
     "notes": ""
   },
   {
@@ -632,11 +632,11 @@
     "notes": ""
   },
   {
-    "scenario": "Parameter Tampering: Cannot activate paid plans by spoofing formData",
+    "scenario": "Parameter Tampering: Plan spoofing",
     "group": "Authorization",
-    "expected": "POST /app/plan delegates to billing.request(); never sets paid plan directly in DB",
-    "actual": "Direct DB writes for paid plans are strictly blocked. Requires Shopify confirmation.",
-    "status": "PASS",
+    "expected": "Delegates to billing.request()",
+    "actual": "Paid plan can be set directly in DB!",
+    "status": "FAIL",
     "notes": ""
   },
   {
@@ -644,14 +644,6 @@
     "group": "UI Validation",
     "expected": "Cards for free, starter, growth, business, enterprise exist",
     "actual": "All 5 defined",
-    "status": "PASS",
-    "notes": ""
-  },
-  {
-    "scenario": "UI: Correct plan prices displayed",
-    "group": "UI Validation",
-    "expected": "Prices $0, $9, $24, $49, $79 present",
-    "actual": "All prices present",
     "status": "PASS",
     "notes": ""
   },
