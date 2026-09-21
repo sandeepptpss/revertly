@@ -17,6 +17,7 @@
  * allow-list for store staff generally.
  */
 import prisma from "./db.server.js";
+
 import { ROLES, PERMISSIONS, roleCan, permissionsForRole } from "./team.constants.js";
 
 export { ROLES, PERMISSIONS, roleCan, permissionsForRole };
@@ -118,7 +119,7 @@ export async function resolveActor(shop, session) {
             ...(name && !member.name ? { name } : {}),
           },
         })
-        .catch(() => {});
+        .catch(() => { });
       return { member, role: member.role, email, activated };
     }
 
@@ -127,7 +128,7 @@ export async function resolveActor(shop, session) {
     // requests arrive without a user identity.
     console.warn(
       `[Revertly Team] Request for ${shop} carried no staff identity — granting ADMIN. ` +
-        `Check that useOnlineTokens is enabled in shopify.server.js.`,
+      `Check that useOnlineTokens is enabled in shopify.server.js.`,
     );
   }
 
@@ -145,7 +146,7 @@ async function ensureAccountOwner(shop, email, name, member) {
   if (member?.role === "OWNER" && member.status === "ACTIVE") {
     prisma.teamMember
       .update({ where: { id: member.id }, data: { lastActiveAt: new Date() } })
-      .catch(() => {});
+      .catch(() => { });
     actor = { member, role: "OWNER", email };
   } else if (member) {
     const promoted = await prisma.teamMember.update({
@@ -178,7 +179,7 @@ async function ensureAccountOwner(shop, email, name, member) {
   if (email !== placeholderEmail) {
     await prisma.teamMember
       .deleteMany({ where: { shop, email: placeholderEmail } })
-      .catch(() => {});
+      .catch(() => { });
   }
 
   return actor;
