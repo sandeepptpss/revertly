@@ -170,6 +170,24 @@ check("A boundary row renders without a ✓", () => {
   return "returns before the checkmark row";
 });
 
+check("Free tier retains core backups while operational/governance features start at Starter", () => {
+  const freeFeatures = byId.free.features.map(labelOf);
+  const starterFeatures = byId.starter.features.map(labelOf);
+
+  // Core backup capabilities retained on Free
+  assert(freeFeatures.some((f) => /manual single-product rollback/i.test(f)), "Free missing manual rollback");
+  assert(freeFeatures.some((f) => /scheduled backups/i.test(f)), "Free missing scheduled backups");
+  assert(freeFeatures.some((f) => /offline json & csv/i.test(f)), "Free missing offline export/import");
+
+  // Operational/governance features moved to Starter
+  assert(!freeFeatures.some((f) => /uptime monitoring/i.test(f)), "Free still advertises Uptime Monitoring");
+  assert(!freeFeatures.some((f) => /team roles/i.test(f)), "Free still advertises Team roles & audit log");
+  assert(starterFeatures.some((f) => /uptime monitoring/i.test(f)), "Starter missing Uptime Monitoring");
+  assert(starterFeatures.some((f) => /team roles/i.test(f)), "Starter missing Team roles & audit log");
+
+  return "Free retains core backups; Uptime & Team roles unlock at Starter";
+});
+
 console.log("\n▶ The 200,000 product boundary");
 
 check("Enterprise copy matches where the webhook actually stops tracking", () => {

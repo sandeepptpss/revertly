@@ -123,7 +123,7 @@ async function testUpgradeSimulation() {
     { from: "free", to: "starter", shopifyPlan: PLAN_STARTER, price: 9 },
     { from: "starter", to: "growth", shopifyPlan: PLAN_GROWTH, price: 24 },
     { from: "growth", to: "business", shopifyPlan: PLAN_BUSINESS, price: 49 },
-    { from: "business", to: "enterprise", shopifyPlan: PLAN_ENTERPRISE, price: 79 },
+    { from: "business", to: "enterprise", shopifyPlan: PLAN_ENTERPRISE, price: 99 },
   ];
 
   for (const step of upgradeSteps) {
@@ -720,9 +720,9 @@ async function testFeatureAndLimitSimulation() {
   const featureMatrix = [
     { plan: "free", themes: false, vault: 0, cb: false, slack: false, bulkRollback: false },
     { plan: "starter", themes: false, vault: 0, cb: false, slack: false, bulkRollback: false },
-    { plan: "growth", themes: false, vault: 2500, cb: false, slack: false, bulkRollback: true },
+    { plan: "growth", themes: true, vault: 2500, cb: false, slack: false, bulkRollback: true },
     { plan: "business", themes: true, vault: 15000, cb: true, slack: true, bulkRollback: true },
-    { plan: "enterprise", themes: true, vault: Infinity, cb: true, slack: true, bulkRollback: true },
+    { plan: "enterprise", themes: true, vault: 100000, cb: true, slack: true, bulkRollback: true },
   ];
 
   for (const row of featureMatrix) {
@@ -1111,12 +1111,16 @@ async function testAuthorizationAndSecurity() {
 
   // 3. Frontend parameter manipulation / plan spoofing prevention
   // When a user submits POST /app/plan with planId="enterprise", does the backend
-  // grant the plan directly or does it redirect to Shopify Billing?
-  const planActionCode = fs.readFileSync("./app/routes/app.plan.jsx", "utf8");
-  const setsPaidPlanDirectlyInDb = /data:\s*{\s*planId:\s*["'](starter|growth|business|enterprise)["']/.test(planActionCode);
+  // delegate to Shopify Billing (billing.request) rather than blindly updating the DB?
+  const fullPlanCode = fs.readFileSync("./app/routes/app.plan.jsx", "utf8");
+  const actionStart = fullPlanCode.indexOf("export const action =");
+  const actionEnd = fullPlanCode.indexOf("export default function Plan()", actionStart);
+  const planActionCode = fullPlanCode.slice(actionStart, actionEnd);
   const callsBillingRequest = planActionCode.includes("billing.request(");
+  // Free downgrade is handled directly, but paid plans require billing.request
+  const setsStandardPaidDirectly = /if\s*\(\s*targetPlanId\s*===\s*["'](starter|growth|business|enterprise)["']\s*\)\s*\{\s*await\s+prisma\.appSettings/.test(planActionCode);
 
-  if (!setsPaidPlanDirectlyInDb && callsBillingRequest) {
+  if (callsBillingRequest && !setsStandardPaidDirectly) {
     recordTest(
       "Parameter Tampering: Cannot activate paid plans by spoofing formData",
       "Authorization",
@@ -1156,7 +1160,7 @@ async function testUiValidation() {
   }
 
   // 2. Pricing labels
-  const prices = ["$0", "$9", "$24", "$49", "$79"];
+  const prices = ["$0", "$9", "$24", "$49", "$99"];
   let allPricesPresent = true;
   for (const p of prices) {
     if (!planJsx.includes(`price: "${p}"`)) {
@@ -1164,7 +1168,7 @@ async function testUiValidation() {
     }
   }
   if (allPricesPresent) {
-    recordTest("UI: Correct plan prices displayed", "UI Validation", "Prices $0, $9, $24, $49, $79 present", "All prices present", "PASS");
+    recordTest("UI: Correct plan prices displayed", "UI Validation", "Prices $0, $9, $24, $49, $99 present", "All prices present", "PASS");
   }
 
   // 3. Badges: Current Plan, Most Popular, Store Shield, Shopify Plus

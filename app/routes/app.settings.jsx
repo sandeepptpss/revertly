@@ -174,7 +174,7 @@ export const action = async ({ request }) => {
       if (!slackCheck.allowed) {
         return {
           success: false,
-          message: `Slack Alerts require the Business ($49) or Enterprise ($79) plan. Please upgrade your plan in Plans & Billing to enable Slack webhooks.`,
+          message: `Slack Alerts require the Business ($49) or Enterprise ($99) plan. Please upgrade your plan in Plans & Billing to enable Slack webhooks.`,
         };
       }
 

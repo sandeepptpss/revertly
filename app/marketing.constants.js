@@ -26,7 +26,7 @@ export const MARKETING_PROVIDERS = {
 };
 
 export const MARKETING_UPGRADE_MESSAGE =
-  "Klaviyo & Mailchimp Backup is not included in the Free or Starter plans. Upgrade to Growth ($24), Business ($49), or Enterprise ($79) in Plans & Billing to back up your email marketing lists, segments and subscriber profiles.";
+  "Klaviyo & Mailchimp Backup is not included in the Free or Starter plans. Upgrade to Growth ($24), Business ($49), or Enterprise ($99) in Plans & Billing to back up your email marketing lists, segments and subscriber profiles.";
 
 export const MARKETING_FLOWS_UPGRADE_MESSAGE =
   "Klaviyo Flows & Mailchimp Journeys backup is included from the Business plan. Your lists, segments and subscriber profiles are still being backed up on your current plan.";

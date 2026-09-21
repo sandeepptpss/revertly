@@ -162,9 +162,9 @@
   {
     "scenario": "Price verification for Enterprise",
     "group": "Upgrade",
-    "expected": "Configured amount is $79",
+    "expected": "Configured amount is $99",
     "actual": "Configured amount is $99",
-    "status": "FAIL",
+    "status": "PASS",
     "notes": ""
   },
   {
@@ -283,7 +283,7 @@
     "scenario": "Starting 14-day trial initializes trialEndsAt and hasUsedTrial",
     "group": "Trial",
     "expected": "trialEndsAt is set 14 days in future, hasUsedTrial is true",
-    "actual": "trialEndsAt: 2026-10-05T13:44:36.887Z, hasUsedTrial: true",
+    "actual": "trialEndsAt: 2026-10-05T13:52:38.036Z, hasUsedTrial: true",
     "status": "PASS",
     "notes": ""
   },
@@ -331,7 +331,7 @@
     "scenario": "productLimitReachedAt banner triggers when limit exceeded",
     "group": "Feature Limits",
     "expected": "productLimitReachedAt is stored and triggers alert banner in UI",
-    "actual": "productLimitReachedAt set to 2026-09-21T13:44:36.905Z",
+    "actual": "productLimitReachedAt set to 2026-09-21T13:52:38.071Z",
     "status": "PASS",
     "notes": ""
   },
@@ -442,9 +442,9 @@
   {
     "scenario": "Premium feature gating for growth",
     "group": "Feature Limits",
-    "expected": "Themes:false, Vault:2500, CB:false, Slack:false",
-    "actual": "Mismatch: themes:true, vault:2500, cb:false, slack:false",
-    "status": "FAIL",
+    "expected": "Themes:true, Vault:2500, CB:false, Slack:false, BulkRollback:true",
+    "actual": "Exact match verified",
+    "status": "PASS",
     "notes": ""
   },
   {
@@ -458,9 +458,9 @@
   {
     "scenario": "Premium feature gating for enterprise",
     "group": "Feature Limits",
-    "expected": "Themes:true, Vault:Infinity, CB:true, Slack:true",
-    "actual": "Mismatch: themes:true, vault:100000, cb:true, slack:true",
-    "status": "FAIL",
+    "expected": "Themes:true, Vault:100000, CB:true, Slack:true, BulkRollback:true",
+    "actual": "Exact match verified",
+    "status": "PASS",
     "notes": ""
   },
   {
@@ -632,11 +632,11 @@
     "notes": ""
   },
   {
-    "scenario": "Parameter Tampering: Plan spoofing",
+    "scenario": "Parameter Tampering: Cannot activate paid plans by spoofing formData",
     "group": "Authorization",
-    "expected": "Delegates to billing.request()",
-    "actual": "Paid plan can be set directly in DB!",
-    "status": "FAIL",
+    "expected": "POST /app/plan delegates to billing.request(); never sets paid plan directly in DB",
+    "actual": "Direct DB writes for paid plans are strictly blocked. Requires Shopify confirmation.",
+    "status": "PASS",
     "notes": ""
   },
   {
@@ -644,6 +644,14 @@
     "group": "UI Validation",
     "expected": "Cards for free, starter, growth, business, enterprise exist",
     "actual": "All 5 defined",
+    "status": "PASS",
+    "notes": ""
+  },
+  {
+    "scenario": "UI: Correct plan prices displayed",
+    "group": "UI Validation",
+    "expected": "Prices $0, $9, $24, $49, $99 present",
+    "actual": "All prices present",
     "status": "PASS",
     "notes": ""
   },

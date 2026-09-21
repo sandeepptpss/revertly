@@ -121,7 +121,7 @@ export const action = async ({ request }) => {
     if (!vaultAccess.allowed) {
       return {
         success: false,
-        message: `Orders & Customers Vault is not included in the ${vaultAccess.plan.toUpperCase()} plan. Please upgrade to Growth ($24), Business ($49), or Enterprise ($79) to use Data Vault.`,
+        message: `Orders & Customers Vault is not included in the ${vaultAccess.plan.toUpperCase()} plan. Please upgrade to Growth ($24), Business ($49), or Enterprise ($99) to use Data Vault.`,
       };
     }
 
@@ -269,7 +269,7 @@ export default function DataVault() {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <CheckCircleIcon size={16} style={{ color: "var(--rv-primary)" }} />
-                <span><strong>Enterprise ($79/mo):</strong> Unlimited historical vault</span>
+                <span><strong>Enterprise ($99/mo):</strong> Up to 100,000 orders historical vault</span>
               </div>
             </div>
           </div>

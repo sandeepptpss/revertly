@@ -84,11 +84,15 @@ function formatNumber(n) {
 // capability starts at. Use it where a gap between adjacent cards would
 // otherwise look accidental.
 //
-// Anything the app ships without a plan gate — scheduled backups, incidents,
-// uptime monitoring, health checks, team roles, the audit log, offline
-// JSON/CSV export and import — belongs on the Free card, because that is
-// genuinely where a merchant gets it. Adding an ungated capability to a paid
-// card only would advertise a lock that does not exist.
+// Free provides complete, accessible core protection: manual rollback &
+// recovery, scheduled backups, catalog coverage (products, collections,
+// pages, blogs, navigation menus), drift alerts, change history logs, and
+// offline export/import.
+//
+// Operational monitoring and multi-user governance capabilities (Uptime
+// Monitoring & Store Health Check, Team roles, permissions & audit log)
+// are positioned at Starter ($9/mo) and above, giving merchants a compelling,
+// distinct value ladder from Free to Starter.
 const PLANS = [
   {
     id: "free",
@@ -109,8 +113,6 @@ const PLANS = [
       "Navigation Menu backup & restore — full menu hierarchy",
       "Email drift & bulk-anomaly alerts",
       "Incidents, Activity & Rollback History logs",
-      "Uptime Monitoring & Store Health Check",
-      "Team roles, permissions & audit log",
       "Offline JSON & CSV export and import",
     ],
   },
@@ -128,6 +130,8 @@ const PLANS = [
       "30 days change history retention",
       "Up to 10 restore points",
       "3 active detection rules",
+      "Uptime Monitoring & Store Health Check",
+      "Team roles, permissions & audit log",
       "Offsite Cloud Backup — Google Drive & Dropbox",
       "Auto-push every new snapshot to your cloud",
       "Restore directly from a Drive or Dropbox archive",
