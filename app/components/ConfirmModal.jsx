@@ -71,6 +71,7 @@ export default function ConfirmModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-modal-title"
+        onClick={(e) => e.stopPropagation()}
         style={{
           background: "#ffffff",
           borderRadius: "var(--rv-radius-md, 10px)",
@@ -87,22 +88,29 @@ export default function ConfirmModal({
         {onClose && (
           <button
             type="button"
-            onClick={onClose}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
             disabled={isSubmitting}
             aria-label="Close dialog"
             style={{
               position: "absolute",
-              top: "16px",
-              right: "16px",
-              border: "none",
-              background: "transparent",
+              top: "14px",
+              right: "14px",
+              width: "36px",
+              height: "36px",
+              border: "1px solid var(--rv-border, #e1e3e5)",
+              background: "#ffffff",
               cursor: isSubmitting ? "not-allowed" : "pointer",
-              color: "var(--rv-text-subdued, #6d7175)",
-              padding: "4px",
-              borderRadius: "4px",
-              display: "flex",
+              color: "var(--rv-text, #1e293b)",
+              borderRadius: "8px",
+              display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
+              zIndex: 50,
+              boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
             }}
           >
             <XIcon size={18} />
@@ -182,7 +190,7 @@ export default function ConfirmModal({
               gap: "8px",
             }}
           >
-            <span style={{ fontSize: "15px", lineHeight: 1 }}>⚠️</span>
+            <AlertTriangleIcon size={16} style={{ flexShrink: 0, marginTop: "2px" }} />
             <div>{dangerNote}</div>
           </div>
         )}

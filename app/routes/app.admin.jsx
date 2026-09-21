@@ -671,6 +671,19 @@ export default function AdminPanel() {
     }
   }, [ticketFetcher.data, ticketFetcher.formData, viewingTicket]);
 
+  // Close modals on Escape key
+  useEffect(() => {
+    if (!viewingTicket && !quotaTargetShop) return;
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        if (viewingTicket) setViewingTicket(null);
+        if (quotaTargetShop) setQuotaTargetShop(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [viewingTicket, quotaTargetShop]);
+
   function startEditing(row) {
     setEditingShop(row.shop);
     setPercentDraft(String(row.discount?.percent ?? 10));
@@ -1469,7 +1482,7 @@ export default function AdminPanel() {
         <div
           role="presentation"
           onClick={(e) => {
-            if (e.target === e.currentTarget && !isTicketBusy) setViewingTicket(null);
+            if (e.target === e.currentTarget) setViewingTicket(null);
           }}
           style={{
             position: "fixed",
@@ -1488,6 +1501,7 @@ export default function AdminPanel() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="ticket-modal-title"
+            onClick={(e) => e.stopPropagation()}
             style={{
               background: "#ffffff",
               borderRadius: "var(--rv-radius-md, 10px)",
@@ -1502,28 +1516,35 @@ export default function AdminPanel() {
           >
             <button
               type="button"
-              onClick={() => setViewingTicket(null)}
-              disabled={isTicketBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setViewingTicket(null);
+              }}
               aria-label="Close dialog"
               style={{
                 position: "absolute",
-                top: "16px",
-                right: "16px",
-                border: "none",
-                background: "transparent",
+                top: "14px",
+                right: "14px",
+                width: "36px",
+                height: "36px",
+                border: "1px solid var(--rv-border, #e1e3e5)",
+                background: "#ffffff",
                 cursor: "pointer",
-                color: "var(--rv-text-subdued, #6d7175)",
-                padding: "4px",
-                borderRadius: "4px",
-                display: "flex",
+                color: "var(--rv-text, #1e293b)",
+                borderRadius: "8px",
+                display: "inline-flex",
                 alignItems: "center",
                 justifyContent: "center",
+                zIndex: 50,
+                boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                transition: "all 0.15s ease",
               }}
             >
               <XIcon size={18} />
             </button>
 
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px", paddingRight: "44px" }}>
               <span
                 className={`rv-badge ${
                   viewingTicket.status === "RESOLVED"
@@ -1547,7 +1568,7 @@ export default function AdminPanel() {
               </span>
             </div>
 
-            <h3 id="ticket-modal-title" style={{ margin: "0 0 12px", fontSize: "18px", fontWeight: 700 }}>
+            <h3 id="ticket-modal-title" style={{ margin: "0 0 12px", fontSize: "18px", fontWeight: 700, paddingRight: "44px" }}>
               {viewingTicket.subject}
             </h3>
 
@@ -1657,22 +1678,31 @@ export default function AdminPanel() {
                 )}
               </div>
 
-              {merchants.some((m) => m.shop === viewingTicket.shop) && (
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                {merchants.some((m) => m.shop === viewingTicket.shop) && (
+                  <button
+                    type="button"
+                    className="rv-btn rv-btn-secondary rv-btn-sm"
+                    onClick={() => {
+                      const m = merchants.find((row) => row.shop === viewingTicket.shop);
+                      if (m) {
+                        setViewingTicket(null);
+                        startQuotaEdit(m);
+                      }
+                    }}
+                  >
+                    <DatabaseIcon size={14} />
+                    <span>Configure Store Quota</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="rv-btn rv-btn-secondary rv-btn-sm"
-                  onClick={() => {
-                    const m = merchants.find((row) => row.shop === viewingTicket.shop);
-                    if (m) {
-                      setViewingTicket(null);
-                      startQuotaEdit(m);
-                    }
-                  }}
+                  onClick={() => setViewingTicket(null)}
                 >
-                  <DatabaseIcon size={14} />
-                  <span>Configure Store Quota</span>
+                  Close
                 </button>
-              )}
+              </div>
             </div>
           </div>
         </div>
@@ -1683,7 +1713,7 @@ export default function AdminPanel() {
         <div
           role="presentation"
           onClick={(e) => {
-            if (e.target === e.currentTarget && !isQuotaBusy) setQuotaTargetShop(null);
+            if (e.target === e.currentTarget) setQuotaTargetShop(null);
           }}
           style={{
             position: "fixed",
@@ -1702,6 +1732,7 @@ export default function AdminPanel() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="quota-modal-title"
+            onClick={(e) => e.stopPropagation()}
             style={{
               background: "#ffffff",
               borderRadius: "var(--rv-radius-md, 10px)",
@@ -1716,28 +1747,35 @@ export default function AdminPanel() {
           >
             <button
               type="button"
-              onClick={() => setQuotaTargetShop(null)}
-              disabled={isQuotaBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setQuotaTargetShop(null);
+              }}
               aria-label="Close dialog"
               style={{
                 position: "absolute",
-                top: "16px",
-                right: "16px",
-                border: "none",
-                background: "transparent",
+                top: "14px",
+                right: "14px",
+                width: "36px",
+                height: "36px",
+                border: "1px solid var(--rv-border, #e1e3e5)",
+                background: "#ffffff",
                 cursor: "pointer",
-                color: "var(--rv-text-subdued, #6d7175)",
-                padding: "4px",
-                borderRadius: "4px",
-                display: "flex",
+                color: "var(--rv-text, #1e293b)",
+                borderRadius: "8px",
+                display: "inline-flex",
                 alignItems: "center",
                 justifyContent: "center",
+                zIndex: 50,
+                boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+                transition: "all 0.15s ease",
               }}
             >
               <XIcon size={18} />
             </button>
 
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px", paddingRight: "44px" }}>
               <div className="rv-card-icon-badge info" style={{ width: "32px", height: "32px" }}>
                 <DatabaseIcon size={18} />
               </div>
@@ -1959,7 +1997,6 @@ export default function AdminPanel() {
                   </button>
                   <button
                     type="button"
-                    disabled={isQuotaBusy}
                     className="rv-btn rv-btn-secondary"
                     onClick={() => setQuotaTargetShop(null)}
                   >

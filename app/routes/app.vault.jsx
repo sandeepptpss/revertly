@@ -488,7 +488,7 @@ export default function DataVault() {
 
                 {inspectedOrder.orderData?.shippingAddress && (
                   <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                    📍 <strong>Shipping Address:</strong> {[
+                    <strong>Shipping Address:</strong> {[
                       inspectedOrder.orderData.shippingAddress.address1,
                       inspectedOrder.orderData.shippingAddress.city,
                       inspectedOrder.orderData.shippingAddress.province,

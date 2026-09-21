@@ -70,13 +70,22 @@ export const loader = async ({ request }) => {
   const shop = session.shop;
 
   const url = new URL(request.url);
-  const initialSubject = url.searchParams.get("subject") || "";
-  const initialCategory = url.searchParams.get("category") || "General";
-  const initialPriority = url.searchParams.get("priority") || "NORMAL";
+  const isEmergency = url.searchParams.get("emergency") === "1";
+  const initialSubject = isEmergency
+    ? "[EMERGENCY SOS] Urgent Store Recovery & Restore Assistance"
+    : (url.searchParams.get("subject") || "");
+  const initialCategory = isEmergency
+    ? "Rollback"
+    : (url.searchParams.get("category") || "General");
+  const initialPriority = isEmergency
+    ? "URGENT"
+    : (url.searchParams.get("priority") || "NORMAL");
   const initialProducts = url.searchParams.get("products") || "";
   let initialMessage = url.searchParams.get("message") || "";
 
-  if (initialProducts && !initialMessage) {
+  if (isEmergency && !initialMessage) {
+    initialMessage = `Hello Revertly Emergency Team,\n\nOur store (${shop}) is currently facing an urgent store emergency (accidental bulk change, price crash, or theme break).\n\nPlease escalate this to the on-call engineers for immediate restoration assistance.\n\nDescription of the incident:\n`;
+  } else if (initialProducts && !initialMessage) {
     initialMessage = `Hi Revertly Team,\n\nOur store (${shop}) currently has approximately ${Number(initialProducts).toLocaleString()} products, which exceeds the standard 200,000 product limit on Enterprise.\n\nWe would like to request a Custom Enterprise Plus quote with dedicated high-volume infrastructure, custom retention, and priority SLA.\n\nThank you!`;
   }
 
@@ -127,6 +136,7 @@ export const loader = async ({ request }) => {
     initialCategory,
     initialPriority,
     initialMessage,
+    isEmergency,
   };
 };
 
@@ -222,6 +232,7 @@ export default function Support() {
     initialCategory,
     initialPriority,
     initialMessage,
+    isEmergency = false,
   } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
@@ -300,6 +311,18 @@ export default function Support() {
   return (
     <s-page heading="Help & Support" inlineSize="large">
 
+      {/* ── Emergency Disaster Recovery Banner ── */}
+      {isEmergency && (
+        <Banner
+          tone="critical"
+          title="Emergency Disaster Recovery Mode Active"
+          className="rv-fade-in"
+          style={{ marginBottom: "20px" }}
+        >
+          You have flagged an urgent store crisis. Tickets submitted in Emergency Mode bypass standard support queues and immediately alert our on-call engineering team for prioritized restoration.
+        </Banner>
+      )}
+
       {/* ── Top Hero Banner ── */}
       <div className="rv-hero-banner" style={{ marginBottom: "20px" }}>
         <div>
@@ -317,7 +340,22 @@ export default function Support() {
           </p>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "13px", color: "var(--rv-text-subdued)", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => {
+              setPriority("URGENT");
+              setCategory("Rollback");
+              setSubject("[EMERGENCY SOS] Urgent Store Recovery & Restore Assistance");
+              if (!message) {
+                setMessage("Hello Revertly Team,\n\nOur store is facing an urgent issue and we need immediate engineering assistance to restore our data.\n\nDetails:\n");
+              }
+            }}
+            className="rv-btn rv-btn-critical rv-btn-sm"
+            style={{ fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "6px" }}
+          >
+            <span>Trigger Emergency SOS</span>
+          </button>
           <span>
             Direct Email:{" "}
             <a href="mailto:support@revertly.app" style={{ color: "var(--rv-info)", fontWeight: 600 }}>
@@ -496,13 +534,12 @@ export default function Support() {
                     <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #f3f4f6" }}>
                       <span style={{ color: "#6b7280" }}>Priority:</span>
                       <span
-                        className={`rv-badge rv-badge-sm ${
-                          submittedTicket.priority === "URGENT"
-                            ? "rv-badge-critical"
-                            : submittedTicket.priority === "HIGH"
+                        className={`rv-badge rv-badge-sm ${submittedTicket.priority === "URGENT"
+                          ? "rv-badge-critical"
+                          : submittedTicket.priority === "HIGH"
                             ? "rv-badge-warning"
                             : "rv-badge-info"
-                        }`}
+                          }`}
                       >
                         {submittedTicket.priority}
                       </span>
@@ -720,15 +757,15 @@ export default function Support() {
                     t.priority === "URGENT"
                       ? "rv-badge-critical"
                       : t.priority === "HIGH"
-                      ? "rv-badge-warning"
-                      : "rv-badge-neutral";
+                        ? "rv-badge-warning"
+                        : "rv-badge-neutral";
 
                   const statusClass =
                     t.status === "RESOLVED"
                       ? "rv-badge-success"
                       : t.status === "IN_PROGRESS"
-                      ? "rv-badge-warning"
-                      : "rv-badge-info";
+                        ? "rv-badge-warning"
+                        : "rv-badge-info";
 
                   return (
                     <tr key={t.id}>

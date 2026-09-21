@@ -39,6 +39,7 @@ import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import { PillNav } from "../components/PillNav.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
+import SafeRestoreModal from "../components/SafeRestoreModal.jsx";
 
 export const loader = async ({ request, params }) => {
   const { session, admin } = await authenticate.admin(request);
@@ -851,6 +852,13 @@ export const action = async ({ request, params }) => {
       }
     }
 
+    // Selective field restoration options
+    const restoreTitles = formData.get("restoreTitles") !== "false";
+    const restoreDescriptions = formData.get("restoreDescriptions") !== "false";
+    const restorePrices = formData.get("restorePrices") !== "false";
+    const restoreTags = formData.get("restoreTags") !== "false";
+    const restoreStatus = formData.get("restoreStatus") !== "false";
+
     // Get current snapshots
     const currentSnapshots = await prisma.productSnapshot.findMany({
       where: { shop },
@@ -866,7 +874,14 @@ export const action = async ({ request, params }) => {
         restorePointId: rpId,
         status: "RUNNING",
         totalProducts: targetProducts.length,
-        fieldsToRestore: { resourceType: "PRODUCTS" },
+        fieldsToRestore: {
+          resourceType: "PRODUCTS",
+          restoreTitles,
+          restoreDescriptions,
+          restorePrices,
+          restoreTags,
+          restoreStatus,
+        },
       },
     });
 
@@ -900,6 +915,11 @@ export const action = async ({ request, params }) => {
       const mockEvents = [];
       const fieldKeys = ["title", "status", "vendor", "tags", "handle", "bodyHtml", "templateSuffix"];
       for (const key of fieldKeys) {
+        if (!restoreTitles && key === "title") continue;
+        if (!restoreDescriptions && (key === "bodyHtml" || key === "descriptionHtml")) continue;
+        if (!restoreStatus && key === "status") continue;
+        if (!restoreTags && (key === "tags" || key === "vendor" || key === "handle")) continue;
+
         const sv = String(savedSnap[key] ?? "");
         const cv = String(current[key] ?? "");
         if (sv !== cv) {
@@ -914,6 +934,7 @@ export const action = async ({ request, params }) => {
         if (!cv) continue;
         const numId = sv.id.replace("gid://shopify/ProductVariant/", "");
         for (const vf of ["price", "compareAtPrice", "sku"]) {
+          if (!restorePrices && (vf === "price" || vf === "compareAtPrice")) continue;
           if (String(sv[vf] ?? "") !== String(cv[vf] ?? "")) {
             mockEvents.push({
               fieldName: `variant.${vf}`,
@@ -1099,6 +1120,7 @@ export default function RestorePointDetail() {
   const [selectedProductIds, setSelectedProductIds] = useState([]);
   const [showLiveRestoreModal, setShowLiveRestoreModal] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState(null);
+  const [safeRestoreTarget, setSafeRestoreTarget] = useState(null);
   // The safe mode is the default and stays the default: an accidental restore
   // must never be able to overwrite live metafield values.
   const [metafieldMode, setMetafieldMode] = useState("SKIP_EXISTING");
@@ -1107,6 +1129,7 @@ export default function RestorePointDetail() {
     if (result && !isRestoring) {
       setShowLiveRestoreModal(false);
       setConfirmDialog(null);
+      setSafeRestoreTarget(null);
     }
   }, [result, isRestoring]);
 
@@ -1323,6 +1346,60 @@ export default function RestorePointDetail() {
         </Banner>
       )}
 
+      {/* ── Post-Restore Delight & 5-Star Review Trigger ── */}
+      {((result?.success && result?.message) || (lastJob?.status === "COMPLETED")) && (
+        <div
+          style={{
+            background: "linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 50%, #eff6ff 100%)",
+            border: "1px solid #bbf7d0",
+            borderRadius: "10px",
+            padding: "16px 20px",
+            marginBottom: "16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "14px",
+            boxShadow: "0 2px 4px rgba(0,0,0,0.02)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <CheckCircleIcon size={24} style={{ color: "#16a34a" }} />
+            <div>
+              <div style={{ fontSize: "15px", fontWeight: 700, color: "#166534", marginBottom: "2px" }}>
+                Store Restore Completed Successfully
+              </div>
+              <div style={{ fontSize: "13px", color: "#15803d" }}>
+                Did Revertly save the day? If this backup saved your store data or restored lost revenue, taking 30 seconds to support our indie team with a review means the world to us.
+              </div>
+            </div>
+          </div>
+          <a
+            href="https://apps.shopify.com/revertly"
+            target="_blank"
+            rel="noreferrer"
+            className="rv-btn"
+            style={{
+              background: "#16a34a",
+              color: "#ffffff",
+              border: "1px solid #15803d",
+              fontWeight: 600,
+              fontSize: "13px",
+              padding: "8px 16px",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              textDecoration: "none",
+              borderRadius: "6px",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+            }}
+          >
+            <span>Write an App Store Review</span>
+            <ExternalLinkIcon size={13} />
+          </a>
+        </div>
+      )}
+
       {/* ── Active Theme Backup & Diff Section ── */}
       {activeTab === "theme" && themeData?.activeTheme && (
         <div className="rv-card">
@@ -1456,7 +1533,7 @@ export default function RestorePointDetail() {
                             fontWeight: "600",
                           }}
                         >
-                          <span>🔴 Red = Lines Removed in Backup &nbsp;|&nbsp; 🟢 Green = Backup Lines Restored</span>
+                          <span>Red = Lines Removed in Backup &nbsp;|&nbsp; Green = Backup Lines Restored</span>
                           <span>
                             {hasDiff ? (
                               <span>
@@ -1590,43 +1667,36 @@ export default function RestorePointDetail() {
                       type="button"
                       disabled={isRestoring}
                       onClick={() => {
-                        setConfirmDialog({
-                          title: `Restore ${selectedProductIds.length} Selected Products`,
-                          message: `Are you sure you want to restore the ${selectedProductIds.length} selected products to their snapshot state?`,
-                          dangerNote: "This will overwrite current live field values for the selected products in Shopify.",
-                          confirmLabel: `Restore Selected (${selectedProductIds.length})`,
-                          tone: "primary",
-                          onConfirm: () => {
-                            fetcher.submit(
-                              { intent: "restore_selected_products", selectedProductIds: selectedProductIds.join(",") },
-                              { method: "POST" }
-                            );
-                          },
+                        setSafeRestoreTarget({
+                          mode: "selected",
+                          count: selectedProductIds.length,
+                          selectedProductIds: selectedProductIds,
+                          diffs: differences.filter((d) => selectedProductIds.includes(d.productId)),
                         });
                       }}
                       className="rv-btn rv-btn-primary rv-btn-lg"
+                      style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
                     >
-                      <span>{isRestoring && fetcher.formData?.get("intent") === "restore_selected_products" ? "Restoring..." : `Restore Selected (${selectedProductIds.length})`}</span>
+                      <ShieldCheckIcon size={16} />
+                      <span>{isRestoring && fetcher.formData?.get("intent") === "restore_selected_products" ? "Restoring..." : `Safe Restore Selected (${selectedProductIds.length})`}</span>
                     </button>
                   )}
                   <button
                     type="button"
                     disabled={isRestoring}
                     onClick={() => {
-                      setConfirmDialog({
-                        title: `Restore All ${differences.length} Differing Products`,
-                        message: `Are you sure you want to restore all ${differences.length} products to their snapshot state?`,
-                        dangerNote: "This will overwrite current live prices, inventory, titles, and variant data across your store in Shopify.",
-                        confirmLabel: `Restore All (${differences.length}) Products`,
-                        tone: "critical",
-                        onConfirm: () => {
-                          fetcher.submit({ intent: "restore" }, { method: "POST" });
-                        },
+                      setSafeRestoreTarget({
+                        mode: "all",
+                        count: differences.length,
+                        selectedProductIds: [],
+                        diffs: differences,
                       });
                     }}
                     className="rv-btn rv-btn-critical rv-btn-lg"
+                    style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
                   >
-                    <span>{isRestoring && fetcher.formData?.get("intent") === "restore" ? "Restoring products..." : `Restore All (${differences.length}) Products`}</span>
+                    <ShieldCheckIcon size={16} />
+                    <span>{isRestoring && fetcher.formData?.get("intent") === "restore" ? "Restoring products..." : `Safe Restore All (${differences.length}) Products`}</span>
                   </button>
                 </div>
               </div>
@@ -1699,24 +1769,20 @@ export default function RestorePointDetail() {
                       type="button"
                       disabled={isRestoring}
                       onClick={() => {
-                        setConfirmDialog({
-                          title: `Restore Product: "${d.title}"`,
-                          message: `Are you sure you want to restore "${d.title}" (#${d.productId}) to its snapshot state?`,
-                          dangerNote: "This will revert modified fields on this product back to snapshot values.",
-                          confirmLabel: "Confirm Product Restore",
-                          tone: "primary",
-                          onConfirm: () => {
-                            fetcher.submit(
-                              { intent: "restore_single_product", productId: String(d.productId) },
-                              { method: "POST" }
-                            );
-                          },
+                        const targetDiff = differences.find((x) => String(x.productId) === String(d.productId));
+                        setSafeRestoreTarget({
+                          mode: "single",
+                          count: 1,
+                          selectedProductIds: [String(d.productId)],
+                          diffs: targetDiff ? [targetDiff] : [],
                         });
                       }}
                       className="rv-btn rv-btn-secondary rv-btn-sm"
-                      title="Restore only this product to snapshot state"
+                      title="Safe restore only this product with field options"
+                      style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
                     >
-                      <span>1-Click Restore Product</span>
+                      <ShieldCheckIcon size={14} />
+                      <span>Safe Restore Product</span>
                     </button>
                   </div>
                   <div className="rv-table-container" style={{ border: "none", borderRadius: 0 }}>
@@ -2462,6 +2528,57 @@ export default function RestorePointDetail() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── Interactive Safe Restore Modal ── */}
+      {safeRestoreTarget && (
+        <SafeRestoreModal
+          isOpen={Boolean(safeRestoreTarget)}
+          productCount={safeRestoreTarget.count}
+          differences={safeRestoreTarget.diffs}
+          isSubmitting={isRestoring}
+          onClose={() => {
+            if (!isRestoring) setSafeRestoreTarget(null);
+          }}
+          onConfirm={(options) => {
+            const formDataPayload = {
+              restoreTitles: String(options.restoreTitles),
+              restoreDescriptions: String(options.restoreDescriptions),
+              restorePrices: String(options.restorePrices),
+              restoreTags: String(options.restoreTags),
+              restoreStatus: String(options.restoreStatus),
+              preserveInventory: String(options.preserveInventory),
+            };
+
+            if (safeRestoreTarget.mode === "single") {
+              fetcher.submit(
+                {
+                  intent: "restore_single_product",
+                  productId: safeRestoreTarget.selectedProductIds[0],
+                  ...formDataPayload,
+                },
+                { method: "POST" }
+              );
+            } else if (safeRestoreTarget.mode === "selected") {
+              fetcher.submit(
+                {
+                  intent: "restore_selected_products",
+                  selectedProductIds: safeRestoreTarget.selectedProductIds.join(","),
+                  ...formDataPayload,
+                },
+                { method: "POST" }
+              );
+            } else {
+              fetcher.submit(
+                {
+                  intent: "restore",
+                  ...formDataPayload,
+                },
+                { method: "POST" }
+              );
+            }
+          }}
+        />
       )}
 
       {/* ── Action Confirmation Modal ── */}

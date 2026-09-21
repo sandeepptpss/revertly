@@ -117,6 +117,20 @@ export function GlobalSupportWidget({ shop = "", defaultEmail = "", planTier = "
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
+  // Listen for Emergency SOS event from anywhere in the app
+  useEffect(() => {
+    const handleOpenSos = (e) => {
+      setIsOpen(true);
+      setActiveTab("ticket");
+      setPriority("URGENT");
+      setCategory("Rollback");
+      setSubject(e?.detail?.subject || "[EMERGENCY SOS] Urgent Restore & Store Recovery Assistance");
+      if (e?.detail?.message) setMessage(e.detail.message);
+    };
+    window.addEventListener("revertly:open-sos", handleOpenSos);
+    return () => window.removeEventListener("revertly:open-sos", handleOpenSos);
+  }, []);
+
   const handleResetForm = () => {
     setSubject("");
     setCategory("General");
@@ -357,6 +371,33 @@ export function GlobalSupportWidget({ shop = "", defaultEmail = "", planTier = "
                       }}
                     >
                       {result.error}
+                    </div>
+                  )}
+
+                  {/* Emergency Mode Alert Banner */}
+                  {priority === "URGENT" && (
+                    <div
+                      style={{
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        borderRadius: "6px",
+                        padding: "10px 12px",
+                        marginBottom: "14px",
+                        fontSize: "12px",
+                        color: "#991b1b",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                      }}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, color: "#dc2626" }}>
+                        <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2" />
+                        <line x1="12" y1="8" x2="12" y2="12" />
+                        <line x1="12" y1="16" x2="12.01" y2="16" />
+                      </svg>
+                      <div>
+                        <strong>Emergency Priority Mode:</strong> This ticket is routed directly to the on-call engineer queue for immediate review.
+                      </div>
                     </div>
                   )}
 

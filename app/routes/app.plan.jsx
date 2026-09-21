@@ -228,7 +228,7 @@ const PLANS = [
 ];
 
 export const loader = async ({ request }) => {
-  const { session, billing } = await authenticate.admin(request);
+  const { session, billing, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const isTest = process.env.NODE_ENV !== "production";
 
@@ -240,10 +240,20 @@ export const loader = async ({ request }) => {
     }).catch(() => {});
   }
 
-  const { currentPlan, paidPlan, limits, subscriptionDiscountPercent, freeGrowth, billingInterval } = await getStorePlan(
+  const {
+    currentPlan,
+    paidPlan,
+    limits,
+    subscriptionDiscountPercent,
+    freeGrowth,
+    isPartnerDev,
+    partnerDevPlanName,
+    billingInterval,
+  } = await getStorePlan(
     shop,
     billing,
     isTest,
+    admin,
   );
 
   const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, allDiscounts, vipOffer, freeGrowthOffer, freeGrowthStatus] = await Promise.all([
@@ -357,6 +367,8 @@ export const loader = async ({ request }) => {
           (billingInterval === INTERVAL_ANNUAL || allDiscounts.bestDiscount.source !== "GLOBAL"),
       }
       : null,
+    isPartnerDev: Boolean(isPartnerDev),
+    partnerDevPlanName: partnerDevPlanName || null,
   };
 };
 
@@ -768,6 +780,8 @@ export default function Plan() {
     freeGrowthOffer,
     shop,
     enterpriseProductCap,
+    isPartnerDev,
+    partnerDevPlanName,
   } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
@@ -1012,10 +1026,21 @@ export default function Plan() {
         </div>
       )}
 
+      {/* ── Partner Development Store VIP Banner ── */}
+      {isPartnerDev && (
+        <Banner
+          tone="success"
+          title="Verified Shopify Partner Store: Free Unrestricted Access"
+          className="rv-fade-in"
+        >
+          We detected that this is a <strong>Shopify Partner Development Store</strong> ({partnerDevPlanName || "Development"}). As part of our agency partner program, you have full unrestricted access to <strong>Growth Plan Protection</strong> at <strong>$0 / month</strong> forever. Build, test, and protect client stores with zero subscription charges!
+        </Banner>
+      )}
+
       {/* ── Free Growth Promotion Banner ──
           A promotional seat: Growth features at no charge, no subscription. */}
       {activeFreeGrowth && (
-        <Banner tone="success" title="🎉 Free Growth Promotion Active" className="rv-fade-in">
+        <Banner tone="success" title="Free Growth Promotion Active" className="rv-fade-in">
           You claimed the Free Growth promotion from the first {freeGrowthStatus?.limit || 20} stores offer. Every Growth feature is unlocked on your
           account at no charge until {formatDate(activeFreeGrowth.expiresAt)}. There is no
           subscription and nothing to pay. You can still upgrade to Business or Enterprise at any time.
@@ -1037,7 +1062,7 @@ export default function Plan() {
           title={
             storeDiscount.needsApply
               ? `${storeDiscount.label}: ${storeDiscount.percent}% ready to apply`
-              : `🎉 ${storeDiscount.label}: ${storeDiscount.percent}% off`
+              : `${storeDiscount.label}: ${storeDiscount.percent}% off`
           }
           className="rv-fade-in"
         >
@@ -1065,7 +1090,7 @@ export default function Plan() {
       {globalDiscount && (
         <Banner
           tone="info"
-          title={`🎉 Global Yearly Discount: ${globalDiscount.percent}% off`}
+          title={`Global Yearly Discount: ${globalDiscount.percent}% off`}
           className="rv-fade-in"
         >
           A {globalDiscount.percent}% Global Yearly Discount is active on all yearly plans
@@ -1834,7 +1859,7 @@ export default function Plan() {
                 lineHeight: 1.4,
               }}
             >
-              ⚠️ <strong>Note:</strong> Downgrading will lower your monitored product and restore point allowances, and shorten how long change history is kept. Premium capabilities — Liquid Theme Backups, Orders &amp; Customers Vault, Klaviyo &amp; Mailchimp backup, Circuit Breaker, Slack alerts, bulk incident rollback, and Offsite Cloud Backup to Google Drive &amp; Dropbox — will be restricted to the new plan&apos;s limits. Backups already stored in Revertly are kept.
+              <strong>Note:</strong> Downgrading will lower your monitored product and restore point allowances, and shorten how long change history is kept. Premium capabilities — Liquid Theme Backups, Orders &amp; Customers Vault, Klaviyo &amp; Mailchimp backup, Circuit Breaker, Slack alerts, bulk incident rollback, and Offsite Cloud Backup to Google Drive &amp; Dropbox — will be restricted to the new plan&apos;s limits. Backups already stored in Revertly are kept.
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>

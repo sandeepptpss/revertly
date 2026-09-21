@@ -127,7 +127,7 @@ export async function sendSupportTicketAdminEmail({ ticket, shop, merchantEmail,
       <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center;">
         <a href="mailto:${safeEmail}?subject=${encodeURIComponent(`Re: [Revertly Support #${ticketId}] ${ticket.subject}`)}" 
            style="display: inline-block; background-color: #059669; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-          ✉️ Reply Directly to Merchant (${safeEmail})
+          Reply Directly to Merchant (${safeEmail})
         </a>
         <p style="margin: 8px 0 0 0; font-size: 12px; color: #94a3b8;">
           You can also simply hit "Reply" to this email in your email client.

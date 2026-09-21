@@ -239,10 +239,36 @@ export async function getEffectiveLimits(shop, settings) {
 /**
  * Resolves current active plan for a shop, synchronizing between Shopify billing and AppSettings.
  */
-export async function getStorePlan(shop, billing = null, isTest = true) {
+export async function getStorePlan(shop, billing = null, isTest = true, admin = null) {
   let activeShopifyPlan = null;
   let activeShopifyInterval = null;
   let subscriptionDiscountPercent = null;
+  let isPartnerDev = false;
+  let partnerDevPlanName = null;
+
+  if (admin) {
+    try {
+      const shopPlanResp = await admin.graphql(
+        `#graphql
+        query getShopPartnerPlan {
+          shop {
+            plan {
+              partnerDevelopment
+              displayName
+            }
+          }
+        }`
+      );
+      const shopPlanJson = await shopPlanResp.json();
+      const planData = shopPlanJson?.data?.shop?.plan;
+      if (planData?.partnerDevelopment) {
+        isPartnerDev = true;
+        partnerDevPlanName = planData.displayName || "Partner Development";
+      }
+    } catch (e) {
+      // Safe fallback - don't let partner check block billing
+    }
+  }
   // Only a check that actually completed may be used to downgrade a store.
   // A thrown request, or an ACTIVE subscription under a name this build does
   // not recognise, tells us nothing about whether the merchant is paying.
@@ -408,6 +434,12 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
     settings?.billingInterval ||
     (settings?.subscriptionId?.includes("annual") ? INTERVAL_ANNUAL : INTERVAL_MONTHLY);
 
+  // If this is a verified Shopify Partner development store, elevate to Growth
+  // so agencies and freelance developers have full unrestricted testing capabilities.
+  if (isPartnerDev && planRank(effectivePlan) < planRank("growth")) {
+    effectivePlan = "growth";
+  }
+
   const baseLimits = getPlanLimits(effectivePlan);
   const limits =
     settings?.customProductLimit && settings.customProductLimit > 0
@@ -432,6 +464,8 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
     limits,
     subscriptionDiscountPercent,
     freeGrowth: freeGrowthInfo,
+    isPartnerDev,
+    partnerDevPlanName,
     billingInterval: resolvedInterval,
   };
 }

@@ -59,7 +59,7 @@ export const action = async ({ request }) => {
             attachments: [
               {
                 color: "#2C6ECB",
-                title: `🎨 New Live Theme: "${themeName}"`,
+                title: `New Live Theme: "${themeName}"`,
                 text: `A new theme was published to your live storefront. Revertly has automatically created a safety restore point so you can rollback anytime.`,
                 footer: "Revertly Store Guardian",
                 ts: Math.floor(Date.now() / 1000),

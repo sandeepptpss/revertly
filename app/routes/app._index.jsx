@@ -268,6 +268,69 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* ── First-Time Fast Setup Guide (60-Second Protection) ── */}
+      {!isInitialized && (
+        <div
+          className="rv-card"
+          style={{
+            margin: "0 0 24px 0",
+            padding: "20px 24px",
+            background: "linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%)",
+            border: "1px solid #bfdbfe",
+            borderRadius: "12px",
+            boxShadow: "0 4px 12px rgba(37, 99, 235, 0.08)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
+            <div style={{ maxWidth: "640px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                <ShieldCheckIcon size={20} style={{ color: "#2563eb" }} />
+                <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "#1e3a8a" }}>
+                  Welcome to Revertly! Let&apos;s protect your store in 60 seconds
+                </h3>
+              </div>
+              <p style={{ margin: "0 0 16px 0", fontSize: "13.5px", color: "#334155", lineHeight: 1.5 }}>
+                Your store protection begins with an initial <strong>Baseline Snapshot</strong>. Revertly will snapshot your products, themes, and navigation hierarchy so you have an immediate safety net against accidental price drops, rogue bulk CSV imports, and theme errors.
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px", marginBottom: "16px" }}>
+                <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#0f172a" }}>1. Baseline Snapshot</div>
+                  <div style={{ fontSize: "12px", color: "#64748b" }}>Capture initial catalog state</div>
+                </div>
+                <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#0f172a" }}>2. Real-Time Webhooks</div>
+                  <div style={{ fontSize: "12px", color: "#64748b" }}>Track price &amp; product edits</div>
+                </div>
+                <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#0f172a" }}>3. 1-Click Safe Rollback</div>
+                  <div style={{ fontSize: "12px", color: "#64748b" }}>Revert errors with zero data loss</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ alignSelf: "center" }}>
+              <Link
+                to="/app/initialize"
+                className="rv-btn rv-btn-primary rv-btn-lg"
+                style={{
+                  padding: "12px 24px",
+                  fontSize: "14px",
+                  fontWeight: 700,
+                  boxShadow: "0 4px 6px -1px rgba(37, 99, 235, 0.2)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <ShieldCheckIcon size={18} />
+                <span>Start 60-Second Setup Now</span>
+                <ArrowRightIcon size={16} />
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Automated Scheduled Daily Backup & Cloud Sync Status Banner ── */}
       <div
         className="rv-card"

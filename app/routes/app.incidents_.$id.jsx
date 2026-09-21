@@ -322,7 +322,7 @@ export default function IncidentDetail() {
               </p>
               {isBulkBlocked && (
                 <p style={{ margin: "8px 0 0", fontSize: "12px", color: "var(--rv-warning-text)" }}>
-                  ⚠️ Multi-product bulk rollback requires <strong>Growth ($24/mo)</strong> or higher.{" "}
+                  Multi-product bulk rollback requires <strong>Growth ($24/mo)</strong> or higher.{" "}
                   <Link to="/app/plan" style={{ textDecoration: "underline", fontWeight: 600 }}>Upgrade Plan</Link> to perform 1-click bulk rollbacks.
                 </p>
               )}
