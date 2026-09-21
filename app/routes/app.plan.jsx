@@ -160,7 +160,12 @@ const PLANS = [
       "Klaviyo & Mailchimp Backup — 10,000 subscriber profiles",
       "Lists, audiences, segments & profile fields captured",
       "Restore a deleted list or re-import lost subscribers",
+      // The scheduler captures the live theme for every tier that has theme
+      // access at all (scheduler.server.js gates on `themes` and passes no
+      // themeId, so fetchThemeBackup falls back to MAIN). That is Growth and
+      // above, which is why this says so here rather than on Business.
       "1 Active Theme Backup (Templates, Sections & Settings)",
+      "Live theme captured in every scheduled backup",
       "Accountant-ready Tax Audit CSV export",
       "Chargeback Dispute Evidence Pack (JSON)",
     ],
@@ -179,9 +184,12 @@ const PLANS = [
       "180 days (6 months) retention",
       "Up to 100 restore points",
       "Unlimited detection rules",
-      "Unlimited Themes & Liquid Code Backup",
+      // "Themes captured in every scheduled backup" used to sit here. Once
+      // theme access moved to Growth it stopped being a Business
+      // differentiator — the scheduled capture is identical on both tiers —
+      // so it now appears on Growth. What Business actually adds is drafts.
+      "Unlimited Themes & Liquid Code Backup — drafts included",
       "1-Click Theme Code & Asset Rollback (Live & Draft Staging)",
-      "Themes captured in every scheduled backup",
       "Orders & Customers Vault (15,000 orders)",
       "Klaviyo & Mailchimp Backup — 50,000 subscriber profiles",
       "Klaviyo Flows & Mailchimp Journeys automation backup",
