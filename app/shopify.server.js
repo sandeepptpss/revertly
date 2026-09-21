@@ -134,7 +134,7 @@ const shopify = shopifyApp({
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
-          amount: 79,
+          amount: 99,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
         },
@@ -145,7 +145,7 @@ const shopify = shopifyApp({
       replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
       lineItems: [
         {
-          amount: 948,
+          amount: 990,
           currencyCode: "USD",
           interval: BillingInterval.Annual,
         },

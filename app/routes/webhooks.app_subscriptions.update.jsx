@@ -52,7 +52,11 @@ export const action = async ({ request }) => {
     console.log(`[Revertly Webhook] Subscription "${name}" status changed to ${status} for ${shop}`);
 
     if (status === "ACTIVE") {
-      const planInfo = NAME_TO_PLAN_INFO.get(name.toLowerCase());
+      let planInfo = NAME_TO_PLAN_INFO.get(name.toLowerCase());
+      if (!planInfo && (name.toLowerCase().includes("enterprise plus") || name.toLowerCase().includes("custom enterprise"))) {
+        planInfo = { planId: "enterprise", interval: INTERVAL_MONTHLY };
+      }
+
       if (!planInfo) {
         // An ACTIVE subscription means the merchant is being charged. If the
         // name matches no known plan (renamed or legacy tier), downgrading
@@ -83,6 +87,7 @@ export const action = async ({ request }) => {
           billingInterval: targetInterval,
           hasUsedTrial: true,
           trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          ...(existing?.customPriceStatus === "OFFERED" ? { customPriceStatus: "ACTIVE" } : {}),
         },
         update: {
           planId: targetPlan,
@@ -92,16 +97,19 @@ export const action = async ({ request }) => {
           // Only (re)start the trial-end estimate the first time this shop
           // ever activates a paid plan; later activations aren't a new trial.
           ...(alreadyUsedTrial ? {} : { trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }),
+          ...(existing?.customPriceStatus === "OFFERED" ? { customPriceStatus: "ACTIVE" } : {}),
         },
       });
 
       console.log(`[Revertly Webhook] Updated shop ${shop} plan to "${targetPlan}" (${targetInterval})`);
     } else if (TERMINAL_STATUSES.has(status)) {
-      // Disarm paid protections at the moment of downgrade. Leaving
-      // circuitBreakerEnabled=true would keep the Settings page reporting
-      // "Armed" for a feature the shop can no longer use, and the runtime
-      // guard in triggerCircuitBreaker would be the only thing standing
-      // between a free shop and automated catalog mutations.
+      const existing = await prisma.appSettings.findUnique({ where: { shop } });
+      if (existing?.customBillingMethod === "EXTERNAL" && existing?.customPriceStatus === "ACTIVE") {
+        console.log(`[Revertly Webhook] Shop ${shop} is on an external contract — preserving Enterprise plan.`);
+        return new Response("OK", { status: 200 });
+      }
+
+      // Disarm paid protections at the moment of downgrade.
       await prisma.appSettings.upsert({
         where: { shop },
         create: { shop, planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY },
@@ -110,6 +118,7 @@ export const action = async ({ request }) => {
           subscriptionId: null,
           billingInterval: INTERVAL_MONTHLY,
           circuitBreakerEnabled: false,
+          ...(existing?.customPriceStatus === "ACTIVE" ? { customPriceStatus: "CANCELLED" } : {}),
         },
       });
 

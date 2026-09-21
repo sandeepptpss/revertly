@@ -52,10 +52,10 @@ export const PLAN_TIERS = {
   enterprise: {
     id: "enterprise",
     name: "Enterprise",
-    price: 79,
-    monthlyPrice: 79,
-    yearlyPrice: 948,
-    yearlyMonthlyEquivalent: 79,
+    price: 99,
+    monthlyPrice: 99,
+    yearlyPrice: 990,
+    yearlyMonthlyEquivalent: 82.5,
     order: 4,
   },
 };

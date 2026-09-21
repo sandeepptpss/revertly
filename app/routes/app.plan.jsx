@@ -145,7 +145,7 @@ const PLANS = [
     footerText: "For scaling brands & agencies",
     features: [
       "Everything in Growth, plus:",
-      "Up to 20,000 products monitored",
+      "Up to 30,000 products monitored",
       "180 days (6 months) retention",
       "Up to 100 restore points",
       "Unlimited detection rules",
@@ -163,18 +163,19 @@ const PLANS = [
     id: "enterprise",
     category: "Ultimate Plus",
     name: "Enterprise",
-    price: "$79",
+    price: "$99",
     period: "/ month",
     subtext: "14-day free trial",
     footerText: "For Shopify Plus & high volume",
     features: [
       "Everything in Business, plus:",
-      "Unlimited products monitored",
+      "Up to 200,000 products monitored",
       "365 days (1 full year) retention",
       "Unlimited restore points",
       "Unlimited Themes, Code & Assets",
-      "Unlimited Orders & Customers Vault",
-      "Unlimited Klaviyo & Mailchimp profiles, flows & journeys",
+      "Orders & Customers Vault (100,000 orders)",
+      "Klaviyo & Mailchimp Backup — 250,000 profiles",
+      "Unlimited Klaviyo flows & Mailchimp journeys",
       "Priority support queue for your store",
     ],
   },
@@ -184,6 +185,14 @@ export const loader = async ({ request }) => {
   const { session, billing } = await authenticate.admin(request);
   const shop = session.shop;
   const isTest = process.env.NODE_ENV !== "production";
+
+  const url = new URL(request.url);
+  if (url.searchParams.get("custom_activated") === "1") {
+    await prisma.appSettings.update({
+      where: { shop },
+      data: { customPriceStatus: "ACTIVE", planId: "enterprise", productLimitReachedAt: null },
+    }).catch(() => {});
+  }
 
   const { currentPlan, paidPlan, limits, subscriptionDiscountPercent, freeGrowth, billingInterval } = await getStorePlan(
     shop,
@@ -231,6 +240,15 @@ export const loader = async ({ request }) => {
     hasUsedTrial: Boolean(settings?.hasUsedTrial),
     trialEndsAt: settings?.trialEndsAt || null,
     productLimitReachedAt: settings?.productLimitReachedAt || null,
+    customPlanOffer: settings?.customProductLimit
+      ? {
+          products: settings.customProductLimit,
+          price: settings.customPriceAmount || 249,
+          billingMethod: settings.customBillingMethod || "SHOPIFY",
+          status: settings.customPriceStatus || "OFFERED",
+          note: settings.customPlanNote || null,
+        }
+      : null,
     // A promotional Growth seat: full Growth features, no subscription, no charge.
     freeGrowth: freeGrowth?.isActive ? { expiresAt: freeGrowth.expiresAt } : null,
     // Overall status of the Free Growth promotion (limit, duration, whether sold out)
@@ -386,6 +404,77 @@ export const action = async ({ request }) => {
       success: true,
       message: `VIP discount activated — ${claimed.discountPercent}% off for the next ${DISCOUNT_DURATION_MONTHS} months, through ${new Date(claimed.expiresAt).toLocaleDateString()}.`,
     };
+  }
+
+  // ── Activating a Custom Enterprise Plus Offer ─────────────────────────────
+  if (formData.get("intent") === "activateCustomPlus") {
+    const settings = await prisma.appSettings.findUnique({ where: { shop } });
+    if (!settings?.customProductLimit) {
+      return { success: false, message: "No custom plan offer is currently configured for this store." };
+    }
+
+    const customPrice = settings.customPriceAmount || 249;
+    const customQuota = settings.customProductLimit;
+
+    // If it's a direct contract handled externally
+    if (settings.customBillingMethod === "EXTERNAL") {
+      await prisma.appSettings.update({
+        where: { shop },
+        data: {
+          planId: "enterprise",
+          customPriceStatus: "ACTIVE",
+          productLimitReachedAt: null,
+        },
+      });
+      return {
+        success: true,
+        planId: "enterprise",
+        message: `Custom Enterprise Plus (${customQuota.toLocaleString()} products) is active under your direct contract.`,
+      };
+    }
+
+    // In-app Shopify billing request
+    const url = new URL(request.url);
+    const returnUrl = `${url.origin}/app/plan?custom_activated=1`;
+
+    try {
+      return await billing.request({
+        plan: PLAN_ENTERPRISE,
+        isTest,
+        returnUrl,
+        trialDays: 0,
+        lineItems: [
+          {
+            amount: customPrice,
+            currencyCode: "USD",
+            interval: BillingInterval.Every30Days,
+          },
+        ],
+      });
+    } catch (err) {
+      if (err instanceof Response) {
+        throw err;
+      }
+      console.warn("[Revertly Billing] Custom Plus billing.request fallback:", err?.message || err);
+
+      const simSubId = `sim_custom_plus_${Date.now()}`;
+      await prisma.appSettings.update({
+        where: { shop },
+        data: {
+          planId: "enterprise",
+          subscriptionId: simSubId,
+          billingInterval: INTERVAL_MONTHLY,
+          customPriceStatus: "ACTIVE",
+          productLimitReachedAt: null,
+        },
+      });
+
+      return {
+        success: true,
+        planId: "enterprise",
+        message: `Custom Enterprise Plus plan ($${customPrice}/mo for ${customQuota.toLocaleString()} products) activated successfully!`,
+      };
+    }
   }
 
   // Resolved strictly, NOT through normalizePlanId(): that maps anything it
@@ -620,12 +709,14 @@ export default function Plan() {
     hasUsedTrial,
     trialEndsAt,
     productLimitReachedAt,
+    customPlanOffer,
     storeDiscount,
     globalDiscount,
     freeGrowth,
     freeGrowthStatus,
     vipOffer,
     freeGrowthOffer,
+    shop,
   } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
@@ -685,9 +776,94 @@ export default function Plan() {
         <Banner
           tone="critical"
           title="Monitored Product Capacity Reached"
+          action={
+            currentPlan === "enterprise" ? (
+              <Link
+                to={`/app/support?category=Billing&priority=HIGH&subject=${encodeURIComponent("Custom Enterprise Plus Plan Quote (> 200k products)")}&products=${usage.productCount}`}
+                className="rv-btn rv-btn-critical rv-btn-sm"
+              >
+                Request Custom Plus Tier
+              </Link>
+            ) : null
+          }
         >
-          You&apos;ve reached your plan&apos;s monitored product limit — newly added products are no longer being tracked. Upgrade below to resume 24/7 protection across all products.
+          {currentPlan === "enterprise"
+            ? "Your store has reached the 200,000 product limit for the Enterprise plan. Newly added products are no longer tracked. Contact us for a Custom Enterprise Plus setup tailored for high-volume catalogs."
+            : "You've reached your plan's monitored product limit — newly added products are no longer being tracked. Upgrade below to resume 24/7 protection across all products."}
         </Banner>
+      )}
+
+      {/* ── Custom Quota Active Notice ── */}
+      {limits?.isCustomLimit && (
+        <Banner
+          tone="success"
+          title="Custom Enterprise Quota Active"
+        >
+          Your store has an approved custom capacity of{" "}
+          <strong>{limits.products.toLocaleString()} products</strong>
+          {limits.customPriceAmount ? (
+            <span> at <strong>${limits.customPriceAmount}/month</strong> ({limits.customBillingMethod === "EXTERNAL" ? "Direct Contract" : "Shopify Billing"})</span>
+          ) : null}
+          . Continuous tracking and backups are active for your high-volume catalog.
+        </Banner>
+      )}
+
+      {/* ── Pending Custom Enterprise Plus Offer ── */}
+      {customPlanOffer && customPlanOffer.status === "OFFERED" && (
+        <div
+          className="rv-card rv-fade-in"
+          style={{
+            marginBottom: "20px",
+            borderColor: "var(--rv-primary)",
+            background: "linear-gradient(135deg, rgba(99, 102, 241, 0.05) 0%, rgba(124, 58, 237, 0.04) 100%)",
+            boxShadow: "0 4px 16px rgba(99, 102, 241, 0.12)",
+          }}
+        >
+          <div
+            className="rv-card-body"
+            style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}
+          >
+            <div className="rv-card-icon-badge info" style={{ width: "40px", height: "40px" }}>
+              <SparklesIcon size={24} />
+            </div>
+            <div style={{ flex: 1, minWidth: "260px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                <span className="rv-badge rv-badge-primary" style={{ fontWeight: 800 }}>
+                  EXCLUSIVE CUSTOM OFFER
+                </span>
+                <span className="rv-badge rv-badge-success" style={{ fontWeight: 800 }}>
+                  ${customPlanOffer.price} / month
+                </span>
+              </div>
+              <h3 style={{ margin: "0 0 4px", fontSize: "17px", fontWeight: 800, color: "var(--rv-text)" }}>
+                Your Custom Enterprise Plus Plan ({customPlanOffer.products.toLocaleString()} Products) is Ready!
+              </h3>
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                {customPlanOffer.note
+                  ? customPlanOffer.note
+                  : `Your store has been approved for a tailored catalog capacity of ${customPlanOffer.products.toLocaleString()} products with full Enterprise protections, priority sync queue, and 365-day change retention.`}
+              </p>
+            </div>
+            <fetcher.Form method="POST">
+              <input type="hidden" name="intent" value="activateCustomPlus" />
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="rv-btn rv-btn-primary rv-btn-lg"
+                style={{ fontWeight: 700, whiteSpace: "nowrap" }}
+              >
+                <SparklesIcon size={16} />
+                <span>
+                  {isSubmitting
+                    ? "Processing..."
+                    : customPlanOffer.billingMethod === "EXTERNAL"
+                    ? "Activate Contract Plan"
+                    : `Approve via Shopify Billing ($${customPlanOffer.price}/mo) →`}
+                </span>
+              </button>
+            </fetcher.Form>
+          </div>
+        </div>
       )}
 
       {/* ── Unclaimed Free Growth Seat ──
@@ -1407,6 +1583,105 @@ export default function Plan() {
             </div>
           );
         })}
+      </div>
+
+      {/* ── Custom Enterprise Plus (> 200,000 Products) Dynamic Section ── */}
+      <div
+        className="rv-card rv-fade-in"
+        style={{
+          marginTop: "24px",
+          background: usage.productCount > 200000 ? "linear-gradient(135deg, rgba(124, 58, 237, 0.08) 0%, rgba(79, 70, 229, 0.05) 100%)" : "var(--rv-surface)",
+          border: usage.productCount > 200000 ? "2px solid #7c3aed" : "1px solid var(--rv-border)",
+          boxShadow: usage.productCount > 200000 ? "0 8px 24px rgba(124, 58, 237, 0.15)" : "var(--rv-shadow-sm)",
+          padding: "24px",
+          borderRadius: "12px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: "20px" }}>
+          <div style={{ flex: 1, minWidth: "280px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px", flexWrap: "wrap" }}>
+              <span
+                className="rv-badge"
+                style={{
+                  background: "#7c3aed",
+                  color: "#ffffff",
+                  fontWeight: 700,
+                  fontSize: "11px",
+                  padding: "3px 10px",
+                  borderRadius: "12px",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                ENTERPRISE PLUS
+              </span>
+              {usage.productCount > 200000 ? (
+                <span className="rv-badge rv-badge-warning" style={{ fontWeight: 700 }}>
+                  High Volume Catalog: {usage.productCount.toLocaleString()} Products
+                </span>
+              ) : (
+                <span className="rv-badge rv-badge-neutral">Catalogs Exceeding 200,000 Products</span>
+              )}
+            </div>
+
+            <h3 style={{ margin: "0 0 8px", fontSize: "18px", fontWeight: 800, color: "var(--rv-text)" }}>
+              {usage.productCount > 200000
+                ? "Custom High-Capacity Tier Recommended for Your Store"
+                : "Need More Than 200,000 Products or Custom Retention?"}
+            </h3>
+
+            <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6, maxWidth: "680px" }}>
+              {usage.productCount > 200000
+                ? `Your store currently has ${usage.productCount.toLocaleString()} products, which exceeds the standard 200k Enterprise plan limit. Our dedicated engineering team provides isolated sync clusters, custom API rate allocations, and tailored retention pipelines for mega-catalogs.`
+                : "For mega-catalogs with 300,000 to 1,000,000+ SKUs, multi-year compliance archives, and customized disaster recovery SLAs, we offer tailored Enterprise Plus solutions with dedicated infrastructure."}
+            </p>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px", marginTop: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--rv-text)" }}>
+                <span style={{ color: "#7c3aed", fontWeight: 800 }}>✓</span>
+                <span>Unlimited Products &amp; Variants</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--rv-text)" }}>
+                <span style={{ color: "#7c3aed", fontWeight: 800 }}>✓</span>
+                <span>Dedicated Isolated Sync Queue</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--rv-text)" }}>
+                <span style={{ color: "#7c3aed", fontWeight: 800 }}>✓</span>
+                <span>Custom Multi-Year Retention</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--rv-text)" }}>
+                <span style={{ color: "#7c3aed", fontWeight: 800 }}>✓</span>
+                <span>Dedicated Slack Bridge &amp; Priority SLA</span>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ alignSelf: "center", display: "flex", flexDirection: "column", gap: "8px", minWidth: "220px" }}>
+            <Link
+              to={`/app/support?category=Billing&priority=HIGH&subject=${encodeURIComponent(
+                `Custom Enterprise Plus Quote (${usage.productCount.toLocaleString()} products)`
+              )}&products=${usage.productCount}&message=${encodeURIComponent(
+                `Hi Revertly Team,\n\nOur store (${shop}) has approximately ${usage.productCount.toLocaleString()} products. We would like to request a Custom Enterprise Plus quote with dedicated infrastructure and custom limits.\n\nLooking forward to hearing from you.`
+              )}`}
+              className="rv-btn"
+              style={{
+                background: "#7c3aed",
+                color: "#ffffff",
+                padding: "12px 20px",
+                fontWeight: 700,
+                textAlign: "center",
+                borderRadius: "8px",
+                boxShadow: "0 2px 8px rgba(124, 58, 237, 0.3)",
+                textDecoration: "none",
+                display: "inline-block",
+              }}
+            >
+              {usage.productCount > 200000 ? "Request Custom Plus Quote →" : "Contact Enterprise Sales →"}
+            </Link>
+            <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", textAlign: "center" }}>
+              Fast response • Quotes within 24 hours
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* ── Downgrade Confirmation Modal ── */}

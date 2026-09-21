@@ -111,7 +111,7 @@ export const PLAN_LIMITS = {
     metafieldBackup: true,
   },
   business: {
-    products: 20000,
+    products: 30000,
     restorePoints: 100,
     rules: Infinity,
     retentionDays: 180,
@@ -127,18 +127,18 @@ export const PLAN_LIMITS = {
     metafieldBackup: true,
   },
   enterprise: {
-    products: Infinity,
+    products: 200000,
     restorePoints: Infinity,
     rules: Infinity,
     retentionDays: 365,
-    vaultOrders: Infinity,
+    vaultOrders: 100000,
     themes: true,
     circuitBreaker: true,
     slack: true,
     bulkRollback: true,
     cloudSync: true,
     marketingBackup: true,
-    marketingProfiles: Infinity,
+    marketingProfiles: 250000,
     marketingFlows: true,
     metafieldBackup: true,
   },
@@ -174,6 +174,11 @@ export function getPlanLimits(planId) {
 export async function getEffectivePlanId(shop, settings) {
   const row =
     settings !== undefined ? settings : await prisma.appSettings.findUnique({ where: { shop } });
+
+  if (row?.customBillingMethod === "EXTERNAL" && row?.customPriceStatus === "ACTIVE") {
+    return "enterprise";
+  }
+
   const paidPlan = normalizePlanId(row?.planId);
 
   const { getActiveFreeGrowthGrant } = await import("./freeGrowth.server.js");
@@ -182,9 +187,35 @@ export async function getEffectivePlanId(shop, settings) {
   return grant && planRank(paidPlan) <= planRank("growth") ? "growth" : paidPlan;
 }
 
-/** Plan limits for `getEffectivePlanId`. */
+/** Plan limits for `getEffectivePlanId`, respecting any admin-granted customProductLimit. */
 export async function getEffectiveLimits(shop, settings) {
-  return getPlanLimits(await getEffectivePlanId(shop, settings));
+  const row =
+    settings !== undefined ? settings : await prisma.appSettings.findUnique({ where: { shop } });
+  const plan = await getEffectivePlanId(shop, row);
+  const baseLimits = getPlanLimits(plan);
+
+  if (row?.customProductLimit && row.customProductLimit > 0) {
+    return {
+      ...baseLimits,
+      products: row.customProductLimit,
+      isCustomLimit: true,
+      customProductLimit: row.customProductLimit,
+      customPlanNote: row.customPlanNote || null,
+      customPriceAmount: row.customPriceAmount || null,
+      customBillingMethod: row.customBillingMethod || "SHOPIFY",
+      customPriceStatus: row.customPriceStatus || null,
+    };
+  }
+
+  return {
+    ...baseLimits,
+    isCustomLimit: false,
+    customProductLimit: null,
+    customPlanNote: null,
+    customPriceAmount: null,
+    customBillingMethod: null,
+    customPriceStatus: null,
+  };
 }
 
 /**
@@ -248,6 +279,12 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
         } else if (subName === PLAN_ENTERPRISE_ANNUAL) {
           activeShopifyPlan = "enterprise";
           activeShopifyInterval = INTERVAL_ANNUAL;
+        } else if (
+          subName?.toLowerCase().includes("enterprise plus") ||
+          subName?.toLowerCase().includes("custom enterprise")
+        ) {
+          activeShopifyPlan = "enterprise";
+          activeShopifyInterval = INTERVAL_MONTHLY;
         }
 
         if (!activeShopifyInterval && activeSub?.lineItems?.[0]?.plan?.pricingDetails?.interval) {
@@ -277,20 +314,31 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
     settings?.subscriptionId?.startsWith("sim_") ||
     settings?.subscriptionId?.startsWith("test_")
   );
-  let currentPlan = normalizePlanId(activeShopifyPlan || settings?.planId || "free");
+  const isExternalActive =
+    settings?.customBillingMethod === "EXTERNAL" && settings?.customPriceStatus === "ACTIVE";
+
+  let currentPlan = isExternalActive
+    ? "enterprise"
+    : normalizePlanId(activeShopifyPlan || settings?.planId || "free");
 
   // If Shopify returned a definitive check, synchronize database (unless plan was activated in test/simulation mode)
   if (billing && !isSimulated) {
-    if (activeShopifyPlan && settings && (settings.planId !== activeShopifyPlan || (activeShopifyInterval && settings.billingInterval !== activeShopifyInterval))) {
+    const needsPlanUpdate = settings && (
+      settings.planId !== activeShopifyPlan ||
+      (activeShopifyInterval && settings.billingInterval !== activeShopifyInterval) ||
+      (activeShopifyPlan === "enterprise" && settings.customPriceStatus === "OFFERED")
+    );
+    if (activeShopifyPlan && needsPlanUpdate) {
       await prisma.appSettings.update({
         where: { shop },
         data: {
           planId: activeShopifyPlan,
           billingInterval: activeShopifyInterval || INTERVAL_MONTHLY,
+          ...(settings.customPriceStatus === "OFFERED" ? { customPriceStatus: "ACTIVE" } : {}),
         },
       });
       currentPlan = activeShopifyPlan;
-    } else if (noActivePaymentConfirmed && settings && settings.planId !== "free") {
+    } else if (noActivePaymentConfirmed && settings && settings.planId !== "free" && !isExternalActive) {
       // Shopify has no active payment, but DB still says paid plan -> downgrade to free
       await prisma.appSettings.update({
         where: { shop },
@@ -342,11 +390,28 @@ export async function getStorePlan(shop, billing = null, isTest = true) {
     settings?.billingInterval ||
     (settings?.subscriptionId?.includes("annual") ? INTERVAL_ANNUAL : INTERVAL_MONTHLY);
 
+  const baseLimits = getPlanLimits(effectivePlan);
+  const limits =
+    settings?.customProductLimit && settings.customProductLimit > 0
+      ? {
+          ...baseLimits,
+          products: settings.customProductLimit,
+          isCustomLimit: true,
+          customProductLimit: settings.customProductLimit,
+          customPlanNote: settings.customPlanNote || null,
+        }
+      : {
+          ...baseLimits,
+          isCustomLimit: false,
+          customProductLimit: null,
+          customPlanNote: null,
+        };
+
   return {
     currentPlan: effectivePlan,
     // What the merchant actually pays for, ignoring the promotion.
     paidPlan,
-    limits: getPlanLimits(effectivePlan),
+    limits,
     subscriptionDiscountPercent,
     freeGrowth: freeGrowthInfo,
     billingInterval: resolvedInterval,

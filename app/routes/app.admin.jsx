@@ -28,6 +28,13 @@ import {
   SparklesIcon,
   Trash2Icon,
   HistoryIcon,
+  MailIcon,
+  CheckCircleIcon,
+  AlertTriangleIcon,
+  ClockIcon,
+  SaveIcon,
+  XIcon,
+  ExternalLinkIcon,
 } from "../components/Icons.jsx";
 
 /**
@@ -57,6 +64,8 @@ export const loader = async ({ request }) => {
     platformSettings,
     freeGrowth,
     freeGrowthGrants,
+    supportTickets,
+    productCounts,
   ] = await Promise.all([
     prisma.appSettings.findMany({ orderBy: { createdAt: "desc" } }),
     prisma.session.findMany({ distinct: ["shop"], select: { shop: true } }),
@@ -66,7 +75,11 @@ export const loader = async ({ request }) => {
     getPlatformSettings(),
     getFreeGrowthStatus(),
     prisma.freeGrowthGrant.findMany(),
+    prisma.supportTicket.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.productSnapshot.groupBy({ by: ["shop"], _count: { _all: true } }),
   ]);
+
+  const productCountByShop = new Map(productCounts.map((p) => [p.shop, p._count._all]));
 
   // AppSettings rows are written lazily, so a store can be installed without
   // one. Union the two lists so a freshly-installed merchant is still visible
@@ -137,6 +150,12 @@ export const loader = async ({ request }) => {
       firstSeenAt: m.createdAt ?? null,
       restorePointCount: restoreCountByShop.get(m.shop) || 0,
       openIncidentCount: incidentCountByShop.get(m.shop) || 0,
+      productCount: productCountByShop.get(m.shop) || 0,
+      customProductLimit: m.customProductLimit ?? null,
+      customPlanNote: m.customPlanNote ?? null,
+      customPriceAmount: m.customPriceAmount ?? null,
+      customBillingMethod: m.customBillingMethod ?? "SHOPIFY",
+      customPriceStatus: m.customPriceStatus ?? null,
       discount: discount
         ? {
             percent: discount.discountPercent,
@@ -157,6 +176,18 @@ export const loader = async ({ request }) => {
 
   return {
     merchants: rows,
+    tickets: supportTickets.map((t) => ({
+      id: t.id,
+      shop: t.shop,
+      subject: t.subject,
+      category: t.category,
+      message: t.message,
+      email: t.email,
+      status: t.status,
+      priority: t.priority,
+      planTier: t.planTier,
+      createdAt: t.createdAt.toISOString(),
+    })),
     adminShop: PLATFORM_ADMIN_SHOP,
     durationMonths: DISCOUNT_DURATION_MONTHS,
     global: {
@@ -341,6 +372,20 @@ export const action = async ({ request }) => {
     };
   }
 
+  if (intent === "updateTicketStatus") {
+    const ticketId = parseInt(formData.get("ticketId"), 10);
+    const status = String(formData.get("status") || "RESOLVED").toUpperCase();
+    if (!ticketId) {
+      return { success: false, message: "Invalid ticket ID." };
+    }
+    const updated = await prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: { status },
+    });
+    await writeAdminAudit("ADMIN_TICKET_STATUS_UPDATED", adminEmail, { ticketId, status, shop: updated.shop });
+    return { success: true, message: `Ticket #${ticketId} status updated to ${status}.` };
+  }
+
   // ── Store-scoped intents ─────────────────────────────────────────────────
 
   if (!targetShop) {
@@ -355,6 +400,105 @@ export const action = async ({ request }) => {
   ]);
   if (!merchantSettings && !merchantSession) {
     return { success: false, message: `"${targetShop}" is not a known merchant store.` };
+  }
+
+  if (intent === "setCustomQuota") {
+    const customLimit = parseInt(formData.get("customProductLimit"), 10);
+    if (!customLimit || customLimit < 1000) {
+      return { success: false, message: "Custom product limit must be a valid number of at least 1,000 products." };
+    }
+    const billingMethod =
+      String(formData.get("customBillingMethod") || "SHOPIFY").toUpperCase() === "EXTERNAL"
+        ? "EXTERNAL"
+        : "SHOPIFY";
+    const rawPrice = formData.get("customPriceAmount");
+    const customPrice = rawPrice ? parseInt(rawPrice, 10) : null;
+    if (customPrice !== null && (isNaN(customPrice) || customPrice < 0 || customPrice > 10000)) {
+      return { success: false, message: "Custom monthly price must be a valid dollar amount (e.g. 199, 249)." };
+    }
+    const note = truncateNote(formData.get("customPlanNote"));
+
+    // If EXTERNAL (Direct Invoice / Contract), mark as ACTIVE immediately.
+    // If SHOPIFY:
+    // - If switching from EXTERNAL to SHOPIFY, mark as OFFERED so merchant approves via Shopify.
+    // - If price or limit changed, mark as OFFERED for merchant approval.
+    // - Otherwise retain existing status (ACTIVE or OFFERED).
+    const priceStatus =
+      billingMethod === "EXTERNAL"
+        ? "ACTIVE"
+        : merchantSettings?.customBillingMethod === "EXTERNAL"
+        ? "OFFERED"
+        : merchantSettings?.customPriceAmount !== customPrice || merchantSettings?.customProductLimit !== customLimit
+        ? "OFFERED"
+        : merchantSettings?.customPriceStatus || "OFFERED";
+
+    await prisma.appSettings.upsert({
+      where: { shop: targetShop },
+      create: {
+        shop: targetShop,
+        customProductLimit: customLimit,
+        customPlanNote: note,
+        customPriceAmount: customPrice,
+        customBillingMethod: billingMethod,
+        customPriceStatus: priceStatus,
+        productLimitReachedAt: null,
+      },
+      update: {
+        customProductLimit: customLimit,
+        customPlanNote: note,
+        customPriceAmount: customPrice,
+        customBillingMethod: billingMethod,
+        customPriceStatus: priceStatus,
+        productLimitReachedAt: null,
+      },
+    });
+    await prisma.auditLog.create({
+      data: {
+        shop: targetShop,
+        userEmail: adminEmail || null,
+        userName: "Platform Admin",
+        action: "ADMIN_CUSTOM_QUOTA_GRANTED",
+        resourceType: "AppSettings",
+        details: {
+          customProductLimit: customLimit,
+          customPlanNote: note,
+          customPriceAmount: customPrice,
+          customBillingMethod: billingMethod,
+          customPriceStatus: priceStatus,
+        },
+      },
+    });
+    const priceLabel = customPrice
+      ? ` at $${customPrice}/mo (${billingMethod === "EXTERNAL" ? "External Contract" : "Shopify Billing"})`
+      : "";
+    return {
+      success: true,
+      message: `Custom quota of ${customLimit.toLocaleString()} products${priceLabel} configured for ${targetShop}.`,
+    };
+  }
+
+  if (intent === "resetCustomQuota") {
+    await prisma.appSettings.update({
+      where: { shop: targetShop },
+      data: {
+        customProductLimit: null,
+        customPlanNote: null,
+        customPriceAmount: null,
+        customBillingMethod: "SHOPIFY",
+        customPriceStatus: null,
+      },
+    });
+    await prisma.auditLog.create({
+      data: {
+        shop: targetShop,
+        userEmail: adminEmail || null,
+        userName: "Platform Admin",
+        action: "ADMIN_CUSTOM_QUOTA_REMOVED",
+        resourceType: "AppSettings",
+        details: { resetBy: adminEmail },
+      },
+    });
+    return { success: true, message: `Custom quota reset to plan default for ${targetShop}.` };
   }
 
   if (intent === "setDiscount") {
@@ -450,17 +594,26 @@ function formatDate(value) {
 }
 
 export default function AdminPanel() {
-  const { merchants, durationMonths, global: globalDiscount, freeGrowth } = useLoaderData();
+  const { merchants, tickets = [], durationMonths, global: globalDiscount, freeGrowth } = useLoaderData();
   const globalFetcher = useFetcher();
   const freeGrowthFetcher = useFetcher();
   const storeFetcher = useFetcher();
+  const ticketFetcher = useFetcher();
+  const quotaFetcher = useFetcher();
 
   const isGlobalBusy = globalFetcher.state !== "idle";
   const isFreeGrowthBusy = freeGrowthFetcher.state !== "idle";
   const isStoreBusy = storeFetcher.state !== "idle";
+  const isTicketBusy = ticketFetcher.state !== "idle";
+  const isQuotaBusy = quotaFetcher.state !== "idle";
 
   // Display the result message from whichever action was triggered
-  const result = globalFetcher.data || freeGrowthFetcher.data || storeFetcher.data;
+  const result =
+    globalFetcher.data ||
+    freeGrowthFetcher.data ||
+    storeFetcher.data ||
+    ticketFetcher.data ||
+    quotaFetcher.data;
 
   const [editingShop, setEditingShop] = useState(null);
   const [percentDraft, setPercentDraft] = useState("10");
@@ -475,6 +628,17 @@ export default function AdminPanel() {
 
   const [removeDiscountTarget, setRemoveDiscountTarget] = useState(null);
   const [showClearGlobalModal, setShowClearGlobalModal] = useState(false);
+
+  // Ticket management state
+  const [viewingTicket, setViewingTicket] = useState(null);
+  const [ticketFilter, setTicketFilter] = useState("ALL");
+
+  // Custom quota & pricing state
+  const [quotaTargetShop, setQuotaTargetShop] = useState(null);
+  const [customLimitDraft, setCustomLimitDraft] = useState("350000");
+  const [customPriceDraft, setCustomPriceDraft] = useState("249");
+  const [customBillingMethodDraft, setCustomBillingMethodDraft] = useState("SHOPIFY");
+  const [customNoteDraft, setCustomNoteDraft] = useState("");
 
   const isClearingGlobal = globalFetcher.state !== "idle" && globalFetcher.formData?.get("intent") === "clearGlobalDiscount";
   const isRemovingDiscount = storeFetcher.state !== "idle" && storeFetcher.formData?.get("intent") === "removeDiscount";
@@ -491,6 +655,22 @@ export default function AdminPanel() {
     }
   }, [storeFetcher.data, isRemovingDiscount]);
 
+  useEffect(() => {
+    if (quotaFetcher.data?.success) {
+      setQuotaTargetShop(null);
+    }
+  }, [quotaFetcher.data]);
+
+  useEffect(() => {
+    if (ticketFetcher.data?.success && viewingTicket) {
+      const updatedId = ticketFetcher.formData?.get("ticketId");
+      const updatedStatus = ticketFetcher.formData?.get("status");
+      if (updatedId && updatedStatus && viewingTicket.id === Number(updatedId)) {
+        setViewingTicket((prev) => (prev ? { ...prev, status: updatedStatus } : null));
+      }
+    }
+  }, [ticketFetcher.data, ticketFetcher.formData, viewingTicket]);
+
   function startEditing(row) {
     setEditingShop(row.shop);
     setPercentDraft(String(row.discount?.percent ?? 10));
@@ -498,7 +678,50 @@ export default function AdminPanel() {
     setTierDraft(row.discount?.tier ?? TIER_STANDARD);
   }
 
+  function startQuotaEdit(row) {
+    setQuotaTargetShop(row);
+    setCustomLimitDraft(String(row.customProductLimit || Math.max(300000, (row.productCount || 0) + 50000)));
+    setCustomPriceDraft(String(row.customPriceAmount || 249));
+    setCustomBillingMethodDraft(row.customBillingMethod || "SHOPIFY");
+    setCustomNoteDraft(row.customPlanNote || "");
+  }
+
+  function updateTicketStatus(ticketId, status) {
+    ticketFetcher.submit(
+      { intent: "updateTicketStatus", ticketId: String(ticketId), status },
+      { method: "POST" }
+    );
+  }
+
   const seatPct = freeGrowth.limit > 0 ? Math.min(100, (freeGrowth.used / freeGrowth.limit) * 100) : 0;
+
+  const filteredTickets = tickets.filter((t) => {
+    if (ticketFilter === "ALL") return true;
+    if (ticketFilter === "OPEN") return t.status === "OPEN";
+    if (ticketFilter === "IN_PROGRESS") return t.status === "IN_PROGRESS";
+    if (ticketFilter === "RESOLVED") return t.status === "RESOLVED";
+    if (ticketFilter === "BILLING") {
+      return (
+        t.category?.toLowerCase() === "billing" ||
+        t.subject?.toLowerCase().includes("custom") ||
+        t.subject?.toLowerCase().includes("enterprise") ||
+        t.subject?.toLowerCase().includes("quote") ||
+        t.subject?.toLowerCase().includes("200k")
+      );
+    }
+    return true;
+  });
+
+  const openTicketCount = tickets.filter((t) => t.status === "OPEN").length;
+  const inProgressTicketCount = tickets.filter((t) => t.status === "IN_PROGRESS").length;
+  const billingTicketCount = tickets.filter(
+    (t) =>
+      t.category?.toLowerCase() === "billing" ||
+      t.subject?.toLowerCase().includes("custom") ||
+      t.subject?.toLowerCase().includes("enterprise") ||
+      t.subject?.toLowerCase().includes("quote") ||
+      t.subject?.toLowerCase().includes("200k")
+  ).length;
 
   return (
     <s-page heading="Platform Admin" inlineSize="large">
@@ -681,6 +904,194 @@ export default function AdminPanel() {
           </div>
         </div>
 
+        {/* ── Support Tickets & Custom Tier Inquiries ── */}
+        <div className="rv-card" style={{ margin: "20px 0" }}>
+          <div className="rv-card-header" style={{ flexWrap: "wrap", gap: "12px" }}>
+            <div className="rv-card-icon-title">
+              <div className="rv-card-icon-badge info">
+                <MailIcon size={20} />
+              </div>
+              <div>
+                <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                  Support Tickets &amp; Inquiries ({tickets.length})
+                </h3>
+                <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                  Merchant support inquiries, billing questions, and Custom Enterprise Plus quote requests.
+                </p>
+              </div>
+            </div>
+
+            {/* Filter Pills */}
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                className={`rv-btn rv-btn-sm ${ticketFilter === "ALL" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                onClick={() => setTicketFilter("ALL")}
+              >
+                All ({tickets.length})
+              </button>
+              <button
+                type="button"
+                className={`rv-btn rv-btn-sm ${ticketFilter === "OPEN" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                onClick={() => setTicketFilter("OPEN")}
+              >
+                Open ({openTicketCount})
+              </button>
+              <button
+                type="button"
+                className={`rv-btn rv-btn-sm ${ticketFilter === "IN_PROGRESS" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                onClick={() => setTicketFilter("IN_PROGRESS")}
+              >
+                In Progress ({inProgressTicketCount})
+              </button>
+              <button
+                type="button"
+                className={`rv-btn rv-btn-sm ${ticketFilter === "BILLING" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                onClick={() => setTicketFilter("BILLING")}
+              >
+                Billing / Custom ({billingTicketCount})
+              </button>
+              <button
+                type="button"
+                className={`rv-btn rv-btn-sm ${ticketFilter === "RESOLVED" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                onClick={() => setTicketFilter("RESOLVED")}
+              >
+                Resolved ({tickets.filter((t) => t.status === "RESOLVED").length})
+              </button>
+            </div>
+          </div>
+
+          <div className="rv-card-body">
+            {filteredTickets.length === 0 ? (
+              <EmptyState
+                icon={<MailIcon size={22} />}
+                title="No inquiries found"
+                description={
+                  ticketFilter === "ALL"
+                    ? "No support tickets have been submitted yet."
+                    : `No tickets match the "${ticketFilter}" filter.`
+                }
+              />
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table className="rv-table" style={{ width: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Store &amp; Email</th>
+                      <th>Subject &amp; Category</th>
+                      <th>Priority</th>
+                      <th>Status</th>
+                      <th>Submitted</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTickets.map((t) => {
+                      const isCustomPlus =
+                        t.category?.toLowerCase() === "billing" ||
+                        t.subject?.toLowerCase().includes("custom") ||
+                        t.subject?.toLowerCase().includes("200k") ||
+                        t.subject?.toLowerCase().includes("enterprise");
+                      const matchingMerchant = merchants.find((m) => m.shop === t.shop);
+
+                      return (
+                        <tr key={t.id}>
+                          <td>
+                            <strong>#{t.id}</strong>
+                          </td>
+                          <td>
+                            <strong>{t.shop}</strong>
+                            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                              {t.email || "No email provided"}
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                              <span style={{ fontWeight: 600 }}>{t.subject}</span>
+                              {isCustomPlus && (
+                                <span className="rv-badge rv-badge-warning rv-badge-sm" style={{ fontWeight: 700 }}>
+                                  Custom Plus Request
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                              <span style={{ textTransform: "capitalize" }}>{t.category}</span>
+                              {" · "}
+                              <span>Plan: {t.planTier || "Unknown"}</span>
+                              {matchingMerchant && (
+                                <span> · Catalog: {matchingMerchant.productCount.toLocaleString()} products</span>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <span
+                              className={`rv-badge rv-badge-sm ${
+                                t.priority === "URGENT" || t.priority === "HIGH"
+                                  ? "rv-badge-critical"
+                                  : "rv-badge-neutral"
+                              }`}
+                              style={{ fontWeight: 700 }}
+                            >
+                              {t.priority}
+                            </span>
+                          </td>
+                          <td>
+                            <span
+                              className={`rv-badge ${
+                                t.status === "RESOLVED"
+                                  ? "rv-badge-success"
+                                  : t.status === "IN_PROGRESS"
+                                  ? "rv-badge-info"
+                                  : "rv-badge-warning"
+                              }`}
+                              style={{ fontWeight: 700 }}
+                            >
+                              {t.status === "RESOLVED" ? (
+                                <CheckCircleIcon size={12} />
+                              ) : t.status === "IN_PROGRESS" ? (
+                                <ClockIcon size={12} />
+                              ) : (
+                                <AlertTriangleIcon size={12} />
+                              )}{" "}
+                              {t.status}
+                            </span>
+                          </td>
+                          <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                            {formatDate(t.createdAt)}
+                          </td>
+                          <td>
+                            <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                              <button
+                                type="button"
+                                className="rv-btn rv-btn-secondary rv-btn-sm"
+                                onClick={() => setViewingTicket(t)}
+                              >
+                                View
+                              </button>
+                              {matchingMerchant && isCustomPlus && (
+                                <button
+                                  type="button"
+                                  className="rv-btn rv-btn-primary rv-btn-sm"
+                                  onClick={() => startQuotaEdit(matchingMerchant)}
+                                  title="Configure custom catalog limit for this merchant"
+                                >
+                                  <DatabaseIcon size={12} />
+                                  <span>Grant Quota</span>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="rv-card" style={{ margin: "20px 0" }}>
           <div className="rv-card-header">
             <div className="rv-card-icon-title">
@@ -692,7 +1103,7 @@ export default function AdminPanel() {
                   Merchant Stores ({merchants.length})
                 </h3>
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                  Every store that has installed the app. Grant or update a yearly discount for any of them.
+                  Every store that has installed the app. Manage custom product limits or yearly discounts.
                 </p>
               </div>
             </div>
@@ -712,6 +1123,7 @@ export default function AdminPanel() {
                     <tr>
                       <th>Store</th>
                       <th>Plan</th>
+                      <th>Quota / Catalog</th>
                       <th>Store discount</th>
                       <th>Effective</th>
                       <th>Backups</th>
@@ -741,6 +1153,45 @@ export default function AdminPanel() {
                                 </span>
                               </div>
                             )}
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>{row.productCount.toLocaleString()} products</div>
+                            {row.customProductLimit ? (
+                              <div style={{ marginTop: "4px" }}>
+                                <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", alignItems: "center" }}>
+                                  <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
+                                    Custom: {row.customProductLimit.toLocaleString()}
+                                  </span>
+                                  {row.customPriceAmount && (
+                                    <span
+                                      className={`rv-badge rv-badge-sm ${
+                                        row.customPriceStatus === "ACTIVE" ? "rv-badge-success" : "rv-badge-warning"
+                                      }`}
+                                      style={{ fontWeight: 700 }}
+                                    >
+                                      ${row.customPriceAmount}/mo ·{" "}
+                                      {row.customBillingMethod === "EXTERNAL"
+                                        ? "Contract"
+                                        : row.customPriceStatus === "ACTIVE"
+                                        ? "Active"
+                                        : "Offered"}
+                                    </span>
+                                  )}
+                                </div>
+                                {row.customPlanNote && (
+                                  <div
+                                    style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}
+                                    title={row.customPlanNote}
+                                  >
+                                    {row.customPlanNote}
+                                  </div>
+                                )}
+                              </div>
+                            ) : row.planId === "enterprise" ? (
+                              <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                                Plan cap: 200,000
+                              </div>
+                            ) : null}
                           </td>
                           <td>
                             {row.discount?.awaitingClaim ? (
@@ -801,7 +1252,7 @@ export default function AdminPanel() {
                           </td>
                           <td>{formatDate(row.firstSeenAt)}</td>
                           <td>
-                            <div style={{ display: "flex", gap: "8px" }}>
+                            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                               <button
                                 type="button"
                                 className="rv-btn rv-btn-secondary rv-btn-sm"
@@ -809,6 +1260,15 @@ export default function AdminPanel() {
                               >
                                 <SparklesIcon size={14} />
                                 <span>{row.discount?.isActive || row.discount?.awaitingClaim ? "Edit" : "Grant"}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="rv-btn rv-btn-secondary rv-btn-sm"
+                                onClick={() => startQuotaEdit(row)}
+                                title="Configure custom product quota for this store"
+                              >
+                                <DatabaseIcon size={13} />
+                                <span>{row.customProductLimit ? "Edit Quota" : "Quota"}</span>
                               </button>
                               {(row.discount?.isActive || row.discount?.awaitingClaim) && (
                                 <button
@@ -827,7 +1287,7 @@ export default function AdminPanel() {
 
                         {editingShop === row.shop && (
                           <tr>
-                            <td colSpan={8} style={{ background: "var(--rv-surface-subdued)" }}>
+                            <td colSpan={9} style={{ background: "var(--rv-surface-subdued)" }}>
                               <storeFetcher.Form
                                 method="POST"
                                 style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap", padding: "12px 4px" }}
@@ -1003,6 +1463,530 @@ export default function AdminPanel() {
           if (!isRemovingDiscount) setRemoveDiscountTarget(null);
         }}
       />
+
+      {/* ── Viewing Ticket Details Modal ── */}
+      {viewingTicket && (
+        <div
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isTicketBusy) setViewingTicket(null);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.45)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 99999,
+            padding: "20px",
+            animation: "rvFadeIn 0.15s ease-out",
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ticket-modal-title"
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--rv-radius-md, 10px)",
+              maxWidth: "560px",
+              width: "100%",
+              padding: "24px",
+              boxShadow: "var(--rv-shadow-lg, 0 10px 25px -5px rgba(0, 0, 0, 0.1))",
+              border: "1px solid var(--rv-border, #e1e3e5)",
+              position: "relative",
+              animation: "rvModalPop 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setViewingTicket(null)}
+              disabled={isTicketBusy}
+              aria-label="Close dialog"
+              style={{
+                position: "absolute",
+                top: "16px",
+                right: "16px",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "var(--rv-text-subdued, #6d7175)",
+                padding: "4px",
+                borderRadius: "4px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <XIcon size={18} />
+            </button>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+              <span
+                className={`rv-badge ${
+                  viewingTicket.status === "RESOLVED"
+                    ? "rv-badge-success"
+                    : viewingTicket.status === "IN_PROGRESS"
+                    ? "rv-badge-info"
+                    : "rv-badge-warning"
+                }`}
+                style={{ fontWeight: 700 }}
+              >
+                #{viewingTicket.id} · {viewingTicket.status}
+              </span>
+              <span
+                className={`rv-badge rv-badge-sm ${
+                  viewingTicket.priority === "URGENT" || viewingTicket.priority === "HIGH"
+                    ? "rv-badge-critical"
+                    : "rv-badge-neutral"
+                }`}
+              >
+                {viewingTicket.priority} Priority
+              </span>
+            </div>
+
+            <h3 id="ticket-modal-title" style={{ margin: "0 0 12px", fontSize: "18px", fontWeight: 700 }}>
+              {viewingTicket.subject}
+            </h3>
+
+            <div
+              style={{
+                background: "var(--rv-surface-subdued)",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                fontSize: "13px",
+                marginBottom: "16px",
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: "8px",
+              }}
+            >
+              <div>
+                <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>STORE</strong>
+                <span>{viewingTicket.shop}</span>
+              </div>
+              <div>
+                <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>EMAIL</strong>
+                {viewingTicket.email ? (
+                  <a
+                    href={`mailto:${viewingTicket.email}?subject=Re: ${encodeURIComponent(viewingTicket.subject)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      color: "var(--rv-primary)",
+                      textDecoration: "underline",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px",
+                    }}
+                  >
+                    <span>{viewingTicket.email}</span>
+                    <ExternalLinkIcon size={12} />
+                  </a>
+                ) : (
+                  <span>—</span>
+                )}
+              </div>
+              <div>
+                <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>CATEGORY</strong>
+                <span style={{ textTransform: "capitalize" }}>{viewingTicket.category}</span>
+              </div>
+              <div>
+                <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>SUBMITTED</strong>
+                <span>{new Date(viewingTicket.createdAt).toLocaleString()}</span>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: "18px" }}>
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--rv-text-subdued)", marginBottom: "6px" }}>
+                MERCHANT MESSAGE
+              </div>
+              <div
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid var(--rv-border)",
+                  borderRadius: "8px",
+                  padding: "14px",
+                  fontSize: "13px",
+                  lineHeight: 1.6,
+                  whiteSpace: "pre-wrap",
+                  maxHeight: "220px",
+                  overflowY: "auto",
+                }}
+              >
+                {viewingTicket.message}
+              </div>
+            </div>
+
+            {/* Status updates & quick actions */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--rv-text-subdued)" }}>Set Status:</span>
+                {viewingTicket.status !== "IN_PROGRESS" && (
+                  <button
+                    type="button"
+                    disabled={isTicketBusy}
+                    className="rv-btn rv-btn-secondary rv-btn-sm"
+                    onClick={() => updateTicketStatus(viewingTicket.id, "IN_PROGRESS")}
+                  >
+                    In Progress
+                  </button>
+                )}
+                {viewingTicket.status !== "RESOLVED" && (
+                  <button
+                    type="button"
+                    disabled={isTicketBusy}
+                    className="rv-btn rv-btn-primary rv-btn-sm"
+                    onClick={() => updateTicketStatus(viewingTicket.id, "RESOLVED")}
+                  >
+                    <CheckCircleIcon size={14} />
+                    <span>Resolve</span>
+                  </button>
+                )}
+                {viewingTicket.status !== "OPEN" && (
+                  <button
+                    type="button"
+                    disabled={isTicketBusy}
+                    className="rv-btn rv-btn-secondary rv-btn-sm"
+                    onClick={() => updateTicketStatus(viewingTicket.id, "OPEN")}
+                  >
+                    Reopen
+                  </button>
+                )}
+              </div>
+
+              {merchants.some((m) => m.shop === viewingTicket.shop) && (
+                <button
+                  type="button"
+                  className="rv-btn rv-btn-secondary rv-btn-sm"
+                  onClick={() => {
+                    const m = merchants.find((row) => row.shop === viewingTicket.shop);
+                    if (m) {
+                      setViewingTicket(null);
+                      startQuotaEdit(m);
+                    }
+                  }}
+                >
+                  <DatabaseIcon size={14} />
+                  <span>Configure Store Quota</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Custom Quota Management Modal ── */}
+      {quotaTargetShop && (
+        <div
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isQuotaBusy) setQuotaTargetShop(null);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.45)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 99999,
+            padding: "20px",
+            animation: "rvFadeIn 0.15s ease-out",
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="quota-modal-title"
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--rv-radius-md, 10px)",
+              maxWidth: "520px",
+              width: "100%",
+              padding: "24px",
+              boxShadow: "var(--rv-shadow-lg, 0 10px 25px -5px rgba(0, 0, 0, 0.1))",
+              border: "1px solid var(--rv-border, #e1e3e5)",
+              position: "relative",
+              animation: "rvModalPop 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setQuotaTargetShop(null)}
+              disabled={isQuotaBusy}
+              aria-label="Close dialog"
+              style={{
+                position: "absolute",
+                top: "16px",
+                right: "16px",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "var(--rv-text-subdued, #6d7175)",
+                padding: "4px",
+                borderRadius: "4px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <XIcon size={18} />
+            </button>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+              <div className="rv-card-icon-badge info" style={{ width: "32px", height: "32px" }}>
+                <DatabaseIcon size={18} />
+              </div>
+              <h3 id="quota-modal-title" style={{ margin: 0, fontSize: "18px", fontWeight: 700 }}>
+                Custom Product Quota
+              </h3>
+            </div>
+
+            <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+              Grant <strong>{quotaTargetShop.shop}</strong> a custom product catalog limit beyond standard plan tiers (e.g. Enterprise Plus for &gt; 200,000 products). This quota will be enforced on backups and displayed in their dashboard.
+            </p>
+
+            <div
+              style={{
+                background: "var(--rv-surface-subdued)",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                fontSize: "13px",
+                marginBottom: "16px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "8px",
+              }}
+            >
+              <div>
+                <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>STORE CATALOG</strong>
+                <span>{quotaTargetShop.productCount.toLocaleString()} products</span>
+              </div>
+              <div>
+                <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>CURRENT ACTIVE QUOTA</strong>
+                <span>
+                  {quotaTargetShop.customProductLimit
+                    ? `${quotaTargetShop.customProductLimit.toLocaleString()} (Custom)`
+                    : `${(PLAN_TIERS[quotaTargetShop.planId]?.limits?.products || 200000).toLocaleString()} (Plan)`}
+                </span>
+              </div>
+              <div>
+                <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>PLAN TIER</strong>
+                <span style={{ textTransform: "capitalize" }}>{quotaTargetShop.planId}</span>
+              </div>
+            </div>
+
+            <quotaFetcher.Form method="POST">
+              <input type="hidden" name="intent" value="setCustomQuota" />
+              <input type="hidden" name="targetShop" value={quotaTargetShop.shop} />
+
+              <div className="rv-form-field" style={{ marginBottom: "14px" }}>
+                <label className="rv-form-label" htmlFor="customProductLimit">
+                  Custom Product Limit
+                </label>
+                <input
+                  id="customProductLimit"
+                  name="customProductLimit"
+                  type="number"
+                  min="1000"
+                  max="5000000"
+                  step="1000"
+                  required
+                  value={customLimitDraft}
+                  onChange={(e) => setCustomLimitDraft(e.target.value)}
+                  className="rv-input"
+                  style={{ width: "100%" }}
+                />
+                {/* Presets */}
+                <div style={{ display: "flex", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
+                  {[250000, 350000, 500000, 1000000].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                      style={{ fontSize: "11px", padding: "2px 8px" }}
+                      onClick={() => setCustomLimitDraft(String(preset))}
+                    >
+                      {preset >= 1000000 ? `${preset / 1000000}M` : `${preset / 1000}k`}
+                    </button>
+                  ))}
+                  {quotaTargetShop.productCount > 0 && (
+                    <button
+                      type="button"
+                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                      style={{ fontSize: "11px", padding: "2px 8px" }}
+                      onClick={() =>
+                        setCustomLimitDraft(String(Math.ceil((quotaTargetShop.productCount + 50000) / 10000) * 10000))
+                      }
+                    >
+                      +50k over store
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Billing Method ── */}
+              <div className="rv-form-field" style={{ marginBottom: "14px" }}>
+                <div className="rv-form-label">Billing Method</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <label
+                    style={{
+                      border: `1px solid ${
+                        customBillingMethodDraft === "SHOPIFY" ? "var(--rv-primary)" : "var(--rv-border)"
+                      }`,
+                      background:
+                        customBillingMethodDraft === "SHOPIFY" ? "rgba(99, 102, 241, 0.06)" : "transparent",
+                      borderRadius: "8px",
+                      padding: "10px",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "4px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <input
+                        type="radio"
+                        name="customBillingMethod"
+                        value="SHOPIFY"
+                        checked={customBillingMethodDraft === "SHOPIFY"}
+                        onChange={() => setCustomBillingMethodDraft("SHOPIFY")}
+                      />
+                      <strong style={{ fontSize: "13px" }}>Shopify Billing</strong>
+                    </div>
+                    <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", paddingLeft: "20px" }}>
+                      Merchant receives in-app prompt to approve monthly charge
+                    </span>
+                  </label>
+
+                  <label
+                    style={{
+                      border: `1px solid ${
+                        customBillingMethodDraft === "EXTERNAL" ? "var(--rv-primary)" : "var(--rv-border)"
+                      }`,
+                      background:
+                        customBillingMethodDraft === "EXTERNAL" ? "rgba(99, 102, 241, 0.06)" : "transparent",
+                      borderRadius: "8px",
+                      padding: "10px",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "4px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <input
+                        type="radio"
+                        name="customBillingMethod"
+                        value="EXTERNAL"
+                        checked={customBillingMethodDraft === "EXTERNAL"}
+                        onChange={() => setCustomBillingMethodDraft("EXTERNAL")}
+                      />
+                      <strong style={{ fontSize: "13px" }}>Direct Contract</strong>
+                    </div>
+                    <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", paddingLeft: "20px" }}>
+                      Paid offline (Wire / Stripe invoice) — activates immediately
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* ── Custom Monthly Price ── */}
+              <div className="rv-form-field" style={{ marginBottom: "14px" }}>
+                <label className="rv-form-label" htmlFor="customPriceAmount">
+                  Custom Monthly Price ($ USD)
+                </label>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--rv-text-subdued)" }}>$</span>
+                  <input
+                    id="customPriceAmount"
+                    name="customPriceAmount"
+                    type="number"
+                    min="1"
+                    max="10000"
+                    step="1"
+                    placeholder="e.g. 249"
+                    value={customPriceDraft}
+                    onChange={(e) => setCustomPriceDraft(e.target.value)}
+                    className="rv-input"
+                    style={{ width: "100%" }}
+                  />
+                  <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>/mo</span>
+                </div>
+                {/* Price Presets */}
+                <div style={{ display: "flex", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
+                  {[149, 199, 249, 299, 499].map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                      style={{ fontSize: "11px", padding: "2px 8px" }}
+                      onClick={() => setCustomPriceDraft(String(p))}
+                    >
+                      ${p}/mo
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rv-form-field" style={{ marginBottom: "20px" }}>
+                <label className="rv-form-label" htmlFor="customPlanNote">
+                  Internal Note / Agreement (optional)
+                </label>
+                <input
+                  id="customPlanNote"
+                  name="customPlanNote"
+                  type="text"
+                  placeholder="e.g. Enterprise Plus agreement — $249/mo negotiated invoice"
+                  value={customNoteDraft}
+                  onChange={(e) => setCustomNoteDraft(e.target.value)}
+                  className="rv-input"
+                  style={{ width: "100%" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button type="submit" disabled={isQuotaBusy} className="rv-btn rv-btn-primary">
+                    <SaveIcon size={14} />
+                    <span>{isQuotaBusy ? "Saving..." : "Save Custom Quota"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isQuotaBusy}
+                    className="rv-btn rv-btn-secondary"
+                    onClick={() => setQuotaTargetShop(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+
+                {quotaTargetShop.customProductLimit && (
+                  <button
+                    type="button"
+                    disabled={isQuotaBusy}
+                    className="rv-btn rv-btn-critical rv-btn-sm"
+                    onClick={() => {
+                      quotaFetcher.submit(
+                        { intent: "resetCustomQuota", targetShop: quotaTargetShop.shop },
+                        { method: "POST" }
+                      );
+                    }}
+                  >
+                    Reset to Plan Default
+                  </button>
+                )}
+              </div>
+            </quotaFetcher.Form>
+          </div>
+        </div>
+      )}
     </s-page>
   );
 }

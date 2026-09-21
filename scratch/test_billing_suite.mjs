@@ -49,7 +49,7 @@ it("Contains exactly 5 tiers in correct pricing order", () => {
   assert.strictEqual(PLAN_TIERS.starter.price, 9);
   assert.strictEqual(PLAN_TIERS.growth.price, 24);
   assert.strictEqual(PLAN_TIERS.business.price, 49);
-  assert.strictEqual(PLAN_TIERS.enterprise.price, 79);
+  assert.strictEqual(PLAN_TIERS.enterprise.price, 99);
   assert(PLAN_TIERS.free.order < PLAN_TIERS.starter.order);
   assert(PLAN_TIERS.starter.order < PLAN_TIERS.growth.order);
   assert(PLAN_TIERS.growth.order < PLAN_TIERS.business.order);
@@ -59,8 +59,8 @@ it("Contains exactly 5 tiers in correct pricing order", () => {
 it("normalizePlanId normalizes aliases and invalid IDs", () => {
   assert.strictEqual(normalizePlanId("pro"), "growth");
   assert.strictEqual(normalizePlanId("PRO"), "growth");
-  assert.strictEqual(normalizePlanId("Starter"), "starter");
-  assert.strictEqual(normalizePlanId("invalid_tier"), "free");
+  assert.strictEqual(normalizePlanId("Growth"), "growth");
+  assert.strictEqual(normalizePlanId("invalid-plan"), "free");
   assert.strictEqual(normalizePlanId(null), "free");
 });
 
@@ -85,6 +85,8 @@ it("Starter plan limits (1000 products, 10 restore points, 3 rules, 30d retentio
   assert.strictEqual(limits.rules, 3);
   assert.strictEqual(limits.retentionDays, 30);
   assert.strictEqual(limits.vaultOrders, 0);
+  assert.strictEqual(limits.themes, false);
+  assert.strictEqual(limits.circuitBreaker, false);
 });
 
 it("Growth plan limits (5000 products, 50 restore points, 10 rules, 2500 vault orders)", () => {
@@ -97,9 +99,9 @@ it("Growth plan limits (5000 products, 50 restore points, 10 rules, 2500 vault o
   assert.strictEqual(limits.bulkRollback, true);
 });
 
-it("Business plan limits (20000 products, 100 restore points, unlimited rules, themes, slack, circuit breaker)", () => {
+it("Business plan limits (30000 products, 100 restore points, unlimited rules, themes, slack, circuit breaker)", () => {
   const limits = getPlanLimits("business");
-  assert.strictEqual(limits.products, 20000);
+  assert.strictEqual(limits.products, 30000);
   assert.strictEqual(limits.restorePoints, 100);
   assert.strictEqual(limits.rules, Infinity);
   assert.strictEqual(limits.retentionDays, 180);
@@ -109,13 +111,13 @@ it("Business plan limits (20000 products, 100 restore points, unlimited rules, t
   assert.strictEqual(limits.slack, true);
 });
 
-it("Enterprise plan limits (unlimited all resources, 365d retention)", () => {
+it("Enterprise plan limits (200000 products, unlimited restore points, 365d retention)", () => {
   const limits = getPlanLimits("enterprise");
-  assert.strictEqual(limits.products, Infinity);
+  assert.strictEqual(limits.products, 200000);
   assert.strictEqual(limits.restorePoints, Infinity);
   assert.strictEqual(limits.rules, Infinity);
   assert.strictEqual(limits.retentionDays, 365);
-  assert.strictEqual(limits.vaultOrders, Infinity);
+  assert.strictEqual(limits.vaultOrders, 100000);
   assert.strictEqual(limits.themes, true);
   assert.strictEqual(limits.circuitBreaker, true);
   assert.strictEqual(limits.slack, true);
@@ -130,7 +132,7 @@ it("shopify.server.js contains 14-day free trial on all paid plans", () => {
   assert(content.includes("amount: 9"), "Starter $9 missing");
   assert(content.includes("amount: 24"), "Growth $24 missing");
   assert(content.includes("amount: 49"), "Business $49 missing");
-  assert(content.includes("amount: 79"), "Enterprise $79 missing");
+  assert(content.includes("amount: 99"), "Enterprise $99 missing");
 });
 
 // ── Test 4: Webhook Registration Inspection ───────────────────────────────────

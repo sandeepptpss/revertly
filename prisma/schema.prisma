@@ -277,6 +277,11 @@ model AppSettings {
   mailchimpAccountName  String?  @db.VarChar(255)
   marketingAutoBackup   Boolean  @default(false)
   lastMarketingBackupAt DateTime?
+  customProductLimit    Int?     // Admin-assigned custom product limit (e.g. 350000, 500000)
+  customPlanNote        String?  @db.VarChar(500) // Internal note (e.g. "$249/mo custom deal approved via email")
+  customPriceAmount     Int?     // Custom monthly price in USD (e.g. 199, 249, 299)
+  customBillingMethod   String?  @default("SHOPIFY") @db.VarChar(50) // SHOPIFY or EXTERNAL
+  customPriceStatus     String?  @db.VarChar(50) // OFFERED, ACTIVE, CANCELLED
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

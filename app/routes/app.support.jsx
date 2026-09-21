@@ -69,6 +69,17 @@ export const loader = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
 
+  const url = new URL(request.url);
+  const initialSubject = url.searchParams.get("subject") || "";
+  const initialCategory = url.searchParams.get("category") || "General";
+  const initialPriority = url.searchParams.get("priority") || "NORMAL";
+  const initialProducts = url.searchParams.get("products") || "";
+  let initialMessage = url.searchParams.get("message") || "";
+
+  if (initialProducts && !initialMessage) {
+    initialMessage = `Hi Revertly Team,\n\nOur store (${shop}) currently has approximately ${Number(initialProducts).toLocaleString()} products, which exceeds the standard 200,000 product limit on Enterprise.\n\nWe would like to request a Custom Enterprise Plus quote with dedicated high-volume infrastructure, custom retention, and priority SLA.\n\nThank you!`;
+  }
+
   let defaultEmail = "";
   let planTier = "Free";
 
@@ -107,7 +118,16 @@ export const loader = async ({ request }) => {
     take: 15,
   }).catch(() => []);
 
-  return { shop, tickets, defaultEmail, planTier };
+  return {
+    shop,
+    tickets,
+    defaultEmail,
+    planTier,
+    initialSubject,
+    initialCategory,
+    initialPriority,
+    initialMessage,
+  };
 };
 
 export const action = async ({ request }) => {
@@ -193,7 +213,16 @@ export const action = async ({ request }) => {
 };
 
 export default function Support() {
-  const { shop, tickets, defaultEmail, planTier } = useLoaderData();
+  const {
+    shop,
+    tickets,
+    defaultEmail,
+    planTier,
+    initialSubject,
+    initialCategory,
+    initialPriority,
+    initialMessage,
+  } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isSubmitting = fetcher.state !== "idle";
@@ -201,12 +230,20 @@ export default function Support() {
   const [expandedIndex, setExpandedIndex] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Form input state
-  const [subject, setSubject] = useState("");
-  const [category, setCategory] = useState("General");
-  const [priority, setPriority] = useState("NORMAL");
+  // Form input state (pre-filled from URL query params if present)
+  const [subject, setSubject] = useState(initialSubject || "");
+  const [category, setCategory] = useState(initialCategory || "General");
+  const [priority, setPriority] = useState(initialPriority || "NORMAL");
   const [email, setEmail] = useState(defaultEmail || "");
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(initialMessage || "");
+
+  // Sync state if query parameters change
+  useEffect(() => {
+    if (initialSubject) setSubject(initialSubject);
+    if (initialCategory) setCategory(initialCategory);
+    if (initialPriority) setPriority(initialPriority);
+    if (initialMessage) setMessage(initialMessage);
+  }, [initialSubject, initialCategory, initialPriority, initialMessage]);
 
   // Success view state
   const [showSuccessCard, setShowSuccessCard] = useState(false);

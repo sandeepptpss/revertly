@@ -57,7 +57,7 @@ async function run() {
   );
   assert.strictEqual(
     afterError.limits.products,
-    20000,
+    30000,
     "Business entitlements survive a transient billing API error",
   );
   pass("A failed billing check does not downgrade a paying merchant to free");

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useLoaderData, useFetcher, useRouteError, Link, useNavigate } from "react-router";
+import { useLoaderData, useFetcher, useRouteError, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { restoreDeletedProduct } from "../monitor.server.js";

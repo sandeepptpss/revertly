@@ -129,6 +129,8 @@ export const loader = async ({ request }) => {
       isMaxRetention: retentionDays >= 365,
       oldestRetainedAt: oldestRetained.toISOString(),
     },
+    productLimitReachedAt: settings?.productLimitReachedAt || null,
+    currentPlan: planLimitsInfo.plan || "free",
   };
 };
 
@@ -175,6 +177,8 @@ export default function Dashboard() {
     backupCadence,
     storage,
     retention,
+    productLimitReachedAt,
+    currentPlan,
   } = useLoaderData();
 
   return (
@@ -443,6 +447,34 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* ── Monitored Product Limit Reached Alert Banner ── */}
+      {productLimitReachedAt && (
+        <Banner
+          tone="critical"
+          title="Monitored Product Capacity Reached"
+          action={
+            currentPlan === "enterprise" ? (
+              <Link
+                to={`/app/support?category=Billing&priority=HIGH&subject=${encodeURIComponent("Custom Enterprise Plus Plan Quote (> 200k products)")}&products=${stats.totalProducts}`}
+                className="rv-btn rv-btn-critical rv-btn-sm"
+              >
+                <span>Request Custom Plus</span>
+                <ArrowRightIcon size={13} />
+              </Link>
+            ) : (
+              <Link to="/app/plan" className="rv-btn rv-btn-critical rv-btn-sm">
+                <span>Upgrade Plan</span>
+                <ArrowRightIcon size={13} />
+              </Link>
+            )
+          }
+        >
+          {currentPlan === "enterprise"
+            ? "Your store has reached the 200,000 product limit for the Enterprise plan. New products are no longer monitored. Contact us for a Custom Enterprise Plus setup."
+            : "You've reached your plan's monitored product limit — newly added products are no longer tracked. Upgrade your plan to restore full protection."}
+        </Banner>
+      )}
 
       {/* ── Open Incidents Warning Banner ── */}
       {stats.openIncidents > 0 && (
