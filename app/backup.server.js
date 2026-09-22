@@ -3514,8 +3514,14 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       backupType = "FULL";
     }
 
-    const archiveName = data.name
-      ? `[Imported] ${data.name}`
+    // Exporting an imported archive and importing it again must not stack
+    // "[Imported] [Imported] …" onto the name, so an existing marker is reused
+    // rather than re-applied.
+    const sourceName = typeof data.name === "string" ? data.name.trim() : "";
+    const archiveName = sourceName
+      ? sourceName.startsWith("[Imported]")
+        ? sourceName
+        : `[Imported] ${sourceName}`
       : `Imported Backup - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 
     const archiveDescription = data.description

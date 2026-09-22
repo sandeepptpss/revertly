@@ -25,6 +25,17 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { Pagination, usePagination } from "../components/Pagination.jsx";
 
+// Readable names for the detected CSV dataset types, used when naming the
+// restore point an imported spreadsheet becomes.
+const CSV_TYPE_LABELS = {
+  PRODUCTS: "Products",
+  COLLECTIONS: "Collections",
+  PAGES: "Pages & Menus",
+  MENUS: "Navigation Menus",
+  BLOGS: "Blogs & Articles",
+  METAFIELDS: "Metafields",
+};
+
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -92,7 +103,8 @@ export const action = async ({ request }) => {
         try {
           const parsedCsv = detectAndParseCsvArchive(fileContent);
           parsed = {
-            name: `Imported CSV Archive (${parsedCsv.type})`,
+            // importBackupPayload adds the "[Imported]" marker itself.
+            name: `${CSV_TYPE_LABELS[parsedCsv.type] || parsedCsv.type} CSV Archive`,
             backupType: parsedCsv.type,
             ...parsedCsv.data,
           };
@@ -115,11 +127,15 @@ export const action = async ({ request }) => {
       if (mode === "RESTORE_NOW") {
         try {
           const lr = res.summary?.liveResults || {};
+          // Every resource the restore actually touched has to be counted here,
+          // or Rollback History reports fewer items than the import reported.
           const totalLiveRestored =
+            (lr.products || 0) +
             (lr.collections || 0) +
             (lr.pages || 0) +
             (lr.menus || 0) +
             (lr.articles || 0) +
+            (lr.metafields || 0) +
             (lr.themeStagingCreated ? 1 : 0);
 
           const rollbackJob = await prisma.rollbackJob.create({
@@ -138,10 +154,12 @@ export const action = async ({ request }) => {
           });
 
           const importResults = [];
+          if (lr.products > 0) importResults.push({ productId: "import_products", productTitle: `Import: ${lr.products} Product snapshots synced to baseline`, status: "SUCCESS" });
           if (lr.pages > 0) importResults.push({ productId: "import_pages", productTitle: `Import: ${lr.pages} Pages restored live`, status: "SUCCESS" });
           if (lr.menus > 0) importResults.push({ productId: "import_menus", productTitle: `Import: ${lr.menus} Navigation Menus restored live`, status: "SUCCESS" });
           if (lr.collections > 0) importResults.push({ productId: "import_collections", productTitle: `Import: ${lr.collections} Collections restored live`, status: "SUCCESS" });
           if (lr.articles > 0) importResults.push({ productId: "import_articles", productTitle: `Import: ${lr.articles} Articles restored live`, status: "SUCCESS" });
+          if (lr.metafields > 0) importResults.push({ productId: "import_metafields", productTitle: `Import: ${lr.metafields} Metafields restored live`, status: "SUCCESS" });
           if (lr.themeStagingCreated) importResults.push({ productId: "import_theme", productTitle: `Import: Staging Theme created with restored files`, status: "SUCCESS" });
 
           if (importResults.length === 0) {
@@ -176,7 +194,12 @@ export const action = async ({ request }) => {
         success: true,
         message: res.message,
         summary: res.summary,
-        restorePoint: res.restorePoint,
+        // Only the fields the banner links with. The full record carries the
+        // entire archive, and echoing a multi-megabyte backup back to the
+        // browser is the slowest part of an otherwise finished import.
+        restorePoint: res.restorePoint
+          ? { id: res.restorePoint.id, name: res.restorePoint.name, backupType: res.restorePoint.backupType }
+          : null,
       };
     }
 
@@ -186,6 +209,26 @@ export const action = async ({ request }) => {
     return { success: false, message: err?.message || "An unexpected error occurred during import." };
   }
 };
+
+/**
+ * Summarises what a restore point actually holds. Every asset type has to be
+ * listed, or an archive of pages or collections reads as empty in the table.
+ */
+function describeContents(rp) {
+  const parts = [
+    [rp.productCount, "product"],
+    [rp.themeCount, "theme"],
+    [rp.collectionCount, "collection"],
+    [rp.pageCount, "page"],
+    [rp.menuCount, "menu"],
+    [rp.articleCount, "article"],
+    [rp.metafieldCount, "metafield"],
+  ]
+    .filter(([count]) => (count || 0) > 0)
+    .map(([count, label]) => `${count} ${label}${count === 1 ? "" : "s"}`);
+
+  return parts.length > 0 ? parts.join(" · ") : "No assets captured";
+}
 
 export default function ImportExportHub() {
   const { restorePoints, hasMetafieldAccess = false } = useLoaderData();
@@ -204,7 +247,7 @@ export default function ImportExportHub() {
 
   const [activeTab, setActiveTab] = useState("export"); // "export" | "import"
   const [selectedRpId, setSelectedRpId] = useState("");
-  const [filePayload, setFilePayload] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
   const [fileStats, setFileStats] = useState(null);
   const [fileError, setFileError] = useState("");
   const [importMode, setImportMode] = useState("SAVE_AS_RESTORE_POINT");
@@ -212,13 +255,17 @@ export default function ImportExportHub() {
 
   const fileInputRef = useRef(null);
 
+  const clearFile = () => {
+    setSelectedFile(null);
+    setFileStats(null);
+    setFileError("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   // Clear loaded file when import succeeds
   useEffect(() => {
     if (result?.success) {
-      setFilePayload(null);
-      setFileStats(null);
-      setFileError("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      clearFile();
     }
   }, [result]);
 
@@ -234,7 +281,7 @@ export default function ImportExportHub() {
 
     if (!isJson && !isCsv) {
       setFileError("Only .json backup archives and .csv spreadsheet files are supported for import.");
-      setFilePayload(null);
+      setSelectedFile(null);
       setFileStats(null);
       return;
     }
@@ -253,12 +300,12 @@ export default function ImportExportHub() {
 
           if (totalItems === 0) {
             setFileError("This CSV file contains no recognizable store assets. Please select a valid Revertly backup CSV file.");
-            setFilePayload(null);
+            setSelectedFile(null);
             setFileStats(null);
             return;
           }
 
-          setFilePayload(text);
+          setSelectedFile(file);
           setFileStats({
             fileName: file.name,
             fileSize: (file.size / 1024).toFixed(1) + " KB",
@@ -280,7 +327,7 @@ export default function ImportExportHub() {
           });
         } catch (err) {
           setFileError(`Failed to parse file as valid CSV: ${err.message}`);
-          setFilePayload(null);
+          setSelectedFile(null);
           setFileStats(null);
         }
         return;
@@ -332,12 +379,12 @@ export default function ImportExportHub() {
 
         if (totalItems === 0) {
           setFileError("This JSON file contains no recognizable store assets (Products, Themes, Collections, Pages, Menus, Articles, or Metafields). Please select a valid Revertly backup archive.");
-          setFilePayload(null);
+          setSelectedFile(null);
           setFileStats(null);
           return;
         }
 
-        setFilePayload(text);
+        setSelectedFile(file);
         setFileStats({
           fileName: file.name,
           fileSize: (file.size / 1024).toFixed(1) + " KB",
@@ -357,9 +404,16 @@ export default function ImportExportHub() {
         });
       } catch (err) {
         setFileError(`Failed to parse file as valid JSON: ${err.message}`);
-        setFilePayload(null);
+        setSelectedFile(null);
         setFileStats(null);
       }
+    };
+    reader.onerror = () => {
+      setFileError(
+        `The file "${file.name}" could not be read from disk. Please check the file and try selecting it again.`
+      );
+      setSelectedFile(null);
+      setFileStats(null);
     };
     reader.readAsText(file);
   };
@@ -367,6 +421,24 @@ export default function ImportExportHub() {
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
     processFile(file);
+  };
+
+  /**
+   * Uploads the file itself rather than a copy of its text in a hidden field.
+   * A full-store archive is routinely several megabytes, and sending it twice
+   * in one request is what pushes an otherwise valid import over a proxy's
+   * body limit.
+   */
+  const submitImport = () => {
+    if (!selectedFile) {
+      setFileError("Please choose a backup file before starting the import.");
+      return;
+    }
+    const formData = new FormData();
+    formData.append("intent", "import");
+    formData.append("importMode", importMode);
+    formData.append("backupFile", selectedFile, selectedFile.name);
+    fetcher.submit(formData, { method: "POST", encType: "multipart/form-data" });
   };
 
   const handleDragOver = (e) => {
@@ -407,7 +479,16 @@ export default function ImportExportHub() {
       // fetch() within Shopify App Bridge automatically attaches Authorization: Bearer <session-token>
       const res = await fetch(url);
       if (!res.ok) {
-        throw new Error(`Export request failed with status ${res.status}`);
+        // The export route explains refusals in the body (plan gating, a
+        // missing snapshot); a bare status code sends the merchant nowhere.
+        let reason = "";
+        try {
+          reason = (await res.text()).trim();
+        } catch {
+          reason = "";
+        }
+        if (reason.startsWith("<") || reason.length > 300) reason = "";
+        throw new Error(reason || `Export request failed with status ${res.status}`);
       }
 
       const contentType = res.headers.get("Content-Type") || "";
@@ -451,22 +532,8 @@ export default function ImportExportHub() {
   return (
     <s-page heading="Import &amp; Export Hub" inlineSize="large">
 
-      {/* ── Action Feedback Banner ── */}
-      {result?.message && (
-        <Banner
-          tone={result.success ? "success" : "critical"}
-          title={result.success ? "Import Operation Succeeded" : "Import Failed"}
-          action={
-            result.success && result.restorePoint ? (
-              <Link to={`/app/restore-points/${result.restorePoint.id}`} className="rv-btn rv-btn-primary rv-btn-sm">
-                Inspect Imported Restore Point
-              </Link>
-            ) : undefined
-          }
-        >
-          {result.message}
-        </Banner>
-      )}
+      {/* Import feedback is rendered inside the Import panel, beside the button
+          that triggered it, rather than here above the fold. */}
 
       {/* ── Hero Banner ── */}
       <div className="rv-hero-banner">
@@ -979,8 +1046,7 @@ export default function ImportExportHub() {
                             <span className="rv-badge rv-badge-sm rv-badge-info">{rp.backupType || "FULL"}</span>
                           </td>
                           <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                            {rp.productCount} products · {rp.themeCount} themes · {rp.menuCount || 0} menus ·{" "}
-                            {rp.metafieldCount || 0} metafields
+                            {describeContents(rp)}
                           </td>
                           <td style={{ textAlign: "right" }}>
                             <button
@@ -1032,6 +1098,37 @@ export default function ImportExportHub() {
                 </Banner>
               )}
 
+              {/* The outcome belongs next to the button that caused it: a
+                  merchant who pressed Import at the bottom of this panel would
+                  otherwise see the form reset with no visible confirmation and
+                  conclude nothing happened. */}
+              {result?.message && !isImporting && (
+                <Banner
+                  tone={result.success ? "success" : "critical"}
+                  title={result.success ? "Import Operation Succeeded" : "Import Failed"}
+                  action={
+                    result.success && result.restorePoint ? (
+                      <Link to={`/app/restore-points/${result.restorePoint.id}`} className="rv-btn rv-btn-primary rv-btn-sm">
+                        Inspect Imported Restore Point
+                      </Link>
+                    ) : undefined
+                  }
+                >
+                  {result.message}
+                </Banner>
+              )}
+
+              {isImporting && (
+                <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "8px", background: "var(--rv-primary-surface)", display: "flex", alignItems: "center", gap: "10px", fontSize: "13px", color: "var(--rv-text)" }}>
+                  <UploadIcon size={16} />
+                  <span>
+                    {importMode === "RESTORE_NOW"
+                      ? "Uploading the archive and restoring it into your live store — this can take a minute for large backups. Please keep this page open."
+                      : "Uploading the archive and saving it as a restore point — please keep this page open."}
+                  </span>
+                </div>
+              )}
+
               {/* Interactive Drag & Drop Area */}
               <div
                 role="button"
@@ -1063,6 +1160,10 @@ export default function ImportExportHub() {
                   accept=".json,.csv,text/csv,application/json"
                   style={{ display: "none" }}
                   onChange={handleFileChange}
+                  // The click this input dispatches bubbles back into the
+                  // dropzone's own onClick, which would re-open the picker on
+                  // top of itself and swallow the merchant's selection.
+                  onClick={(e) => e.stopPropagation()}
                 />
                 <div style={{ display: "inline-flex", padding: "14px", borderRadius: "50%", background: isDragging ? "var(--rv-primary)" : "var(--rv-primary-surface)", color: isDragging ? "#fff" : "var(--rv-primary)", marginBottom: "14px", transition: "all 0.2s ease" }}>
                   <UploadIcon size={28} />
@@ -1209,41 +1310,34 @@ export default function ImportExportHub() {
                     )}
                   </div>
 
-                  {/* Submission Form */}
-                  <fetcher.Form method="POST" encType="multipart/form-data">
-                    <input type="hidden" name="intent" value="import" />
-                    <input type="hidden" name="importMode" value={importMode} />
-                    <input type="hidden" name="backupFileContent" value={filePayload} />
-
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                      <button
-                        type="submit"
-                        disabled={isImporting}
-                        className="rv-btn rv-btn-primary rv-btn-lg"
-                      >
-                        <UploadIcon size={16} />
-                        <span>
-                          {isImporting
-                            ? "Importing &amp; Processing..."
-                            : importMode === "RESTORE_NOW"
-                            ? "Execute Live Restore"
-                            : "Save to Restore Points"}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFilePayload(null);
-                          setFileStats(null);
-                          setFileError("");
-                          if (fileInputRef.current) fileInputRef.current.value = "";
-                        }}
-                        className="rv-btn rv-btn-secondary"
-                      >
-                        Clear File
-                      </button>
-                    </div>
-                  </fetcher.Form>
+                  {/* Submission */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <button
+                      type="button"
+                      onClick={submitImport}
+                      disabled={isImporting || !selectedFile}
+                      className="rv-btn rv-btn-primary rv-btn-lg"
+                    >
+                      <UploadIcon size={16} />
+                      <span>
+                        {isImporting
+                          ? importMode === "RESTORE_NOW"
+                            ? "Restoring to your live store…"
+                            : "Uploading & saving restore point…"
+                          : importMode === "RESTORE_NOW"
+                          ? "Execute Live Restore"
+                          : "Save to Restore Points"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearFile}
+                      disabled={isImporting}
+                      className="rv-btn rv-btn-secondary"
+                    >
+                      Clear File
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
