@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLoaderData, useFetcher, useRouteError, redirect, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -1125,6 +1125,62 @@ export default function RestorePointDetail() {
   // must never be able to overwrite live metafield values.
   const [metafieldMode, setMetafieldMode] = useState("SKIP_EXISTING");
 
+  // Modern Theme (OS 2.0 & Horizon) category filters and live search
+  const [themeFilterCategory, setThemeFilterCategory] = useState("ALL");
+  const [themeSearchQuery, setThemeSearchQuery] = useState("");
+
+  const filteredThemeFiles = useMemo(() => {
+    return filesList.filter((f) => {
+      const filename = (f?.filename || "").toLowerCase();
+      if (themeSearchQuery.trim()) {
+        const q = themeSearchQuery.trim().toLowerCase();
+        if (!filename.includes(q)) return false;
+      }
+      if (themeFilterCategory === "CHANGED") {
+        return f.diff && !f.diff.isIdentical;
+      }
+      if (themeFilterCategory === "TEMPLATES") {
+        return filename.startsWith("templates/");
+      }
+      if (themeFilterCategory === "SECTIONS_BLOCKS") {
+        return filename.startsWith("sections/") || filename.startsWith("blocks/");
+      }
+      if (themeFilterCategory === "CONFIG") {
+        return filename.startsWith("config/");
+      }
+      if (themeFilterCategory === "LAYOUT") {
+        return filename.startsWith("layout/");
+      }
+      if (themeFilterCategory === "SNIPPETS_ASSETS") {
+        return (
+          filename.startsWith("snippets/") ||
+          filename.startsWith("assets/") ||
+          filename.startsWith("locales/")
+        );
+      }
+      return true;
+    });
+  }, [filesList, themeFilterCategory, themeSearchQuery]);
+
+  const themeCategoryCounts = useMemo(() => {
+    return {
+      all: filesList.length,
+      changed: filesList.filter((f) => f.diff && !f.diff.isIdentical).length,
+      templates: filesList.filter((f) => (f?.filename || "").startsWith("templates/")).length,
+      sectionsBlocks: filesList.filter(
+        (f) => (f?.filename || "").startsWith("sections/") || (f?.filename || "").startsWith("blocks/")
+      ).length,
+      config: filesList.filter((f) => (f?.filename || "").startsWith("config/")).length,
+      layout: filesList.filter((f) => (f?.filename || "").startsWith("layout/")).length,
+      snippetsAssets: filesList.filter(
+        (f) =>
+          (f?.filename || "").startsWith("snippets/") ||
+          (f?.filename || "").startsWith("assets/") ||
+          (f?.filename || "").startsWith("locales/")
+      ).length,
+    };
+  }, [filesList]);
+
   useEffect(() => {
     if (result && !isRestoring) {
       setShowLiveRestoreModal(false);
@@ -1428,8 +1484,122 @@ export default function RestorePointDetail() {
           </div>
 
           <div className="rv-card-body">
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
-              {filesList.map((f) => {
+            {/* Theme Files Filter & Search Toolbar (Theme 2.0 & Horizon support) */}
+            <div
+              style={{
+                marginBottom: "16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "12px",
+                padding: "12px 14px",
+                background: "var(--rv-surface-subdued, #f6f6f7)",
+                borderRadius: "var(--rv-radius-sm, 6px)",
+                border: "1px solid var(--rv-border, #e1e3e5)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setThemeFilterCategory("ALL")}
+                    className={`rv-btn rv-btn-sm ${themeFilterCategory === "ALL" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                  >
+                    All ({themeCategoryCounts.all})
+                  </button>
+                  {themeCategoryCounts.changed > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setThemeFilterCategory("CHANGED")}
+                      className={`rv-btn rv-btn-sm ${themeFilterCategory === "CHANGED" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                    >
+                      Modified ({themeCategoryCounts.changed})
+                    </button>
+                  )}
+                  {themeCategoryCounts.templates > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setThemeFilterCategory("TEMPLATES")}
+                      className={`rv-btn rv-btn-sm ${themeFilterCategory === "TEMPLATES" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                    >
+                      Templates ({themeCategoryCounts.templates})
+                    </button>
+                  )}
+                  {themeCategoryCounts.sectionsBlocks > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setThemeFilterCategory("SECTIONS_BLOCKS")}
+                      className={`rv-btn rv-btn-sm ${themeFilterCategory === "SECTIONS_BLOCKS" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                    >
+                      Sections &amp; Blocks ({themeCategoryCounts.sectionsBlocks})
+                    </button>
+                  )}
+                  {themeCategoryCounts.config > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setThemeFilterCategory("CONFIG")}
+                      className={`rv-btn rv-btn-sm ${themeFilterCategory === "CONFIG" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                    >
+                      Config ({themeCategoryCounts.config})
+                    </button>
+                  )}
+                  {themeCategoryCounts.layout > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setThemeFilterCategory("LAYOUT")}
+                      className={`rv-btn rv-btn-sm ${themeFilterCategory === "LAYOUT" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                    >
+                      Layout ({themeCategoryCounts.layout})
+                    </button>
+                  )}
+                  {themeCategoryCounts.snippetsAssets > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setThemeFilterCategory("SNIPPETS_ASSETS")}
+                      className={`rv-btn rv-btn-sm ${themeFilterCategory === "SNIPPETS_ASSETS" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                    >
+                      Snippets &amp; Assets ({themeCategoryCounts.snippetsAssets})
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ flex: "1 1 200px", maxWidth: "320px" }}>
+                  <input
+                    type="text"
+                    placeholder="Search file name..."
+                    value={themeSearchQuery}
+                    onChange={(e) => setThemeSearchQuery(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "6px 10px",
+                      fontSize: "13px",
+                      border: "1px solid var(--rv-border, #ccc)",
+                      borderRadius: "var(--rv-radius-sm, 4px)",
+                      outline: "none",
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {filteredThemeFiles.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "32px 16px", color: "var(--rv-text-subdued)", fontSize: "13px" }}>
+                No theme files match the selected filter{themeSearchQuery ? ` or search query "${themeSearchQuery}"` : ""}.
+                <div style={{ marginTop: "10px" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setThemeFilterCategory("ALL");
+                      setThemeSearchQuery("");
+                    }}
+                    className="rv-btn rv-btn-secondary rv-btn-sm"
+                  >
+                    Reset Filter &amp; Search
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
+                {filteredThemeFiles.map((f) => {
                 const isSelected = selectedFiles.includes(f.filename);
                 const isExpanded = expandedFile === f.filename;
                 const sizeKb = f.size ? Math.round((f.size / 1024) * 10) / 10 : 0;
@@ -1596,6 +1766,7 @@ export default function RestorePointDetail() {
                 );
               })}
             </div>
+          )}
 
             {/* Dual Safe Theme Restore Actions */}
             <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", paddingTop: "14px", borderTop: "1px solid var(--rv-border)" }}>

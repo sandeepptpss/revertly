@@ -76,7 +76,7 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
     const themeRes = await admin.graphql(
       `#graphql
       query getThemes {
-        themes(first: 25) {
+        themes(first: 50) {
           nodes {
             id
             name
@@ -102,51 +102,26 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
       return { themes: [], activeTheme: null, files: [] };
     }
 
-    // Attempt to read comprehensive theme files (all templates, liquid files, config)
-    let files = [];
+    // Read comprehensive theme files with cursor pagination to support large themes (>250 files)
+    // Supports Theme 2.0 (JSON templates), Horizon (blocks, section groups), and legacy themes
+    let rawFiles = [];
     try {
-      let filesRes = await admin.graphql(
-        `#graphql
-        query getAllThemeFiles($themeId: ID!) {
-          theme(id: $themeId) {
-            files(first: 250) {
-              nodes {
-                filename
-                size
-                body {
-                  ... on OnlineStoreThemeFileBodyText {
-                    content
-                  }
-                }
-              }
-            }
-          }
-        }`,
-        { variables: { themeId: mainTheme.id } }
-      );
-      let filesJson = await filesRes.json();
-      let rawFiles = filesJson.data?.theme?.files?.nodes || [];
+      let cursor = null;
+      let hasNextPage = true;
+      let pageCount = 0;
+      const MAX_THEME_PAGES = 12; // Safety cap: 12 * 250 = 3,000 files
 
-      if (rawFiles.length === 0) {
-        filesRes = await admin.graphql(
+      while (hasNextPage && pageCount < MAX_THEME_PAGES) {
+        pageCount++;
+        const filesRes = await admin.graphql(
           `#graphql
-          query getThemeFiles($themeId: ID!) {
+          query getAllThemeFiles($themeId: ID!, $cursor: String) {
             theme(id: $themeId) {
-              files(first: 100, filenames: [
-                "config/settings_data.json",
-                "layout/theme.liquid",
-                "templates/index.json",
-                "templates/product.json",
-                "templates/collection.json",
-                "templates/cart.json",
-                "templates/page.json",
-                "templates/blog.json",
-                "templates/article.json",
-                "templates/404.json",
-                "sections/header.liquid",
-                "sections/footer.liquid",
-                "sections/main-product.liquid"
-              ]) {
+              files(first: 250, after: $cursor) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
                 nodes {
                   filename
                   size
@@ -154,25 +129,115 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
                     ... on OnlineStoreThemeFileBodyText {
                       content
                     }
+                    ... on OnlineStoreThemeFileBodyBase64 {
+                      encodedContent
+                    }
                   }
                 }
               }
             }
           }`,
-          { variables: { themeId: mainTheme.id } }
+          { variables: { themeId: mainTheme.id, cursor } }
         );
-        filesJson = await filesRes.json();
-        rawFiles = filesJson.data?.theme?.files?.nodes || [];
+        const filesJson = await filesRes.json();
+        const filesConn = filesJson.data?.theme?.files;
+        const nodes = filesConn?.nodes || [];
+        if (nodes.length > 0) {
+          rawFiles.push(...nodes);
+        }
+
+        hasNextPage = Boolean(filesConn?.pageInfo?.hasNextPage && filesConn?.pageInfo?.endCursor);
+        cursor = filesConn?.pageInfo?.endCursor || null;
+        if (!cursor || nodes.length === 0) break;
       }
 
-      files = rawFiles.map((f) => ({
-        filename: f.filename,
-        size: f.size || (f.body?.content ? f.body.content.length : 0),
-        content: f.body?.content || "",
-      }));
+      // If wild-card query returned empty (e.g. restrictive API permissions or stubbed environment),
+      // fall back to a comprehensive list of critical files covering Theme 2.0, Horizon, and vintage liquid
+      if (rawFiles.length === 0) {
+        const fallbackFilenames = [
+          // Config & Theme Settings
+          "config/settings_data.json",
+          "config/settings_schema.json",
+          // Layouts
+          "layout/theme.liquid",
+          "layout/password.liquid",
+          // Section Groups (Horizon & Theme 2.0)
+          "sections/header-group.json",
+          "sections/footer-group.json",
+          "sections/overlay-group.json",
+          // Core Sections
+          "sections/header.liquid",
+          "sections/footer.liquid",
+          "sections/main-product.liquid",
+          "sections/main-collection.liquid",
+          "sections/main-page.liquid",
+          // Theme 2.0 & Horizon Templates (JSON)
+          "templates/index.json",
+          "templates/product.json",
+          "templates/collection.json",
+          "templates/cart.json",
+          "templates/page.json",
+          "templates/blog.json",
+          "templates/article.json",
+          "templates/search.json",
+          "templates/404.json",
+          "templates/gift_card.json",
+          // Vintage Templates (Liquid)
+          "templates/index.liquid",
+          "templates/product.liquid",
+          "templates/collection.liquid",
+          "templates/cart.liquid",
+          "templates/page.liquid",
+          "templates/blog.liquid",
+          "templates/article.liquid",
+          // Horizon & Theme 2.0 Reusable Blocks
+          "blocks/product-title.liquid",
+          "blocks/accordion.liquid",
+          // Locales
+          "locales/en.default.json",
+        ];
+
+        const filesRes = await admin.graphql(
+          `#graphql
+          query getThemeFiles($themeId: ID!, $filenames: [String!]!) {
+            theme(id: $themeId) {
+              files(first: 100, filenames: $filenames) {
+                nodes {
+                  filename
+                  size
+                  body {
+                    ... on OnlineStoreThemeFileBodyText {
+                      content
+                    }
+                    ... on OnlineStoreThemeFileBodyBase64 {
+                      encodedContent
+                    }
+                  }
+                }
+              }
+            }
+          }`,
+          { variables: { themeId: mainTheme.id, filenames: fallbackFilenames } }
+        );
+        const filesJson = await filesRes.json();
+        rawFiles = filesJson.data?.theme?.files?.nodes || [];
+      }
     } catch (fileErr) {
       console.warn("Theme files fetch warning (non-fatal):", fileErr?.message || fileErr);
     }
+
+    const files = rawFiles.map((f) => {
+      const textContent = f.body?.content;
+      const base64Content = f.body?.encodedContent;
+      const isBase64 = !textContent && typeof base64Content === "string";
+      const content = textContent ?? base64Content ?? "";
+      return {
+        filename: f.filename,
+        size: f.size || (content ? content.length : 0),
+        content,
+        bodyType: isBase64 ? "BASE64" : "TEXT",
+      };
+    });
 
     return {
       themes,
@@ -335,55 +400,85 @@ export async function restoreThemeFiles(admin, themeId, files) {
 
   try {
     const inputFiles = files
-      .filter((f) => f.content)
-      .map((f) => ({
-        filename: f.filename,
-        body: {
-          type: "TEXT",
-          value: f.content,
-        },
-      }));
+      .filter((f) => f && f.filename && (typeof f.content === "string" || typeof f.value === "string"))
+      .map((f) => {
+        const content = typeof f.content === "string" ? f.content : f.value || "";
+        const bodyType = f.bodyType === "BASE64" || f.isBase64 ? "BASE64" : "TEXT";
+        return {
+          filename: f.filename,
+          body: {
+            type: bodyType,
+            value: content,
+          },
+        };
+      });
 
     if (inputFiles.length === 0) {
-      return { success: false, message: "No text content found in theme files backup." };
+      return { success: false, message: "No valid file content found in theme backup." };
     }
 
-    const res = await admin.graphql(
-      `#graphql
-      mutation themeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
-        themeFilesUpsert(themeId: $themeId, files: $files) {
-          upsertedThemeFiles {
-            filename
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }`,
-      {
-        variables: {
-          themeId,
-          files: inputFiles,
-        },
-      }
-    );
+    // Shopify themeFilesUpsert strictly limits mutations to at most 50 files per call.
+    // Batch into safe chunks of 35 files to prevent payload size or query complexity errors.
+    const BATCH_SIZE = 35;
+    const allUpserted = [];
+    const allErrors = [];
 
-    const json = await res.json();
-    const userErrors = json.data?.themeFilesUpsert?.userErrors || [];
-    if (userErrors.length > 0) {
+    for (let i = 0; i < inputFiles.length; i += BATCH_SIZE) {
+      const batch = inputFiles.slice(i, i + BATCH_SIZE);
+      try {
+        const res = await admin.graphql(
+          `#graphql
+          mutation themeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+            themeFilesUpsert(themeId: $themeId, files: $files) {
+              upsertedThemeFiles {
+                filename
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }`,
+          {
+            variables: {
+              themeId,
+              files: batch,
+            },
+          }
+        );
+
+        const json = await res.json();
+        const userErrors = json.data?.themeFilesUpsert?.userErrors || [];
+        if (userErrors.length > 0) {
+          allErrors.push(...userErrors.map((e) => `${e.field || "file"}: ${e.message}`));
+        }
+
+        const upserted = json.data?.themeFilesUpsert?.upsertedThemeFiles || [];
+        allUpserted.push(...upserted.map((u) => u.filename));
+      } catch (batchErr) {
+        console.warn(`Theme files upsert batch error (${i}-${i + batch.length}):`, batchErr?.message || batchErr);
+        allErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batchErr?.message || "Unknown error"}`);
+      }
+    }
+
+    if (allUpserted.length === 0 && allErrors.length > 0) {
       return {
         success: false,
-        message: userErrors.map((e) => `${e.field}: ${e.message}`).join(", "),
+        message: `Failed to restore theme files: ${allErrors.slice(0, 3).join("; ")}`,
       };
     }
 
-    const upserted = json.data?.themeFilesUpsert?.upsertedThemeFiles || [];
+    const message =
+      allErrors.length > 0
+        ? `Restored ${allUpserted.length} theme files with warnings: ${allErrors.slice(0, 2).join("; ")}`
+        : `Successfully restored ${allUpserted.length} theme files.`;
+
     return {
       success: true,
-      count: upserted.length,
-      files: upserted.map((u) => u.filename),
-      message: `Successfully restored ${upserted.length} theme files.`,
+      count: allUpserted.length,
+      files: allUpserted,
+      warnings: allErrors,
+      message,
     };
   } catch (err) {
     console.error("restoreThemeFiles error:", err?.message || err);
@@ -489,6 +584,7 @@ export async function createDraftStagingTheme(admin, shop, baseName, files) {
 
     // Try GraphQL themeCreate
     let createdTheme = null;
+    let themeUserErrors = [];
     try {
       const res = await admin.graphql(
         `#graphql
@@ -513,7 +609,8 @@ export async function createDraftStagingTheme(admin, shop, baseName, files) {
         }
       );
       const json = await res.json();
-      if (!json.data?.themeCreate?.userErrors?.length) {
+      themeUserErrors = json.data?.themeCreate?.userErrors || [];
+      if (!themeUserErrors.length) {
         createdTheme = json.data?.themeCreate?.theme;
       }
     } catch (gErr) {
@@ -547,11 +644,29 @@ export async function createDraftStagingTheme(admin, shop, baseName, files) {
         }
       );
       const json = await res.json();
+      const fallbackErrors = json.data?.themeCreate?.userErrors || [];
+      if (fallbackErrors.length > 0) {
+        themeUserErrors = fallbackErrors;
+      }
       createdTheme = json.data?.themeCreate?.theme;
     }
 
     if (!createdTheme?.id) {
-      return { success: false, message: "Could not create draft staging theme in Shopify." };
+      const limitError = themeUserErrors.find((e) =>
+        (e.message || "").toLowerCase().includes("maximum number of themes") ||
+        (e.message || "").toLowerCase().includes("limit")
+      );
+      if (limitError) {
+        return {
+          success: false,
+          message: "Shopify theme library limit reached (maximum 20 themes). Please remove an unused draft theme from your Shopify Online Store > Themes, or choose Live Restore with pre-rollback safety snapshot.",
+        };
+      }
+      const userErrMsg = themeUserErrors.map((e) => e.message).join(", ");
+      return {
+        success: false,
+        message: userErrMsg ? `Could not create draft staging theme: ${userErrMsg}` : "Could not create draft staging theme in Shopify.",
+      };
     }
 
     // Push backup files into the draft staging theme
@@ -1516,6 +1631,27 @@ export async function restoreArticle(admin, article) {
         }
       } catch (e) {
         console.warn("Could not find blogs for article restoration:", e?.message);
+      }
+    }
+
+    if (!targetBlogId) {
+      try {
+        const blogTitle = article.blogTitle || "News";
+        const blogHandle = article.blogHandle || "news";
+        const createBlogRes = await admin.graphql(
+          `#graphql
+          mutation createDefaultBlog($blog: BlogCreateInput!) {
+            blogCreate(blog: $blog) {
+              blog { id title handle }
+              userErrors { field message }
+            }
+          }`,
+          { variables: { blog: { title: blogTitle, handle: blogHandle } } }
+        );
+        const createBlogJson = await createBlogRes.json();
+        targetBlogId = createBlogJson.data?.blogCreate?.blog?.id;
+      } catch (err) {
+        console.warn("Could not auto-create blog for article restoration:", err?.message);
       }
     }
 
@@ -3319,8 +3455,12 @@ export function generateProductsCsv(products = []) {
 
   const rows = products.map((p) => {
     const raw = p.snapshotData || p;
-    const variants = raw.variants || [];
-    const prices = variants.map((v) => parseFloat(v.price) || 0);
+    const variantList = Array.isArray(raw.variants)
+      ? raw.variants
+      : Array.isArray(raw.variants?.nodes)
+      ? raw.variants.nodes
+      : [];
+    const prices = variantList.map((v) => parseFloat(v.price) || 0);
     const minPrice = prices.length > 0 ? Math.min(...prices).toFixed(2) : "0.00";
     const maxPrice = prices.length > 0 ? Math.max(...prices).toFixed(2) : "0.00";
 
@@ -3332,7 +3472,7 @@ export function generateProductsCsv(products = []) {
       raw.vendor || "",
       raw.productType || "",
       Array.isArray(raw.tags) ? raw.tags.join(", ") : raw.tags || "",
-      variants.length,
+      variantList.length,
       minPrice,
       maxPrice,
       raw.updatedAt || "",
@@ -3634,8 +3774,9 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       for (const p of products) {
         const pId = p.productId || p.id;
         const snap = p.snapshotData || p;
-        if (pId) {
-          const numericId = String(pId).replace("gid://shopify/Product/", "");
+        const rawId = pId ? String(pId).replace("gid://shopify/Product/", "") : (p.handle ? `handle_${p.handle}` : null);
+        if (rawId) {
+          const numericId = rawId;
           try {
             await prisma.productSnapshot.upsert({
               where: { shop_productId: { shop, productId: numericId } },

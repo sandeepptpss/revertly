@@ -83,8 +83,32 @@ export const action = async ({ request }) => {
 
       let fileContent = formData.get("backupFileContent");
       const fileField = formData.get("backupFile");
+
       if (fileField && typeof fileField.text === "function") {
-        fileContent = await fileField.text();
+        try {
+          const text = await fileField.text();
+          if (text && typeof text === "string" && text.trim()) {
+            fileContent = text;
+          }
+        } catch {
+          // Fallback to arrayBuffer or backupFileContent
+        }
+      }
+
+      if (!fileContent && fileField && typeof fileField.arrayBuffer === "function") {
+        try {
+          const buffer = await fileField.arrayBuffer();
+          const decoded = new TextDecoder("utf-8").decode(buffer);
+          if (decoded && decoded.trim()) {
+            fileContent = decoded;
+          }
+        } catch {
+          // Fallback to string check
+        }
+      }
+
+      if (!fileContent && typeof fileField === "string" && fileField.trim() && fileField !== "[object File]") {
+        fileContent = fileField;
       }
 
       if (!fileContent || typeof fileContent !== "string" || !fileContent.trim()) {
@@ -248,6 +272,7 @@ export default function ImportExportHub() {
   const [activeTab, setActiveTab] = useState("export"); // "export" | "import"
   const [selectedRpId, setSelectedRpId] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [fileText, setFileText] = useState("");
   const [fileStats, setFileStats] = useState(null);
   const [fileError, setFileError] = useState("");
   const [importMode, setImportMode] = useState("SAVE_AS_RESTORE_POINT");
@@ -257,6 +282,7 @@ export default function ImportExportHub() {
 
   const clearFile = () => {
     setSelectedFile(null);
+    setFileText("");
     setFileStats(null);
     setFileError("");
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -275,20 +301,26 @@ export default function ImportExportHub() {
     if (!file) return;
     setFileError("");
 
-    const lowerName = file.name.toLowerCase();
-    const isJson = lowerName.endsWith(".json");
-    const isCsv = lowerName.endsWith(".csv");
+    const lowerName = (file.name || "").toLowerCase();
+    const isJson = lowerName.endsWith(".json") || file.type === "application/json";
+    const isCsv =
+      lowerName.endsWith(".csv") ||
+      file.type === "text/csv" ||
+      file.type === "application/vnd.ms-excel";
 
     if (!isJson && !isCsv) {
       setFileError("Only .json backup archives and .csv spreadsheet files are supported for import.");
       setSelectedFile(null);
+      setFileText("");
       setFileStats(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
 
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target.result;
+      setFileText(text);
 
       if (isCsv) {
         try {
@@ -301,7 +333,9 @@ export default function ImportExportHub() {
           if (totalItems === 0) {
             setFileError("This CSV file contains no recognizable store assets. Please select a valid Revertly backup CSV file.");
             setSelectedFile(null);
+            setFileText("");
             setFileStats(null);
+            if (fileInputRef.current) fileInputRef.current.value = "";
             return;
           }
 
@@ -328,7 +362,9 @@ export default function ImportExportHub() {
         } catch (err) {
           setFileError(`Failed to parse file as valid CSV: ${err.message}`);
           setSelectedFile(null);
+          setFileText("");
           setFileStats(null);
+          if (fileInputRef.current) fileInputRef.current.value = "";
         }
         return;
       }
@@ -380,7 +416,9 @@ export default function ImportExportHub() {
         if (totalItems === 0) {
           setFileError("This JSON file contains no recognizable store assets (Products, Themes, Collections, Pages, Menus, Articles, or Metafields). Please select a valid Revertly backup archive.");
           setSelectedFile(null);
+          setFileText("");
           setFileStats(null);
+          if (fileInputRef.current) fileInputRef.current.value = "";
           return;
         }
 
@@ -405,7 +443,9 @@ export default function ImportExportHub() {
       } catch (err) {
         setFileError(`Failed to parse file as valid JSON: ${err.message}`);
         setSelectedFile(null);
+        setFileText("");
         setFileStats(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
       }
     };
     reader.onerror = () => {
@@ -413,7 +453,9 @@ export default function ImportExportHub() {
         `The file "${file.name}" could not be read from disk. Please check the file and try selecting it again.`
       );
       setSelectedFile(null);
+      setFileText("");
       setFileStats(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     };
     reader.readAsText(file);
   };
@@ -424,20 +466,23 @@ export default function ImportExportHub() {
   };
 
   /**
-   * Uploads the file itself rather than a copy of its text in a hidden field.
-   * A full-store archive is routinely several megabytes, and sending it twice
-   * in one request is what pushes an otherwise valid import over a proxy's
-   * body limit.
+   * Dual delivery: submits both the native File part (for standard multipart streams)
+   * and the verified text content (resilient across proxies, tunnels, and headless workers).
    */
   const submitImport = () => {
-    if (!selectedFile) {
+    if (!selectedFile && !fileText) {
       setFileError("Please choose a backup file before starting the import.");
       return;
     }
     const formData = new FormData();
     formData.append("intent", "import");
     formData.append("importMode", importMode);
-    formData.append("backupFile", selectedFile, selectedFile.name);
+    if (selectedFile) {
+      formData.append("backupFile", selectedFile, selectedFile.name);
+    }
+    if (fileText) {
+      formData.append("backupFileContent", fileText);
+    }
     fetcher.submit(formData, { method: "POST", encType: "multipart/form-data" });
   };
 
@@ -1310,12 +1355,42 @@ export default function ImportExportHub() {
                     )}
                   </div>
 
+                  {/* In-context submission progress and feedback */}
+                  {result?.message && !isImporting && (
+                    <div style={{ marginBottom: "16px" }}>
+                      <Banner
+                        tone={result.success ? "success" : "critical"}
+                        title={result.success ? "Import Operation Succeeded" : "Import Failed"}
+                        action={
+                          result.success && result.restorePoint ? (
+                            <Link to={`/app/restore-points/${result.restorePoint.id}`} className="rv-btn rv-btn-primary rv-btn-sm">
+                              Inspect Imported Restore Point
+                            </Link>
+                          ) : undefined
+                        }
+                      >
+                        {result.message}
+                      </Banner>
+                    </div>
+                  )}
+
+                  {isImporting && (
+                    <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "8px", background: "var(--rv-primary-surface)", display: "flex", alignItems: "center", gap: "10px", fontSize: "13px", color: "var(--rv-text)" }}>
+                      <UploadIcon size={16} />
+                      <span>
+                        {importMode === "RESTORE_NOW"
+                          ? "Uploading the archive and restoring it into your live store — this can take a minute for large backups. Please keep this page open."
+                          : "Uploading the archive and saving it as a restore point — please keep this page open."}
+                      </span>
+                    </div>
+                  )}
+
                   {/* Submission */}
                   <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                     <button
                       type="button"
                       onClick={submitImport}
-                      disabled={isImporting || !selectedFile}
+                      disabled={isImporting || (!selectedFile && !fileText)}
                       className="rv-btn rv-btn-primary rv-btn-lg"
                     >
                       <UploadIcon size={16} />
