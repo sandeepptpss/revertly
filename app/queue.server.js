@@ -23,6 +23,16 @@ let redisClient = null;
 let redisChecked = false;
 let redisAvailable = false;
 let isInitializing = false;
+let lastRedisCheckAt = 0;
+
+// How many times a batch is attempted before the sync job is marked FAILED.
+// Shared by the BullMQ path (via defaultJobOptions.attempts) and the in-process
+// fallback runner, so both retry transient Shopify/network errors identically.
+export const MAX_BATCH_ATTEMPTS = 3;
+
+// When Redis is absent we re-probe at most this often. Without it, a 30,000-product
+// sync would open a fresh connection for each of its ~600 batch enqueues.
+const REDIS_RECHECK_INTERVAL_MS = 60 * 1000;
 
 /**
  * Parses Redis connection options from environment variables.
@@ -68,10 +78,15 @@ export async function initQueue(processorFn = null) {
   if (isInitializing || (redisChecked && redisAvailable && bullQueue)) {
     return { redisAvailable, queue: bullQueue };
   }
+  // Redis was already found to be absent: stay on the fallback runner until the
+  // re-probe window elapses rather than reconnecting on every single batch.
+  if (redisChecked && !redisAvailable && Date.now() - lastRedisCheckAt < REDIS_RECHECK_INTERVAL_MS) {
+    return { redisAvailable: false, queue: null };
+  }
   isInitializing = true;
 
   try {
-    const { Queue, Worker } = await import("bullmq");
+    const { Queue } = await import("bullmq");
     const IORedis = (await import("ioredis")).default;
 
     const redisConfig = getRedisConfig();
@@ -79,10 +94,8 @@ export async function initQueue(processorFn = null) {
       ? new IORedis(redisConfig, { maxRetriesPerRequest: null, lazyConnect: true, connectTimeout: 2000 })
       : new IORedis({ ...redisConfig, lazyConnect: true, connectTimeout: 2000 });
 
-    testClient.on("error", (err) => {
-      // Suppress unhandled crash from ECONNREFUSED
-      // console.warn("[Queue] Redis connection notice:", err.message);
-    });
+    // Swallow connection errors so an unreachable Redis never crashes the process.
+    testClient.on("error", () => {});
 
     try {
       await testClient.connect();
@@ -90,11 +103,13 @@ export async function initQueue(processorFn = null) {
       redisAvailable = true;
       redisClient = testClient;
       // console.log("[Queue] Redis connection established. Using BullMQ queue engine.");
-    } catch (connErr) {
+    } catch {
       redisAvailable = false;
       try {
         testClient.disconnect();
-      } catch (_) {}
+      } catch {
+        // already disconnected
+      }
       // console.info("[Queue] Redis is not available or not running. Operating with resilient in-process runner.");
     }
 
@@ -102,7 +117,7 @@ export async function initQueue(processorFn = null) {
       bullQueue = new Queue(QUEUE_NAME, {
         connection: redisClient,
         defaultJobOptions: {
-          attempts: 3,
+          attempts: MAX_BATCH_ATTEMPTS,
           backoff: {
             type: "exponential",
             delay: 2000,
@@ -121,11 +136,12 @@ export async function initQueue(processorFn = null) {
         initWorker(processorFn);
       }
     }
-  } catch (err) {
+  } catch {
     redisAvailable = false;
-    // console.info("[Queue] BullMQ/IORedis initialization fallback:", err?.message || err);
+    // console.info("[Queue] BullMQ/IORedis initialization fallback.");
   } finally {
     redisChecked = true;
+    lastRedisCheckAt = Date.now();
     isInitializing = false;
   }
 
@@ -143,7 +159,14 @@ export async function initWorker(processorFn) {
     bullWorker = new Worker(
       QUEUE_NAME,
       async (job) => {
-        return await processorFn(job.data);
+        // `attemptsMade` counts attempts already finished, so the run starting now
+        // is attempt number attemptsMade + 1. The processor needs this to know
+        // whether a thrown error still has retries left before it marks the sync
+        // FAILED — throwing is what lets BullMQ apply its backoff at all.
+        return await processorFn(job.data, null, {
+          attempt: (job.attemptsMade || 0) + 1,
+          maxAttempts: job.opts?.attempts || MAX_BATCH_ATTEMPTS,
+        });
       },
       {
         connection: redisClient,
@@ -163,12 +186,31 @@ export async function initWorker(processorFn) {
       syncEvents.emit("jobFailed", { job: job?.data, error: err?.message });
     });
 
-    bullWorker.on("error", (err) => {
-      // worker level error
-    });
+    // Worker-level errors (connection blips) must be handled or Node treats them
+    // as unhandled 'error' events and terminates the process.
+    bullWorker.on("error", () => {});
   } catch (workerErr) {
     // console.warn("[Queue] BullMQ worker registration notice:", workerErr?.message);
   }
+}
+
+/**
+ * Strips anything that cannot survive a round-trip through Redis.
+ *
+ * BullMQ persists job data as a JSON string, so live objects such as a Shopify
+ * admin GraphQL client silently deserialize into `{}` — truthy, but with no
+ * methods, which then fails the batch. The worker re-resolves the admin client
+ * from the stored offline session instead, so it must never be carried here.
+ */
+function toSerializablePayload(jobData) {
+  const { syncJobId, shop, cursor, batchSize, processedSoFar } = jobData;
+  return {
+    syncJobId,
+    shop,
+    cursor: cursor ?? null,
+    batchSize,
+    processedSoFar: processedSoFar || 0,
+  };
 }
 
 /**
@@ -177,29 +219,44 @@ export async function initWorker(processorFn) {
 export async function enqueueSyncBatch(jobData, processorFn = null) {
   await initQueue(processorFn);
 
+  const payload = toSerializablePayload(jobData);
+
   if (redisAvailable && bullQueue) {
-    const jobId = `sync_${jobData.syncJobId}_batch_${jobData.processedSoFar || 0}`;
-    return await bullQueue.add("process-batch", jobData, {
+    // The cursor makes this unique per batch. `processedSoFar` alone does not: a
+    // page whose products are all skipped advances the cursor without advancing
+    // the count, and a duplicate jobId would be dropped, stalling the sync.
+    const batchKey = payload.cursor ? String(payload.cursor).slice(-32) : "start";
+    const jobId = `sync_${payload.syncJobId}_${payload.processedSoFar}_${batchKey}`;
+    return await bullQueue.add("process-batch", payload, {
       jobId,
       priority: 1,
     });
   }
 
-  // Resilient fallback: execute asynchronously on next tick without blocking web request
+  // Resilient fallback: execute asynchronously on next tick without blocking the
+  // web request, retrying transient failures with the same budget BullMQ would use.
   setImmediate(async () => {
-    try {
-      if (typeof processorFn === "function") {
-        await processorFn(jobData);
-      } else {
-        const { processCatalogSyncBatch } = await import("./sync.server.js");
-        await processCatalogSyncBatch(jobData);
+    const runBatch =
+      typeof processorFn === "function"
+        ? processorFn
+        : (await import("./sync.server.js")).processCatalogSyncBatch;
+
+    for (let attempt = 1; attempt <= MAX_BATCH_ATTEMPTS; attempt++) {
+      try {
+        await runBatch(payload, null, { attempt, maxAttempts: MAX_BATCH_ATTEMPTS });
+        return;
+      } catch (runErr) {
+        if (attempt >= MAX_BATCH_ATTEMPTS) {
+          console.error("[Queue Fallback] Batch failed after all retries:", runErr?.message || runErr);
+          return;
+        }
+        // Exponential backoff mirroring the BullMQ defaultJobOptions above.
+        await new Promise((r) => setTimeout(r, 2000 * 2 ** (attempt - 1)));
       }
-    } catch (runErr) {
-      console.error("[Queue Fallback] Batch processing error:", runErr);
     }
   });
 
-  return { id: `fallback_${jobData.syncJobId}_${Date.now()}` };
+  return { id: `fallback_${payload.syncJobId}_${Date.now()}` };
 }
 
 /**

@@ -2930,6 +2930,65 @@ function inferBackupType(options) {
   return "FULL";
 }
 
+// Ceiling for the serialized product payload of a single restore point. MySQL's
+// default max_allowed_packet is 64MB, so staying under it keeps the write from
+// being rejected outright on very large catalogs.
+const MAX_SNAPSHOT_PAYLOAD_BYTES = 48 * 1024 * 1024;
+
+// Rows pulled per query. Bounds the memory held by any single Prisma result set
+// while still collecting the whole catalog.
+const SNAPSHOT_READ_PAGE_SIZE = 500;
+
+/**
+ * Reads every product snapshot for a shop in bounded pages.
+ *
+ * A restore point is only as good as what it stores: `snapshotData` is the array
+ * that restore and CSV export iterate, so silently keeping a subset would mean a
+ * merchant is shown a backup of their whole catalog and gets a fraction of it
+ * back. This collects all of it, paging the reads so a 30,000-product catalog
+ * never lands in one giant result set.
+ *
+ * If the payload would exceed what MySQL can store, collection stops at the
+ * ceiling and reports `truncated` — the caller then records the reduced count
+ * and says so, rather than overstating what was captured.
+ */
+async function collectProductSnapshotsForBackup(shop) {
+  const items = [];
+  let approxBytes = 0;
+  let truncated = false;
+  let cursorId = null;
+
+  for (;;) {
+    const page = await prisma.productSnapshot.findMany({
+      where: { shop },
+      // `id` drives the pagination cursor only; it is stripped before storing so
+      // the stored shape stays exactly what restore and export already expect.
+      select: { id: true, productId: true, snapshotData: true, title: true },
+      orderBy: { id: "asc" },
+      take: SNAPSHOT_READ_PAGE_SIZE,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+    });
+
+    if (page.length === 0) break;
+
+    for (const row of page) {
+      const entry = { productId: row.productId, snapshotData: row.snapshotData, title: row.title };
+      const rowBytes = Buffer.byteLength(JSON.stringify(entry));
+      if (approxBytes + rowBytes > MAX_SNAPSHOT_PAYLOAD_BYTES) {
+        truncated = true;
+        break;
+      }
+      approxBytes += rowBytes;
+      items.push(entry);
+    }
+
+    if (truncated || page.length < SNAPSHOT_READ_PAGE_SIZE) break;
+    cursorId = page[page.length - 1].id;
+  }
+
+  return { items, truncated };
+}
+
 /**
  * Orchestrates a complete store backup snapshot (Products, Themes, Collections,
  * Pages, Menus, Articles, Metafields) without blocking or breaking existing
@@ -2984,29 +3043,13 @@ export async function createMultiResourceRestorePoint({
         (async () => {
           const totalCount = await prisma.productSnapshot.count({ where: { shop } });
           if (totalCount === 0 && admin) {
-            return await fetchLiveProductsBackup(admin, shop);
+            return { items: await fetchLiveProductsBackup(admin, shop), truncated: false };
           }
-          if (totalCount <= 500) {
-            return await prisma.productSnapshot.findMany({
-              where: { shop },
-              select: { productId: true, snapshotData: true, title: true },
-            });
-          }
-          // Memory safety guard for large catalogs (30,000+ products):
-          // Fetch top 250 recent products for embedded preview,
-          // while attaching true totalCount so metadata accurately reflects the full catalog.
-          const sample = await prisma.productSnapshot.findMany({
-            where: { shop },
-            select: { productId: true, snapshotData: true, title: true },
-            orderBy: { updatedAt: "desc" },
-            take: 250,
-          });
-          sample._totalCount = totalCount;
-          return sample;
+          return await collectProductSnapshotsForBackup(shop);
         })()
       );
     } else {
-      tasks.push(Promise.resolve([]));
+      tasks.push(Promise.resolve({ items: [], truncated: false }));
     }
 
     // Task 1: Theme & Assets
@@ -3055,7 +3098,9 @@ export async function createMultiResourceRestorePoint({
     const [prodRes, themeRes, colRes, pageRes, menuRes, articleRes, metafieldRes] =
       await Promise.allSettled(tasks);
 
-    const products = prodRes.status === "fulfilled" ? prodRes.value : [];
+    const productResult = prodRes.status === "fulfilled" ? prodRes.value : { items: [], truncated: false };
+    const products = Array.isArray(productResult) ? productResult : productResult.items || [];
+    const productsTruncated = Boolean(productResult?.truncated);
     const themeData = themeRes.status === "fulfilled" ? themeRes.value : null;
     const collections = colRes.status === "fulfilled" ? colRes.value : [];
     const pages = pageRes.status === "fulfilled" ? pageRes.value : [];
@@ -3076,13 +3121,20 @@ export async function createMultiResourceRestorePoint({
       data: {
         status: "READY",
         backupType,
-        productCount: products._totalCount ?? products.length,
+        // Always the number of products actually stored in snapshotData, so the
+        // count a merchant sees matches what a restore can return.
+        productCount: products.length,
         themeCount,
         collectionCount,
         pageCount,
         menuCount,
         articleCount,
         metafieldCount,
+        // A truncated capture is surfaced rather than hidden: the merchant needs
+        // to know this restore point does not cover their whole catalog.
+        description: productsTruncated
+          ? `${description ? `${description} ` : ""}[Partial capture: catalog exceeded the maximum backup size, so ${products.length} products were stored.]`
+          : description,
         snapshotData: products,
         themeData: themeData || undefined,
         collectionData: collections.length > 0 ? collections : undefined,
@@ -3101,7 +3153,8 @@ export async function createMultiResourceRestorePoint({
       success: true,
       restorePoint: updated,
       summary: {
-        products: products._totalCount ?? products.length,
+        products: products.length,
+        productsTruncated,
         themes: themeCount,
         collections: collectionCount,
         pages: pageCount,

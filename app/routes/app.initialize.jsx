@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -33,24 +33,28 @@ export const action = async ({ request }) => {
     const { session, admin } = await authenticate.admin(request);
     const shop = session.shop;
 
-    const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
-    if (!perm.allowed) return { success: false, message: perm.message };
-
     const formData = await request.formData();
     const intent = formData.get("intent");
+
+    // Reading progress is not a mutation, so it is gated separately — otherwise
+    // roles without backup-create (e.g. VIEWER) cannot watch a running sync.
+    if (intent === "status") {
+      const syncStatus = await getCatalogSyncStatus(shop);
+      return { success: true, syncStatus };
+    }
+
+    const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
+    if (!perm.allowed) return { success: false, message: perm.message };
 
     if (intent === "cancel") {
       await cancelCatalogSync(shop);
       return { success: true, cancelled: true };
     }
 
-    if (intent === "status") {
-      const syncStatus = await getCatalogSyncStatus(shop);
-      return { success: true, syncStatus };
-    }
-
-    // Start background catalog sync job
-    const result = await startCatalogSync(shop, { admin, force: true });
+    // Start background catalog sync job. `force` is left off so the in-flight
+    // job guard in startCatalogSync applies: a second submit returns the running
+    // job instead of starting a competing one that writes the same snapshots.
+    const result = await startCatalogSync(shop, { admin });
     const currentCount = await prisma.productSnapshot.count({ where: { shop } });
 
     return {
@@ -81,10 +85,20 @@ export default function InitialSnapshot() {
 
   // Derive active sync status from real-time poll or loader
   const currentSyncStatus = pollFetcher.data?.syncStatus ?? initialSyncStatus;
-  const isSyncing = Boolean(currentSyncStatus?.active || (actionResult?.isBackground && actionResult?.status === "PROCESSING"));
+  // A freshly queued job is PENDING until its first batch runs, so PROCESSING
+  // alone would miss the window in which polling most needs to start.
+  const justQueued =
+    actionResult?.isBackground && ["PENDING", "PROCESSING"].includes(actionResult?.status);
+  const isSyncing = Boolean(!actionResult?.cancelled && (currentSyncStatus?.active || justQueued));
 
   const totalMonitored = currentSyncStatus?.totalSnapshots ?? (actionResult?.count ?? count);
   const isProtected = totalMonitored > 0;
+
+  // Keep the live submit callback in a ref: useFetcher returns a new object each
+  // render, so depending on it directly would clear and restart the interval on
+  // every poll result and the 2.5s tick could never elapse.
+  const submitPollRef = useRef(pollFetcher.submit);
+  submitPollRef.current = pollFetcher.submit;
 
   // Auto-poll progress every 2.5s while background sync is running
   useEffect(() => {
@@ -93,11 +107,11 @@ export default function InitialSnapshot() {
     const interval = setInterval(() => {
       const data = new FormData();
       data.append("intent", "status");
-      pollFetcher.submit(data, { method: "POST" });
+      submitPollRef.current(data, { method: "POST" });
     }, 2500);
 
     return () => clearInterval(interval);
-  }, [isSyncing, pollFetcher]);
+  }, [isSyncing]);
 
   const percent = currentSyncStatus?.percent ?? 0;
   const processedCount = currentSyncStatus?.processedCount ?? 0;

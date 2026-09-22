@@ -264,6 +264,60 @@ async function runTestSuite() {
     assert(rpRes.restorePoint.productCount === totalProcessed, "RestorePoint productCount correctly reflects all baseline products");
     assert(rpRes.summary.products === totalProcessed, "RestorePoint summary.products matches total baseline products");
 
+    // ── Test Suite 5: Restore point fidelity above the paging threshold ─────
+    // A restore point is only as good as the array restore actually replays, so
+    // this asserts on the stored snapshotData, not just the reported count, and
+    // does it with a catalog large enough to cross the internal paging size.
+    console.log("\n▶ Test Suite 5: Restore Point Fidelity for Large Catalogs");
+    const FIDELITY_COUNT = 600;
+    await prisma.restorePoint.deleteMany({ where: { shop: TEST_SHOP } });
+    await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });
+    await prisma.productSnapshot.createMany({
+      data: Array.from({ length: FIDELITY_COUNT }, (_, i) => ({
+        shop: TEST_SHOP,
+        productId: String(i + 1),
+        title: `Fidelity Product ${i + 1}`,
+        status: "ACTIVE",
+        vendor: "Acme",
+        productType: "Apparel",
+        tags: "large-catalog",
+        bodyHtml: "<p>x</p>",
+        handle: `fidelity-product-${i + 1}`,
+        snapshotData: { id: `gid://shopify/Product/${i + 1}`, title: `Fidelity Product ${i + 1}`, variants: [{ price: "10.00" }] },
+      })),
+    });
+
+    const fidelityRes = await createMultiResourceRestorePoint({
+      admin: null,
+      shop: TEST_SHOP,
+      name: "Large Catalog Fidelity Test",
+      options: {
+        includeProducts: true,
+        includeThemes: false,
+        includeCollections: false,
+        includePages: false,
+        includeMenus: false,
+        includeArticles: false,
+      },
+    });
+
+    const storedRp = await prisma.restorePoint.findUnique({ where: { id: fidelityRes.restorePoint.id } });
+    const storedProducts = Array.isArray(storedRp.snapshotData) ? storedRp.snapshotData : [];
+
+    assert(
+      storedProducts.length === FIDELITY_COUNT,
+      `snapshotData stores all ${FIDELITY_COUNT} products (restore replays ${storedProducts.length})`
+    );
+    assert(
+      storedRp.productCount === storedProducts.length,
+      "productCount matches what is actually stored, so the merchant is never overpromised"
+    );
+    assert(
+      storedProducts.every((p) => p.productId && p.snapshotData),
+      "every stored product retains productId and snapshotData for restore"
+    );
+    assert(fidelityRes.summary.productsTruncated === false, "a catalog within the size ceiling is not flagged truncated");
+
     // ── Clean up test shop ──────────────────────────────────────────────────
     await prisma.catalogSyncJob.deleteMany({ where: { shop: TEST_SHOP } });
     await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });

@@ -16,10 +16,18 @@ import prisma from "./db.server.js";
 import { unauthenticated } from "./shopify.server.js";
 import { buildSnapshot } from "./monitor.server.js";
 import { getEffectiveLimits } from "./billing.server.js";
-import { enqueueSyncBatch, syncEvents } from "./queue.server.js";
+import { enqueueSyncBatch, syncEvents, MAX_BATCH_ATTEMPTS } from "./queue.server.js";
 import { createMultiResourceRestorePoint } from "./backup.server.js";
 
 export const DEFAULT_BATCH_SIZE = 50;
+
+export const PRODUCT_COUNT_QUERY = `#graphql
+  query getCatalogSize {
+    productsCount {
+      count
+    }
+  }
+`;
 
 export const PRODUCTS_PAGE_QUERY = `#graphql
   query getProductsForSync($cursor: String, $first: Int!) {
@@ -133,8 +141,24 @@ export async function startCatalogSync(shop, { force = false, batchSize = DEFAUL
     }
   }
 
-  // Determine estimated total from existing snapshots if any
+  // Estimate the total up front so progress is meaningful. Ask Shopify for the
+  // live catalog size; the local snapshot count is only a fallback, and on a
+  // first-ever sync it is 0, which would peg the progress bar at 100%.
   const currentSnapshotCount = await prisma.productSnapshot.count({ where: { shop } });
+  let totalEstimated = currentSnapshotCount;
+  try {
+    const countAdmin = await getAdminClient(shop, admin);
+    if (countAdmin) {
+      const countResp = await countAdmin.graphql(PRODUCT_COUNT_QUERY);
+      const countJson = await countResp.json();
+      const liveCount = countJson?.data?.productsCount?.count;
+      if (Number.isFinite(liveCount) && liveCount > 0) {
+        totalEstimated = liveCount;
+      }
+    }
+  } catch (countErr) {
+    console.warn("[Sync] Could not resolve live catalog size, using snapshot count:", countErr?.message || countErr);
+  }
 
   // Create the tracking record in MySQL
   const syncJob = await prisma.catalogSyncJob.create({
@@ -142,13 +166,15 @@ export async function startCatalogSync(shop, { force = false, batchSize = DEFAUL
       shop,
       status: "PENDING",
       batchSize,
-      totalEstimated: currentSnapshotCount,
+      totalEstimated,
       processedCount: 0,
       currentCursor: null,
     },
   });
 
-  // Enqueue the initial batch job (cursor = null)
+  // Enqueue the initial batch job (cursor = null). The admin client is
+  // deliberately not part of the payload — see toSerializablePayload in
+  // queue.server.js; the worker re-resolves it from the offline session.
   await enqueueSyncBatch(
     {
       syncJobId: syncJob.id,
@@ -156,7 +182,6 @@ export async function startCatalogSync(shop, { force = false, batchSize = DEFAUL
       cursor: null,
       batchSize,
       processedSoFar: 0,
-      admin: admin || null,
     },
     processCatalogSyncBatch
   );
@@ -173,8 +198,10 @@ export async function startCatalogSync(shop, { force = false, batchSize = DEFAUL
  * Memory-isolated worker: Processes a single batch of products, updates the DB,
  * and enqueues the next batch if hasNextPage is true.
  */
-export async function processCatalogSyncBatch(jobData, providedAdmin = null) {
+export async function processCatalogSyncBatch(jobData, providedAdmin = null, attemptInfo = {}) {
   const { syncJobId, shop, cursor, batchSize = DEFAULT_BATCH_SIZE, processedSoFar = 0 } = jobData;
+  const attempt = attemptInfo.attempt || 1;
+  const maxAttempts = attemptInfo.maxAttempts || MAX_BATCH_ATTEMPTS;
 
   // 1. Verify job state in DB (handle cancellation or deletion)
   const syncJob = await prisma.catalogSyncJob.findUnique({
@@ -194,8 +221,8 @@ export async function processCatalogSyncBatch(jobData, providedAdmin = null) {
     });
   }
 
-  // 2. Obtain Shopify GraphQL admin client
-  const admin = await getAdminClient(shop, providedAdmin || jobData?.admin);
+  // 2. Obtain Shopify GraphQL admin client from the stored offline session
+  const admin = await getAdminClient(shop, providedAdmin);
   if (!admin) {
     const errorMsg = `No offline admin session found for shop: ${shop}`;
     await prisma.catalogSyncJob.update({
@@ -303,7 +330,6 @@ export async function processCatalogSyncBatch(jobData, providedAdmin = null) {
           cursor: nextCursor,
           batchSize,
           processedSoFar: totalProcessed,
-          admin: providedAdmin || jobData?.admin || null,
         },
         processCatalogSyncBatch
       );
@@ -341,15 +367,37 @@ export async function processCatalogSyncBatch(jobData, providedAdmin = null) {
       };
     }
   } catch (error) {
-    console.error(`[Sync] Batch error for shop ${shop}, job #${syncJobId}:`, error?.message || error);
+    const message = error?.message || "An unexpected error occurred during batch sync.";
+    console.error(
+      `[Sync] Batch error for shop ${shop}, job #${syncJobId} (attempt ${attempt}/${maxAttempts}):`,
+      message
+    );
+
+    if (attempt < maxAttempts) {
+      // Retries remain. Keep the job PROCESSING with its cursor intact so the
+      // retry resumes from this same page, and rethrow: swallowing the error
+      // here is what previously made BullMQ's attempts/backoff dead config and
+      // let a single transient Shopify error kill an entire 30,000-product sync.
+      await prisma.catalogSyncJob.update({
+        where: { id: syncJobId },
+        data: {
+          status: "PROCESSING",
+          currentCursor: cursor ?? null,
+          errorMessage: `Attempt ${attempt}/${maxAttempts} failed, retrying: ${message}`,
+        },
+      });
+      throw error;
+    }
+
     await prisma.catalogSyncJob.update({
       where: { id: syncJobId },
       data: {
         status: "FAILED",
-        errorMessage: error?.message || "An unexpected error occurred during batch sync.",
+        errorMessage: message,
+        completedAt: new Date(),
       },
     });
-    return { success: false, error: error?.message };
+    return { success: false, error: message };
   }
 }
 
