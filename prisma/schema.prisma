@@ -533,3 +533,23 @@ model JobLock {
   @@index([expiresAt])
 }
 
+// Background catalog sync jobs for high-volume stores (30,000+ products)
+// Tracks asynchronous batched synchronization progress, cursors, and memory isolation.
+model CatalogSyncJob {
+  id             Int       @id @default(autoincrement())
+  shop           String    @db.VarChar(255)
+  status         String    @default("PENDING") @db.VarChar(50) // PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED
+  totalEstimated Int       @default(0)
+  processedCount Int       @default(0)
+  currentCursor  String?   @db.Text
+  batchSize      Int       @default(50)
+  errorMessage   String?   @db.Text
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([shop, status])
+  @@index([shop, createdAt])
+}
+

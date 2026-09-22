@@ -2982,14 +2982,27 @@ export async function createMultiResourceRestorePoint({
     if (options.includeProducts !== false) {
       tasks.push(
         (async () => {
-          let prods = await prisma.productSnapshot.findMany({
+          const totalCount = await prisma.productSnapshot.count({ where: { shop } });
+          if (totalCount === 0 && admin) {
+            return await fetchLiveProductsBackup(admin, shop);
+          }
+          if (totalCount <= 500) {
+            return await prisma.productSnapshot.findMany({
+              where: { shop },
+              select: { productId: true, snapshotData: true, title: true },
+            });
+          }
+          // Memory safety guard for large catalogs (30,000+ products):
+          // Fetch top 250 recent products for embedded preview,
+          // while attaching true totalCount so metadata accurately reflects the full catalog.
+          const sample = await prisma.productSnapshot.findMany({
             where: { shop },
             select: { productId: true, snapshotData: true, title: true },
+            orderBy: { updatedAt: "desc" },
+            take: 250,
           });
-          if (prods.length === 0 && admin) {
-            prods = await fetchLiveProductsBackup(admin, shop);
-          }
-          return prods;
+          sample._totalCount = totalCount;
+          return sample;
         })()
       );
     } else {
@@ -3063,7 +3076,7 @@ export async function createMultiResourceRestorePoint({
       data: {
         status: "READY",
         backupType,
-        productCount: products.length,
+        productCount: products._totalCount ?? products.length,
         themeCount,
         collectionCount,
         pageCount,
@@ -3088,7 +3101,7 @@ export async function createMultiResourceRestorePoint({
       success: true,
       restorePoint: updated,
       summary: {
-        products: products.length,
+        products: products._totalCount ?? products.length,
         themes: themeCount,
         collections: collectionCount,
         pages: pageCount,

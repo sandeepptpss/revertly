@@ -5,9 +5,16 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 import { initBackgroundScheduler } from "./scheduler.server.js";
+import { initQueue } from "./queue.server.js";
+import { processCatalogSyncBatch } from "./sync.server.js";
 
 // Initialize in-process background backup scheduler (checks every 5 minutes)
 initBackgroundScheduler(5);
+
+// Initialize background catalog sync queue & worker (BullMQ + resilient fallback)
+initQueue(processCatalogSyncBatch).catch((err) => {
+  console.warn("[Boot] Background sync queue initialization notice:", err?.message || err);
+});
 
 export const streamTimeout = 5000;
 

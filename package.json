@@ -32,6 +32,8 @@
     "@shopify/app-bridge-react": "^4.2.4",
     "@shopify/shopify-app-react-router": "^1.2.1",
     "@shopify/shopify-app-session-storage-prisma": "^9.0.0",
+    "bullmq": "^5.81.5",
+    "ioredis": "^5.11.1",
     "isbot": "^5.1.31",
     "mysql2": "^3.24.2",
     "prisma": "^6.16.3",

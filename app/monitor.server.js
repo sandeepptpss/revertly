@@ -94,8 +94,12 @@ export async function fetchProductData(admin, productId) {
  * Build a flat snapshot object from Shopify product data
  */
 export function buildSnapshot(product) {
-  const variants = (product.variants?.edges || []).map((e) => {
-    const node = e.node || {};
+  const rawVariantNodes =
+    product.variants?.nodes ||
+    product.variants?.edges?.map((e) => e.node) ||
+    (Array.isArray(product.variants) ? product.variants : []);
+
+  const variants = rawVariantNodes.map((node) => {
     const weightVal = node.inventoryItem?.measurement?.weight?.value ?? node.weight ?? null;
     const weightUnit = node.inventoryItem?.measurement?.weight?.unit ?? node.weightUnit ?? null;
     return {
@@ -111,12 +115,17 @@ export function buildSnapshot(product) {
     };
   });
 
-  const metafields = (product.metafields?.edges || []).map((e) => ({
-    id: e.node.id,
-    namespace: e.node.namespace,
-    key: e.node.key,
-    value: e.node.value,
-    type: e.node.type,
+  const rawMetafieldNodes =
+    product.metafields?.nodes ||
+    product.metafields?.edges?.map((e) => e.node) ||
+    (Array.isArray(product.metafields) ? product.metafields : []);
+
+  const metafields = rawMetafieldNodes.map((node) => ({
+    id: node.id,
+    namespace: node.namespace,
+    key: node.key,
+    value: node.value,
+    type: node.type,
   }));
 
   const rawImages = (
