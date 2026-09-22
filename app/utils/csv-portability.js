@@ -920,6 +920,7 @@ export function detectAndParseCsvArchive(csvString) {
         collections: 0,
         pages: 0,
         menus: 0,
+        blogs: blogs.length,
         articles: articles.length,
         metafields: 0,
       },

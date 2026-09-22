@@ -158,6 +158,7 @@ export const action = async ({ request }) => {
             (lr.collections || 0) +
             (lr.pages || 0) +
             (lr.menus || 0) +
+            (lr.blogs || 0) +
             (lr.articles || 0) +
             (lr.metafields || 0) +
             (lr.themeStagingCreated ? 1 : 0);
@@ -182,6 +183,7 @@ export const action = async ({ request }) => {
           if (lr.pages > 0) importResults.push({ productId: "import_pages", productTitle: `Import: ${lr.pages} Pages restored live`, status: "SUCCESS" });
           if (lr.menus > 0) importResults.push({ productId: "import_menus", productTitle: `Import: ${lr.menus} Navigation Menus restored live`, status: "SUCCESS" });
           if (lr.collections > 0) importResults.push({ productId: "import_collections", productTitle: `Import: ${lr.collections} Collections restored live`, status: "SUCCESS" });
+          if (lr.blogs > 0) importResults.push({ productId: "import_blogs", productTitle: `Import: ${lr.blogs} Blogs restored live`, status: "SUCCESS" });
           if (lr.articles > 0) importResults.push({ productId: "import_articles", productTitle: `Import: ${lr.articles} Articles restored live`, status: "SUCCESS" });
           if (lr.metafields > 0) importResults.push({ productId: "import_metafields", productTitle: `Import: ${lr.metafields} Metafields restored live`, status: "SUCCESS" });
           if (lr.themeStagingCreated) importResults.push({ productId: "import_theme", productTitle: `Import: Staging Theme created with restored files`, status: "SUCCESS" });
@@ -327,7 +329,7 @@ export default function ImportExportHub() {
           const parsedCsv = detectAndParseCsvArchive(text);
           const sum = parsedCsv.summary;
           const totalItems =
-            sum.products + sum.themes + sum.collections + sum.pages + sum.menus + sum.articles +
+            sum.products + sum.themes + sum.collections + sum.pages + sum.menus + sum.articles + (sum.blogs || 0) +
             (sum.metafields || 0);
 
           if (totalItems === 0) {
@@ -353,6 +355,7 @@ export default function ImportExportHub() {
             pagesCount: sum.pages,
             menusCount: sum.menus,
             articlesCount: sum.articles,
+            blogsCount: sum.blogs || 0,
             metafieldsCount: sum.metafields || 0,
             definitionsCount: 0,
             // CSV carries metafield values only; definitions need the JSON
@@ -396,6 +399,11 @@ export default function ImportExportHub() {
           : Array.isArray(parsed.menus)
           ? parsed.menus
           : [];
+        const blogs =
+          storeAssets.blogsAndArticles?.blogs ||
+          parsed.blogsAndArticles?.blogs ||
+          parsed.blogs ||
+          [];
         const arts =
           storeAssets.blogsAndArticles?.articles ||
           parsed.blogsAndArticles?.articles ||
@@ -410,7 +418,7 @@ export default function ImportExportHub() {
 
         const themeFilesCount = theme?.files?.length || (theme?.activeTheme ? 1 : 0);
         const totalItems =
-          prods.length + themeFilesCount + cols.length + pgs.length + menus.length + arts.length +
+          prods.length + themeFilesCount + cols.length + pgs.length + menus.length + arts.length + blogs.length +
           metafieldCount + definitionCount;
 
         if (totalItems === 0) {
@@ -436,6 +444,7 @@ export default function ImportExportHub() {
           pagesCount: pgs.length,
           menusCount: menus.length,
           articlesCount: arts.length,
+          blogsCount: blogs.length,
           metafieldsCount: metafieldCount,
           definitionsCount: definitionCount,
           metafieldsValuesOnly: false,
@@ -1150,16 +1159,27 @@ export default function ImportExportHub() {
               {result?.message && !isImporting && (
                 <Banner
                   tone={result.success ? "success" : "critical"}
-                  title={result.success ? "Import Operation Succeeded" : "Import Failed"}
+                  title={
+                    result.success
+                      ? result.summary?.restoredLive
+                        ? "Direct Live Restore Succeeded"
+                        : "Backup Staged as Restore Point (Live Store Untouched)"
+                      : "Import Failed"
+                  }
                   action={
                     result.success && result.restorePoint ? (
                       <Link to={`/app/restore-points/${result.restorePoint.id}`} className="rv-btn rv-btn-primary rv-btn-sm">
-                        Inspect Imported Restore Point
+                        {result.summary?.restoredLive ? "View Restore Details" : "Inspect & Restore to Store"}
                       </Link>
                     ) : undefined
                   }
                 >
                   {result.message}
+                  {result.success && !result.summary?.restoredLive && (
+                    <div style={{ marginTop: "6px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                      Your live Shopify store has not been modified yet. Click <strong>&quot;Inspect &amp; Restore to Store&quot;</strong> to review and selectively restore pages, menus, or collections live.
+                    </div>
+                  )}
                 </Banner>
               )}
 
@@ -1277,9 +1297,12 @@ export default function ImportExportHub() {
                       </strong>
                     </div>
                     <div style={{ padding: "10px", borderRadius: "6px", background: "var(--rv-surface-subdued)", textAlign: "center" }}>
-                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>Articles</span>
-                      <strong style={{ fontSize: "16px", color: fileStats.articlesCount > 0 ? "var(--rv-text)" : "var(--rv-text-subdued)" }}>
+                      <span style={{ fontSize: "11px", color: "var(--rv-text-subdued)", display: "block" }}>
+                        {fileStats.blogsCount > 0 ? "Articles / Blogs" : "Articles"}
+                      </span>
+                      <strong style={{ fontSize: "16px", color: (fileStats.articlesCount > 0 || fileStats.blogsCount > 0) ? "var(--rv-text)" : "var(--rv-text-subdued)" }}>
                         {fileStats.articlesCount}
+                        {fileStats.blogsCount > 0 ? ` (${fileStats.blogsCount}b)` : ""}
                       </strong>
                     </div>
                     <div style={{ padding: "10px", borderRadius: "6px", background: "var(--rv-surface-subdued)", textAlign: "center" }}>
@@ -1360,16 +1383,27 @@ export default function ImportExportHub() {
                     <div style={{ marginBottom: "16px" }}>
                       <Banner
                         tone={result.success ? "success" : "critical"}
-                        title={result.success ? "Import Operation Succeeded" : "Import Failed"}
+                        title={
+                          result.success
+                            ? result.summary?.restoredLive
+                              ? "Direct Live Restore Succeeded"
+                              : "Backup Staged as Restore Point (Live Store Untouched)"
+                            : "Import Failed"
+                        }
                         action={
                           result.success && result.restorePoint ? (
                             <Link to={`/app/restore-points/${result.restorePoint.id}`} className="rv-btn rv-btn-primary rv-btn-sm">
-                              Inspect Imported Restore Point
+                              {result.summary?.restoredLive ? "View Restore Details" : "Inspect & Restore to Store"}
                             </Link>
                           ) : undefined
                         }
                       >
                         {result.message}
+                        {result.success && !result.summary?.restoredLive && (
+                          <div style={{ marginTop: "6px", fontSize: "13px", color: "var(--rv-text-subdued)" }}>
+                            Your live Shopify store has not been modified yet. Click <strong>&quot;Inspect &amp; Restore to Store&quot;</strong> to review and selectively restore pages, menus, or collections live.
+                          </div>
+                        )}
                       </Banner>
                     </div>
                   )}

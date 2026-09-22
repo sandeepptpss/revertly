@@ -527,7 +527,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || target.handle || "collection",
           productTitle: `Collection: ${target.title}`,
           status: res.success ? "SUCCESS" : "FAILED",
-          errorMessage: res.error || null,
+          errorMessage: res.message || res.error || null,
         });
       }
 
@@ -548,10 +548,24 @@ export const action = async ({ request, params }) => {
         details: { total: cols.length, successCount, failedCount },
         request,
       });
-      return {
-        success: successCount > 0,
-        message: `Restored ${successCount} collections successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
-      };
+
+      if (failedCount === 0) {
+        return {
+          success: true,
+          message: `All ${successCount} collections successfully restored.`,
+        };
+      } else if (successCount > 0) {
+        return {
+          success: false,
+          isPartial: true,
+          message: `Restored ${successCount} collections, but ${failedCount} collection(s) failed.`,
+        };
+      } else {
+        return {
+          success: false,
+          message: `Failed to restore collections (${failedCount} failed).`,
+        };
+      }
     }
 
     if (intent === "restore_all_pages") {
@@ -575,7 +589,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || target.handle || "page",
           productTitle: `Page: ${target.title}`,
           status: res.success ? "SUCCESS" : "FAILED",
-          errorMessage: res.error || null,
+          errorMessage: res.message || res.error || null,
         });
       }
 
@@ -596,10 +610,24 @@ export const action = async ({ request, params }) => {
         details: { total: pages.length, successCount, failedCount },
         request,
       });
-      return {
-        success: successCount > 0,
-        message: `Restored ${successCount} pages successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
-      };
+
+      if (failedCount === 0) {
+        return {
+          success: true,
+          message: `All ${successCount} pages successfully restored.`,
+        };
+      } else if (successCount > 0) {
+        return {
+          success: false,
+          isPartial: true,
+          message: `Restored ${successCount} pages, but ${failedCount} page(s) failed.`,
+        };
+      } else {
+        return {
+          success: false,
+          message: `Failed to restore pages (${failedCount} failed).`,
+        };
+      }
     }
 
     if (intent === "restore_menu") {
@@ -625,7 +653,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || String(menuIndex),
           productTitle: `Menu: ${target.title}`,
           status: res.success ? "SUCCESS" : "FAILED",
-          errorMessage: res.error || (res.success ? null : "Failed to restore menu"),
+          errorMessage: res.message || res.error || (res.success ? null : "Failed to restore menu"),
         }],
       });
 
@@ -662,7 +690,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || target.handle || "menu",
           productTitle: `Menu: ${target.title}`,
           status: res.success ? "SUCCESS" : "FAILED",
-          errorMessage: res.error || null,
+          errorMessage: res.message || res.error || null,
         });
       }
 
@@ -683,10 +711,24 @@ export const action = async ({ request, params }) => {
         details: { total: menus.length, successCount, failedCount },
         request,
       });
-      return {
-        success: successCount > 0,
-        message: `Restored ${successCount} menus successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
-      };
+
+      if (failedCount === 0) {
+        return {
+          success: true,
+          message: `All ${successCount} navigation menus successfully restored to Shopify.`,
+        };
+      } else if (successCount > 0) {
+        return {
+          success: false,
+          isPartial: true,
+          message: `Restored ${successCount} menus, but ${failedCount} menu(s) failed. Check details in Rollback History.`,
+        };
+      } else {
+        return {
+          success: false,
+          message: `Failed to restore navigation menus (${failedCount} failed).`,
+        };
+      }
     }
 
     if (intent === "restore_metafields" || intent === "restore_metafield_definitions") {
@@ -792,7 +834,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || String(target.title),
           productTitle: `Article: ${target.title}`,
           status: res?.success ? "SUCCESS" : "FAILED",
-          errorMessage: res?.error || null,
+          errorMessage: res?.message || res?.error || null,
         });
       }
 
@@ -813,10 +855,24 @@ export const action = async ({ request, params }) => {
         details: { total: articles.length, successCount, failedCount },
         request,
       });
-      return {
-        success: successCount > 0,
-        message: `Restored ${successCount} articles successfully${failedCount > 0 ? ` (${failedCount} failed)` : ""}.`,
-      };
+
+      if (failedCount === 0) {
+        return {
+          success: true,
+          message: `All ${successCount} articles successfully restored.`,
+        };
+      } else if (successCount > 0) {
+        return {
+          success: false,
+          isPartial: true,
+          message: `Restored ${successCount} articles, but ${failedCount} article(s) failed.`,
+        };
+      } else {
+        return {
+          success: false,
+          message: `Failed to restore articles (${failedCount} failed).`,
+        };
+      }
     }
 
     if (
@@ -1395,15 +1451,22 @@ export default function RestorePointDetail() {
       {/* ── Generic Message Banner ── */}
       {result?.message && !result?.isDraft && !result?.isLive && (
         <Banner
-          tone={result.success ? "success" : "critical"}
-          title={result.success ? "Operation Succeeded" : "Operation Warning"}
+          tone={result.success ? "success" : result.isPartial ? "warning" : "critical"}
+          title={
+            result.success
+              ? "Operation Succeeded"
+              : result.isPartial
+              ? "Partial Restoration Completed"
+              : "Operation Warning"
+          }
         >
           {result.message}
         </Banner>
       )}
 
       {/* ── Post-Restore Delight & 5-Star Review Trigger ── */}
-      {((result?.success && result?.message) || (lastJob?.status === "COMPLETED")) && (
+      {((result?.success && !result?.isPartial && result?.message) ||
+        (lastJob?.status === "COMPLETED" && !result?.isPartial)) && (
         <div
           style={{
             background: "linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 50%, #eff6ff 100%)",

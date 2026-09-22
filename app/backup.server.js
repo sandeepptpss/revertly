@@ -130,7 +130,7 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
                       content
                     }
                     ... on OnlineStoreThemeFileBodyBase64 {
-                      encodedContent
+                      contentBase64
                     }
                   }
                 }
@@ -210,7 +210,7 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
                       content
                     }
                     ... on OnlineStoreThemeFileBodyBase64 {
-                      encodedContent
+                      contentBase64
                     }
                   }
                 }
@@ -228,7 +228,7 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
 
     const files = rawFiles.map((f) => {
       const textContent = f.body?.content;
-      const base64Content = f.body?.encodedContent;
+      const base64Content = f.body?.contentBase64 || f.body?.encodedContent;
       const isBase64 = !textContent && typeof base64Content === "string";
       const content = textContent ?? base64Content ?? "";
       return {
@@ -1296,21 +1296,26 @@ export async function fetchMenusBackup(admin) {
     const res = await admin.graphql(
       `#graphql
       query getMenus {
-        menus(first: 25) {
+        menus(first: 50) {
           nodes {
             id
             title
             handle
+            isDefault
             items {
               id
               title
               url
               type
+              resourceId
+              tags
               items {
                 id
                 title
                 url
                 type
+                resourceId
+                tags
               }
             }
           }
@@ -1334,119 +1339,88 @@ export async function restoreMenu(admin, menu) {
       return { success: false, message: "Invalid menu payload." };
     }
 
-    const formatItems = (items) => {
+    const formatItems = (items, forceHttpFallback = false) => {
       if (!Array.isArray(items)) return [];
       return items.map((item) => {
+        let type = item.type || "HTTP";
+        const resourceId = item.resourceId || undefined;
+        const url = item.url || "#";
+
+        // Resource types require a valid resourceId in Shopify GraphQL API.
+        // If resourceId is missing or if forceHttpFallback is set, downgrade to HTTP
+        // so link creation succeeds reliably without throwing schema or existence errors.
+        const resourceTypes = [
+          "CUSTOMER_ACCOUNT_PAGE",
+          "COLLECTION",
+          "PRODUCT",
+          "PAGE",
+          "BLOG",
+          "ARTICLE",
+          "SHOP_POLICY",
+          "METAOBJECT",
+        ];
+        if (forceHttpFallback || (resourceTypes.includes(type) && !resourceId)) {
+          type = "HTTP";
+        }
+
         const entry = {
           title: item.title,
-          type: item.type || "HTTP",
-          url: item.url || "#",
+          type,
+          url,
         };
+        if (resourceId && type !== "HTTP") {
+          entry.resourceId = resourceId;
+        }
+        if (Array.isArray(item.tags) && item.tags.length > 0) {
+          entry.tags = item.tags;
+        }
         if (Array.isArray(item.items) && item.items.length > 0) {
-          entry.items = formatItems(item.items);
+          entry.items = formatItems(item.items, forceHttpFallback);
         }
         return entry;
       });
     };
 
-    const formattedItems = formatItems(menu.items);
+    const handle =
+      menu.handle ||
+      menu.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") ||
+      "menu";
 
-    // 1. If menu.id is present, try updating the existing menu
-    if (menu.id) {
-      try {
-        const updateRes = await admin.graphql(
-          `#graphql
-          mutation menuUpdate($id: ID!, $title: String!, $handle: String, $items: [MenuItemUpdateInput!]!) {
-            menuUpdate(id: $id, title: $title, handle: $handle, items: $items) {
-              menu {
-                id
-                title
-                handle
-              }
-              userErrors {
-                field
-                message
-              }
+    let formattedItems = formatItems(menu.items, false);
+
+    const executeUpdate = async (menuId, itemsToUse) => {
+      const updateRes = await admin.graphql(
+        `#graphql
+        mutation menuUpdate($id: ID!, $title: String!, $handle: String, $items: [MenuItemUpdateInput!]!) {
+          menuUpdate(id: $id, title: $title, handle: $handle, items: $items) {
+            menu {
+              id
+              title
+              handle
             }
-          }`,
-          {
-            variables: {
-              id: menu.id,
-              title: menu.title,
-              handle: menu.handle,
-              items: formattedItems,
-            },
+            userErrors {
+              field
+              message
+            }
           }
-        );
-        const updateJson = await updateRes.json();
-        const errors = updateJson.data?.menuUpdate?.userErrors || [];
-        if (errors.length === 0 && updateJson.data?.menuUpdate?.menu?.id) {
-          return { success: true, mode: "updated", menu: updateJson.data.menuUpdate.menu };
+        }`,
+        {
+          variables: {
+            id: menuId,
+            title: menu.title,
+            handle,
+            items: itemsToUse,
+          },
         }
-      } catch (e) {
-        // Fall back to handle matching or create
-      }
-    }
+      );
+      const updateJson = await updateRes.json();
+      return updateJson;
+    };
 
-    // 2. Try finding live menu by handle
-    if (menu.handle) {
-      try {
-        const menusRes = await admin.graphql(
-          `#graphql
-          query findMenuByHandle {
-            menus(first: 25) {
-              nodes {
-                id
-                title
-                handle
-              }
-            }
-          }`
-        );
-        const menusJson = await menusRes.json();
-        const liveMenu = menusJson.data?.menus?.nodes?.find((m) => m.handle === menu.handle);
-
-        if (liveMenu?.id) {
-          const updateRes = await admin.graphql(
-            `#graphql
-            mutation menuUpdateByHandle($id: ID!, $title: String!, $handle: String, $items: [MenuItemUpdateInput!]!) {
-              menuUpdate(id: $id, title: $title, handle: $handle, items: $items) {
-                menu {
-                  id
-                  title
-                  handle
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }`,
-            {
-              variables: {
-                id: liveMenu.id,
-                title: menu.title,
-                handle: menu.handle,
-                items: formattedItems,
-              },
-            }
-          );
-          const updateJson = await updateRes.json();
-          const errors = updateJson.data?.menuUpdate?.userErrors || [];
-          if (errors.length === 0 && updateJson.data?.menuUpdate?.menu?.id) {
-            return { success: true, mode: "updated", menu: updateJson.data.menuUpdate.menu };
-          }
-        }
-      } catch (findErr) {
-        // Continue to create
-      }
-    }
-
-    // 3. Create menu if update not possible
-    try {
+    const executeCreate = async (itemsToUse) => {
       const createRes = await admin.graphql(
         `#graphql
-        mutation menuCreate($title: String!, $handle: String, $items: [MenuItemCreateInput!]!) {
+        mutation menuCreate($title: String!, $handle: String!, $items: [MenuItemCreateInput!]!) {
           menuCreate(title: $title, handle: $handle, items: $items) {
             menu {
               id
@@ -1462,17 +1436,111 @@ export async function restoreMenu(admin, menu) {
         {
           variables: {
             title: menu.title,
-            handle: menu.handle,
-            items: formattedItems,
+            handle,
+            items: itemsToUse,
           },
         }
       );
       const createJson = await createRes.json();
-      const errors = createJson.data?.menuCreate?.userErrors || [];
-      if (errors.length === 0 && createJson.data?.menuCreate?.menu?.id) {
+      return createJson;
+    };
+
+    // 1. If menu.id is present, try updating the existing menu
+    if (menu.id) {
+      try {
+        let updateJson = await executeUpdate(menu.id, formattedItems);
+        let errors = updateJson.data?.menuUpdate?.userErrors || [];
+
+        // If failure was due to a broken/deleted resource link, retry with HTTP fallback
+        if (
+          errors.length > 0 &&
+          errors.some((e) =>
+            /not found|must exist|couldn't create link/i.test(e.message || "")
+          )
+        ) {
+          formattedItems = formatItems(menu.items, true);
+          updateJson = await executeUpdate(menu.id, formattedItems);
+          errors = updateJson.data?.menuUpdate?.userErrors || [];
+        }
+
+        if (errors.length === 0 && updateJson.data?.menuUpdate?.menu?.id) {
+          return { success: true, mode: "updated", menu: updateJson.data.menuUpdate.menu };
+        }
+      } catch (e) {
+        // Fall back to handle matching or create
+      }
+    }
+
+    // 2. Try finding live menu by handle
+    if (handle) {
+      try {
+        const menusRes = await admin.graphql(
+          `#graphql
+          query findMenuByHandle {
+            menus(first: 50) {
+              nodes {
+                id
+                title
+                handle
+              }
+            }
+          }`
+        );
+        const menusJson = await menusRes.json();
+        const liveMenu = menusJson.data?.menus?.nodes?.find((m) => m.handle === handle);
+
+        if (liveMenu?.id) {
+          let updateJson = await executeUpdate(liveMenu.id, formattedItems);
+          let errors = updateJson.data?.menuUpdate?.userErrors || [];
+
+          if (
+            errors.length > 0 &&
+            errors.some((e) =>
+              /not found|must exist|couldn't create link/i.test(e.message || "")
+            )
+          ) {
+            formattedItems = formatItems(menu.items, true);
+            updateJson = await executeUpdate(liveMenu.id, formattedItems);
+            errors = updateJson.data?.menuUpdate?.userErrors || [];
+          }
+
+          if (errors.length === 0 && updateJson.data?.menuUpdate?.menu?.id) {
+            return { success: true, mode: "updated", menu: updateJson.data.menuUpdate.menu };
+          }
+        }
+      } catch (findErr) {
+        // Continue to create
+      }
+    }
+
+    // 3. Create menu if update not possible
+    try {
+      let createJson = await executeCreate(formattedItems);
+      let errors = createJson.data?.menuCreate?.userErrors || [];
+      let gqlErrors = createJson.errors || [];
+
+      // If failure was due to broken/deleted resource link, retry with HTTP fallback
+      if (
+        errors.length > 0 &&
+        errors.some((e) =>
+          /not found|must exist|couldn't create link/i.test(e.message || "")
+        )
+      ) {
+        formattedItems = formatItems(menu.items, true);
+        createJson = await executeCreate(formattedItems);
+        errors = createJson.data?.menuCreate?.userErrors || [];
+        gqlErrors = createJson.errors || [];
+      }
+
+      if (errors.length === 0 && gqlErrors.length === 0 && createJson.data?.menuCreate?.menu?.id) {
         return { success: true, mode: "created", menu: createJson.data.menuCreate.menu };
       }
-      return { success: false, message: errors.map((e) => e.message).join(", ") || "Failed to create menu." };
+
+      const errMsg =
+        errors.map((e) => e.message).join(", ") ||
+        gqlErrors.map((e) => e.message).join(", ") ||
+        "Failed to create menu.";
+      return { success: false, message: errMsg };
     } catch (createErr) {
       return { success: false, message: createErr?.message || "Failed to restore menu." };
     }
@@ -1506,8 +1574,8 @@ export async function fetchBlogsAndArticlesBackup(admin) {
                 id
                 title
                 handle
-                body: bodyHtml
-                summary: summaryHtml
+                body
+                summary
                 tags
                 templateSuffix
                 isPublished
@@ -1556,6 +1624,66 @@ export async function fetchBlogsAndArticlesBackup(admin) {
 }
 
 /**
+ * Restores or ensures a blog exists on the store.
+ */
+export async function restoreBlog(admin, blog) {
+  if (!blog || !blog.title) {
+    return { success: false, message: "Invalid blog data." };
+  }
+  try {
+    const bRes = await admin.graphql(
+      `#graphql
+      query getBlogsForRestore {
+        blogs(first: 50) {
+          nodes { id title handle }
+        }
+      }`
+    );
+    const bJson = await bRes.json();
+    const liveBlogs = bJson.data?.blogs?.nodes || [];
+    const matched = liveBlogs.find(
+      (b) =>
+        (blog.handle && b.handle === blog.handle) ||
+        (blog.title && b.title.toLowerCase() === blog.title.toLowerCase())
+    );
+    if (matched) {
+      return { success: true, blog: matched, mode: "existing" };
+    }
+    const createRes = await admin.graphql(
+      `#graphql
+      mutation blogCreate($blog: BlogCreateInput!) {
+        blogCreate(blog: $blog) {
+          blog { id title handle }
+          userErrors { field message }
+        }
+      }`,
+      {
+        variables: {
+          blog: {
+            title: blog.title,
+            handle: blog.handle || undefined,
+            commentPolicy: blog.commentPolicy || "MODERATED",
+            templateSuffix: blog.templateSuffix || undefined,
+          },
+        },
+      }
+    );
+    const createJson = await createRes.json();
+    const userErrors = createJson.data?.blogCreate?.userErrors || [];
+    if (userErrors.length > 0) {
+      return { success: false, message: userErrors.map((e) => e.message).join(", ") };
+    }
+    return {
+      success: true,
+      blog: createJson.data?.blogCreate?.blog,
+      mode: "created",
+    };
+  } catch (err) {
+    return { success: false, message: err?.message || "Failed to restore blog" };
+  }
+}
+
+/**
  * Restores or recreates a blog article. If the article still exists, updates it;
  * if deleted, recreates it within its blog.
  */
@@ -1581,12 +1709,13 @@ export async function restoreArticle(admin, article) {
               id: article.id,
               article: {
                 title: article.title,
-                bodyHtml: article.body || article.bodyHtml || "",
-                summaryHtml: article.summary || article.summaryHtml || "",
+                body: article.body || article.bodyHtml || "",
+                summary: article.summary || article.summaryHtml || "",
                 handle: article.handle || undefined,
                 templateSuffix: article.templateSuffix !== undefined ? (article.templateSuffix || "") : undefined,
                 isPublished: article.isPublished ?? true,
                 tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
+                author: article.author ? { name: typeof article.author === "object" ? (article.author.name || "Revertly") : String(article.author) } : undefined,
               },
             },
           }
@@ -1659,6 +1788,8 @@ export async function restoreArticle(admin, article) {
       return { success: false, message: "No target blog found to recreate this article in." };
     }
 
+    const authorName = typeof article.author === "object" ? (article.author?.name || "Revertly") : (String(article.author || "Revertly").trim() || "Revertly");
+
     const createRes = await admin.graphql(
       `#graphql
       mutation articleCreate($article: ArticleCreateInput!) {
@@ -1672,12 +1803,13 @@ export async function restoreArticle(admin, article) {
           article: {
             blogId: targetBlogId,
             title: article.title,
-            bodyHtml: article.body || article.bodyHtml || "",
-            summaryHtml: article.summary || article.summaryHtml || "",
+            body: article.body || article.bodyHtml || "",
+            summary: article.summary || article.summaryHtml || "",
             handle: article.handle || undefined,
             templateSuffix: article.templateSuffix || undefined,
             isPublished: article.isPublished ?? true,
             tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
+            author: { name: authorName },
           },
         },
       }
@@ -3619,12 +3751,13 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
     const collectionCount = collections.length;
     const pageCount = pages.length;
     const menuCount = menus.length;
+    const blogCount = Array.isArray(blogsAndArticles.blogs) ? blogsAndArticles.blogs.length : 0;
     const articleCount = Array.isArray(blogsAndArticles.articles) ? blogsAndArticles.articles.length : 0;
     const metafieldCount = metafields?.counts?.metafields || 0;
     const metafieldDefinitionCount = metafields?.counts?.definitions || 0;
 
     const totalItems =
-      productCount + themeCount + collectionCount + pageCount + menuCount + articleCount +
+      productCount + themeCount + collectionCount + pageCount + menuCount + articleCount + blogCount +
       metafieldCount + metafieldDefinitionCount;
     if (totalItems === 0) {
       return {
@@ -3641,7 +3774,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       collectionCount > 0 && "COLLECTIONS",
       pageCount > 0 && "PAGES",
       menuCount > 0 && "MENUS",
-      articleCount > 0 && "BLOGS",
+      (articleCount > 0 || blogCount > 0) && "BLOGS",
       (metafieldCount > 0 || metafieldDefinitionCount > 0) && "METAFIELDS",
     ].filter(Boolean);
 
@@ -3733,6 +3866,13 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         if (res.success) liveMenus++;
       }
 
+      // Restore blogs
+      let liveBlogs = 0;
+      for (const blog of blogsAndArticles.blogs || []) {
+        const res = await restoreBlog(admin, blog);
+        if (res.success) liveBlogs++;
+      }
+
       // Restore articles
       for (const art of blogsAndArticles.articles || []) {
         const res = await restoreArticle(admin, art);
@@ -3816,6 +3956,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         collections: liveCollections,
         pages: livePages,
         menus: liveMenus,
+        blogs: liveBlogs,
         articles: liveArticles,
         metafields: liveMetafields,
         metafieldDetail: metafieldRestore?.summary || null,
@@ -3827,6 +3968,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       if (liveCollections > 0) resultParts.push(`${liveCollections} collections restored`);
       if (livePages > 0) resultParts.push(`${livePages} pages restored`);
       if (liveMenus > 0) resultParts.push(`${liveMenus} menus restored`);
+      if (liveBlogs > 0) resultParts.push(`${liveBlogs} blogs verified/restored`);
       if (liveArticles > 0) resultParts.push(`${liveArticles} articles restored`);
       if (liveMetafields > 0) resultParts.push(`${liveMetafields} metafields restored`);
       if (metafieldRestore?.summary?.metafieldsSkipped > 0) {
