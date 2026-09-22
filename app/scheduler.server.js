@@ -10,6 +10,7 @@ import { syncRestorePointToCloud } from "./cloudSync.server.js";
 import { runDueServiceChecks } from "./uptime.server.js";
 import { runDueQaSuites } from "./qa.server.js";
 import { checkFeatureAccess } from "./billing.server.js";
+import { sweepStalledSyncJobs } from "./sync.server.js";
 
 /**
  * Computes the next scheduled backup timestamp based on cadence and UTC preferred time
@@ -249,7 +250,7 @@ let schedulerTimer = null;
  * Exported so the secured cron endpoints can drive the same code path.
  */
 export async function runAllDueJobs() {
-  const [backups, uptime, qa] = await Promise.all([
+  const [backups, uptime, qa, stalledSyncJobs] = await Promise.all([
     withJobLock("backups:sweep", 30 * 60 * 1000, () => runDueAutomatedBackups()).catch((err) => ({
       error: err?.message || String(err),
     })),
@@ -259,9 +260,12 @@ export async function runAllDueJobs() {
     withJobLock("qa:sweep", 30 * 60 * 1000, () => runDueQaSuites()).catch((err) => ({
       error: err?.message || String(err),
     })),
+    withJobLock("sync:sweep-stalled", 10 * 60 * 1000, () => sweepStalledSyncJobs()).catch((err) => ({
+      error: err?.message || String(err),
+    })),
   ]);
 
-  return { backups, uptime, qa };
+  return { backups, uptime, qa, stalledSyncJobs };
 }
 
 /**

@@ -213,6 +213,54 @@ function toSerializablePayload(jobData) {
   };
 }
 
+// In-process fallback concurrency limiter to prevent event loop starvation and heap bloat
+const MAX_CONCURRENT_FALLBACK = 2;
+let activeFallbackCount = 0;
+const fallbackQueue = [];
+
+function scheduleFallbackTask(task) {
+  fallbackQueue.push(task);
+  drainFallbackQueue();
+}
+
+function drainFallbackQueue() {
+  while (activeFallbackCount < MAX_CONCURRENT_FALLBACK && fallbackQueue.length > 0) {
+    const nextTask = fallbackQueue.shift();
+    activeFallbackCount++;
+    (async () => {
+      try {
+        await nextTask();
+      } catch (err) {
+        console.error("[Queue Fallback] Unhandled error during fallback task execution:", err);
+      } finally {
+        activeFallbackCount--;
+        // Yield to event loop and GC breathing room before draining next task
+        setTimeout(() => {
+          if (typeof global.gc === "function") {
+            try { global.gc(); } catch {}
+          }
+          drainFallbackQueue();
+        }, 100);
+      }
+    })();
+  }
+}
+
+/**
+ * Returns queue health and engine telemetry.
+ */
+export function getQueueHealth() {
+  return {
+    engine: redisAvailable ? "bullmq" : "in-process",
+    redisAvailable,
+    isConnected: redisAvailable && Boolean(redisClient),
+    lastRedisCheckAt,
+    maxBatchAttempts: MAX_BATCH_ATTEMPTS,
+    activeFallbackWorkers: activeFallbackCount,
+    pendingFallbackJobs: fallbackQueue.length,
+  };
+}
+
 /**
  * Enqueues a catalog sync batch job into BullMQ or triggers the resilient runner.
  */
@@ -233,9 +281,8 @@ export async function enqueueSyncBatch(jobData, processorFn = null) {
     });
   }
 
-  // Resilient fallback: execute asynchronously on next tick without blocking the
-  // web request, retrying transient failures with the same budget BullMQ would use.
-  setImmediate(async () => {
+  // Resilient fallback: bounded concurrency queue with retry budget matching BullMQ
+  scheduleFallbackTask(async () => {
     const runBatch =
       typeof processorFn === "function"
         ? processorFn
@@ -244,13 +291,16 @@ export async function enqueueSyncBatch(jobData, processorFn = null) {
     for (let attempt = 1; attempt <= MAX_BATCH_ATTEMPTS; attempt++) {
       try {
         await runBatch(payload, null, { attempt, maxAttempts: MAX_BATCH_ATTEMPTS });
+        syncEvents.emit("jobCompleted", payload);
         return;
       } catch (runErr) {
         if (attempt >= MAX_BATCH_ATTEMPTS) {
-          console.error("[Queue Fallback] Batch failed after all retries:", runErr?.message || runErr);
+          const errorMsg = runErr?.message || String(runErr);
+          console.error("[Queue Fallback] Batch failed after all retries:", errorMsg);
+          syncEvents.emit("jobFailed", { job: payload, error: errorMsg });
           return;
         }
-        // Exponential backoff mirroring the BullMQ defaultJobOptions above.
+        // Exponential backoff mirroring BullMQ defaultJobOptions
         await new Promise((r) => setTimeout(r, 2000 * 2 ** (attempt - 1)));
       }
     }

@@ -160,7 +160,11 @@ export default function InitialSnapshot() {
               <RefreshCwIcon size={18} style={{ color: "var(--rv-primary)", animation: "spin 2s linear infinite" }} />
               <span>Catalog Background Sync Running</span>
             </h3>
-            <span className="rv-badge rv-badge-info">High-Volume Queue Active</span>
+            <span className="rv-badge rv-badge-info">
+              {currentSyncStatus?.queueEngine === "bullmq"
+                ? "BullMQ (Redis) Queue"
+                : "In-Process Resilient Queue"}
+            </span>
           </div>
           <div className="rv-card-body">
             <div style={{ marginBottom: "12px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -197,7 +201,7 @@ export default function InitialSnapshot() {
             </div>
 
             <p style={{ margin: "0 0 16px", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-              Large catalogs (30,000+ products) are automatically segmented into memory-safe batches of 50 products to prevent Node.js heap overflow and web request timeouts. You can safely navigate away; syncing will continue in the background.
+              Large catalogs (30,000+ products) are automatically segmented into memory-safe batches of 50 products to prevent Node.js heap overflow and web request timeouts. Engine: {currentSyncStatus?.queueEngine === "bullmq" ? "BullMQ (Redis distributed workers)" : "In-process bounded queue with throttled batching"}. You can safely navigate away; syncing will continue in the background.
             </p>
 
             <fetcher.Form method="POST">

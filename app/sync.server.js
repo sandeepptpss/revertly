@@ -16,7 +16,7 @@ import prisma from "./db.server.js";
 import { unauthenticated } from "./shopify.server.js";
 import { buildSnapshot } from "./monitor.server.js";
 import { getEffectiveLimits } from "./billing.server.js";
-import { enqueueSyncBatch, syncEvents, MAX_BATCH_ATTEMPTS } from "./queue.server.js";
+import { enqueueSyncBatch, syncEvents, MAX_BATCH_ATTEMPTS, getQueueHealth } from "./queue.server.js";
 import { createMultiResourceRestorePoint } from "./backup.server.js";
 
 export const DEFAULT_BATCH_SIZE = 50;
@@ -268,8 +268,11 @@ export async function processCatalogSyncBatch(jobData, providedAdmin = null, att
       }
     }
 
-    // 5. Transform products & upsert snapshots in chunked batches
+    // 5. Transform products & upsert snapshots in chunked database transactions
     let batchSaved = 0;
+    const CHUNK_SIZE = 10;
+    const upsertOps = [];
+
     for (const edge of edges) {
       const product = edge.node;
       if (!product || !product.id) continue;
@@ -282,30 +285,41 @@ export async function processCatalogSyncBatch(jobData, providedAdmin = null, att
       const snapshot = buildSnapshot(product);
       const numericId = String(product.id).replace("gid://shopify/Product/", "");
 
-      await prisma.productSnapshot.upsert({
-        where: { shop_productId: { shop, productId: numericId } },
-        create: {
-          shop,
-          productId: numericId,
-          title: product.title || "",
-          status: product.status || "ACTIVE",
-          vendor: product.vendor || "",
-          productType: product.productType || "",
-          tags: Array.isArray(product.tags) ? product.tags.join(", ") : product.tags || "",
-          bodyHtml: product.bodyHtml || "",
-          handle: product.handle || "",
-          publishedAt: product.publishedAt ? new Date(product.publishedAt) : null,
-          snapshotData: snapshot,
-        },
-        update: {
-          title: product.title || "",
-          status: product.status || "ACTIVE",
-          snapshotData: snapshot,
-        },
-      });
+      upsertOps.push(
+        prisma.productSnapshot.upsert({
+          where: { shop_productId: { shop, productId: numericId } },
+          create: {
+            shop,
+            productId: numericId,
+            title: product.title || "",
+            status: product.status || "ACTIVE",
+            vendor: product.vendor || "",
+            productType: product.productType || "",
+            tags: Array.isArray(product.tags) ? product.tags.join(", ") : product.tags || "",
+            bodyHtml: product.bodyHtml || "",
+            handle: product.handle || "",
+            publishedAt: product.publishedAt ? new Date(product.publishedAt) : null,
+            snapshotData: snapshot,
+          },
+          update: {
+            title: product.title || "",
+            status: product.status || "ACTIVE",
+            snapshotData: snapshot,
+          },
+        })
+      );
 
       batchSaved++;
     }
+
+    // Execute in bounded chunks of 10 to minimize MySQL lock contention and keep heap bounded
+    for (let i = 0; i < upsertOps.length; i += CHUNK_SIZE) {
+      const chunk = upsertOps.slice(i, i + CHUNK_SIZE);
+      await prisma.$transaction(chunk);
+    }
+
+    // Dereference array to accelerate V8 garbage collection
+    edges.length = 0;
 
     const totalProcessed = processedSoFar + batchSaved;
 
@@ -444,6 +458,8 @@ export async function getCatalogSyncStatus(shop, jobId = null) {
 
   const totalSnapshots = await prisma.productSnapshot.count({ where: { shop } });
 
+  const queueHealth = getQueueHealth();
+
   if (!job) {
     return {
       active: false,
@@ -451,6 +467,8 @@ export async function getCatalogSyncStatus(shop, jobId = null) {
       processedCount: 0,
       totalCount: totalSnapshots,
       percent: 100,
+      queueEngine: queueHealth.engine,
+      redisAvailable: queueHealth.redisAvailable,
     };
   }
 
@@ -469,7 +487,29 @@ export async function getCatalogSyncStatus(shop, jobId = null) {
     errorMessage: job.errorMessage,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
+    queueEngine: queueHealth.engine,
+    redisAvailable: queueHealth.redisAvailable,
   };
+}
+
+/**
+ * Sweeps orphaned or stalled catalog sync jobs older than 15 minutes.
+ * Can be run periodically by the scheduler.
+ */
+export async function sweepStalledSyncJobs(maxAgeMinutes = 15) {
+  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+  const stalled = await prisma.catalogSyncJob.updateMany({
+    where: {
+      status: { in: ["PENDING", "PROCESSING"] },
+      updatedAt: { lte: cutoff },
+    },
+    data: {
+      status: "FAILED",
+      errorMessage: `Sync job stalled or timed out after ${maxAgeMinutes} minutes without progress.`,
+      completedAt: new Date(),
+    },
+  });
+  return stalled.count;
 }
 
 /**
