@@ -9,6 +9,7 @@ import { redirect } from "react-router";
 import prisma from "../db.server.js";
 import { getProvider, isProviderConfigured } from "../cloudSync.server.js";
 import { verifyOAuthState, exchangeCodeForTokens, fetchAccountEmail } from "../cloudOAuth.server.js";
+import { encrypt } from "../crypto.server.js";
 
 const returnToShopifyAdmin = (shop, params) => {
   const query = new URLSearchParams(params).toString();
@@ -83,17 +84,17 @@ export const loader = async ({ request, params }) => {
         cloudSyncProvider: provider.id,
         cloudSyncEmail: email,
         cloudSyncConnected: true,
-        cloudSyncAccessToken: tokens.accessToken,
-        cloudSyncRefreshToken: tokens.refreshToken,
+        cloudSyncAccessToken: encrypt(tokens.accessToken),
+        cloudSyncRefreshToken: encrypt(tokens.refreshToken),
         cloudSyncTokenExpiry: tokens.expiresAt,
       },
       update: {
         cloudSyncProvider: provider.id,
         cloudSyncEmail: email,
         cloudSyncConnected: true,
-        cloudSyncAccessToken: tokens.accessToken,
+        cloudSyncAccessToken: encrypt(tokens.accessToken),
         // Providers omit refresh_token on re-consent; keep the stored one.
-        ...(tokens.refreshToken ? { cloudSyncRefreshToken: tokens.refreshToken } : {}),
+        ...(tokens.refreshToken ? { cloudSyncRefreshToken: encrypt(tokens.refreshToken) } : {}),
         cloudSyncTokenExpiry: tokens.expiresAt,
       },
     });

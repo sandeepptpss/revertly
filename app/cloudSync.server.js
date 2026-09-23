@@ -10,6 +10,7 @@
  */
 import prisma from "./db.server.js";
 import { checkFeatureAccess } from "./billing.server.js";
+import { encrypt, decrypt } from "./crypto.server.js";
 
 const GOOGLE_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files";
 const GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
@@ -160,8 +161,8 @@ export async function serializeRestorePoint(restorePointId) {
  */
 async function getAccessToken(settings) {
   const provider = settings.cloudSyncProvider;
-  const accessToken = settings.cloudSyncAccessToken;
-  const refreshToken = settings.cloudSyncRefreshToken;
+  const accessToken = decrypt(settings.cloudSyncAccessToken);
+  const refreshToken = decrypt(settings.cloudSyncRefreshToken);
   const tokenExpiry = settings.cloudSyncTokenExpiry;
 
   // If token is still valid, return it
@@ -214,7 +215,7 @@ async function getAccessToken(settings) {
   await prisma.appSettings.update({
     where: { shop: settings.shop },
     data: {
-      cloudSyncAccessToken: newAccessToken,
+      cloudSyncAccessToken: encrypt(newAccessToken),
       cloudSyncTokenExpiry: new Date(Date.now() + expiresIn * 1000),
     },
   });

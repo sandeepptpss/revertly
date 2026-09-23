@@ -16,6 +16,7 @@
  */
 import prisma from "./db.server.js";
 import { checkMarketingBackupAccess } from "./billing.server.js";
+import { encrypt, decrypt } from "./crypto.server.js";
 import {
   MARKETING_PROVIDERS,
   MARKETING_UPGRADE_MESSAGE,
@@ -167,10 +168,10 @@ export async function saveMarketingConnection(shop, providerId, apiKey) {
 
   const data =
     provider.id === "KLAVIYO"
-      ? { klaviyoConnected: true, klaviyoApiKey: apiKey, klaviyoAccountName: verified.accountName }
+      ? { klaviyoConnected: true, klaviyoApiKey: encrypt(apiKey), klaviyoAccountName: verified.accountName }
       : {
           mailchimpConnected: true,
-          mailchimpApiKey: apiKey,
+          mailchimpApiKey: encrypt(apiKey),
           mailchimpServerPrefix: verified.serverPrefix,
           mailchimpAccountName: verified.accountName,
         };
@@ -415,7 +416,8 @@ export async function backupMarketingProvider(shop, providerId) {
   if (!access.allowed) return { success: false, message: MARKETING_UPGRADE_MESSAGE };
 
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const apiKey = provider.id === "KLAVIYO" ? settings?.klaviyoApiKey : settings?.mailchimpApiKey;
+  const rawKey = provider.id === "KLAVIYO" ? settings?.klaviyoApiKey : settings?.mailchimpApiKey;
+  const apiKey = decrypt(rawKey);
   const connected =
     provider.id === "KLAVIYO" ? settings?.klaviyoConnected : settings?.mailchimpConnected;
 
@@ -629,7 +631,8 @@ export async function restoreMarketingList(shop, listRowId) {
 
   const provider = getMarketingProvider(row.provider);
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const apiKey = row.provider === "KLAVIYO" ? settings?.klaviyoApiKey : settings?.mailchimpApiKey;
+  const rawKey = row.provider === "KLAVIYO" ? settings?.klaviyoApiKey : settings?.mailchimpApiKey;
+  const apiKey = decrypt(rawKey);
   if (!apiKey) return { success: false, message: `${provider.label} is not connected.` };
 
   const saved = row.listData || {};
@@ -718,7 +721,8 @@ export async function reimportMarketingSubscribers(shop, listRowId, { limit = 50
 
   const provider = getMarketingProvider(row.provider);
   const settings = await prisma.appSettings.findUnique({ where: { shop } });
-  const apiKey = row.provider === "KLAVIYO" ? settings?.klaviyoApiKey : settings?.mailchimpApiKey;
+  const rawKey = row.provider === "KLAVIYO" ? settings?.klaviyoApiKey : settings?.mailchimpApiKey;
+  const apiKey = decrypt(rawKey);
   if (!apiKey) return { success: false, message: `${provider.label} is not connected.` };
 
   const candidates = await prisma.marketingProfile.findMany({
@@ -860,12 +864,12 @@ export async function getMarketingStats(shop) {
     klaviyo: {
       connected: Boolean(settings?.klaviyoConnected),
       accountName: settings?.klaviyoAccountName || null,
-      simulated: isSimulatedKey(settings?.klaviyoApiKey),
+      simulated: isSimulatedKey(decrypt(settings?.klaviyoApiKey)),
     },
     mailchimp: {
       connected: Boolean(settings?.mailchimpConnected),
       accountName: settings?.mailchimpAccountName || null,
-      simulated: isSimulatedKey(settings?.mailchimpApiKey),
+      simulated: isSimulatedKey(decrypt(settings?.mailchimpApiKey)),
     },
     autoBackup: Boolean(settings?.marketingAutoBackup),
   };

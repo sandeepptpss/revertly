@@ -4,6 +4,7 @@ import { ServerRouter } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { applySecurityHeaders } from "./securityHeaders.server.js";
 import { initBackgroundScheduler } from "./scheduler.server.js";
 import { initQueue } from "./queue.server.js";
 import { processCatalogSyncBatch } from "./sync.server.js";
@@ -25,6 +26,7 @@ export default async function handleRequest(
   reactRouterContext,
 ) {
   addDocumentResponseHeaders(request, responseHeaders);
+  applySecurityHeaders(responseHeaders);
   const userAgent = request.headers.get("user-agent");
   const callbackName = isbot(userAgent ?? "") ? "onAllReady" : "onShellReady";
 
