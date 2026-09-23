@@ -41,6 +41,22 @@ import { PillNav } from "../components/PillNav.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
 import SafeRestoreModal from "../components/SafeRestoreModal.jsx";
 
+const cleanId = (val) => String(val || "").replace("gid://shopify/Product/", "").trim();
+
+function toVariantArray(val) {
+  if (Array.isArray(val)) return val;
+  if (Array.isArray(val?.nodes)) return val.nodes;
+  if (Array.isArray(val?.edges)) return val.edges.map((e) => e?.node).filter(Boolean);
+  return [];
+}
+
+function toMetafieldArray(val) {
+  if (Array.isArray(val)) return val;
+  if (Array.isArray(val?.nodes)) return val.nodes;
+  if (Array.isArray(val?.edges)) return val.edges.map((e) => e?.node).filter(Boolean);
+  return [];
+}
+
 export const loader = async ({ request, params }) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
@@ -75,16 +91,23 @@ export const loader = async ({ request, params }) => {
 
   const savedProducts = Array.isArray(restorePoint.snapshotData)
     ? restorePoint.snapshotData
+    : Array.isArray(restorePoint.snapshotData?.products)
+    ? restorePoint.snapshotData.products
     : [];
 
   // Find differences
-  const currentMap = Object.fromEntries(
-    currentSnapshots.map((s) => [s.productId, s.snapshotData]),
-  );
+  const currentMap = {};
+  for (const s of currentSnapshots) {
+    if (s.productId) {
+      currentMap[s.productId] = s.snapshotData;
+      currentMap[cleanId(s.productId)] = s.snapshotData;
+    }
+  }
 
   const differences = [];
   for (const saved of savedProducts) {
-    const current = currentMap[saved.productId];
+    const rawId = saved.productId || saved.id;
+    const current = currentMap[rawId] || currentMap[cleanId(rawId)];
     if (!current) continue;
 
     const fieldDiffs = [];
@@ -112,10 +135,10 @@ export const loader = async ({ request, params }) => {
     }
 
     // Check variants
-    const savedVariants = saved.snapshotData?.variants || saved.variants || [];
-    const currentVariants = current?.variants || [];
+    const savedVariants = toVariantArray(saved.snapshotData?.variants ?? saved.variants);
+    const currentVariants = toVariantArray(current?.variants);
     for (const sv of savedVariants) {
-      const cv = currentVariants.find((v) => v.id === sv.id);
+      const cv = currentVariants.find((v) => v && (v.id === sv.id || cleanId(v.id) === cleanId(sv.id)));
       if (!cv) continue;
       for (const vf of ["price", "compareAtPrice", "sku"]) {
         if (String(sv[vf] ?? "") !== String(cv[vf] ?? "")) {
@@ -129,10 +152,10 @@ export const loader = async ({ request, params }) => {
     }
 
     // Check metafields
-    const savedMetafields = saved.snapshotData?.metafields || saved.metafields || [];
-    const currentMetafields = current?.metafields || [];
+    const savedMetafields = toMetafieldArray(saved.snapshotData?.metafields ?? saved.metafields);
+    const currentMetafields = toMetafieldArray(current?.metafields);
     for (const sm of savedMetafields) {
-      const cm = currentMetafields.find((m) => m.namespace === sm.namespace && m.key === sm.key);
+      const cm = currentMetafields.find((m) => m && m.namespace === sm.namespace && m.key === sm.key);
       if (!cm) {
         fieldDiffs.push({
           field: `metafield.${sm.namespace}.${sm.key}`,
@@ -150,8 +173,8 @@ export const loader = async ({ request, params }) => {
 
     if (fieldDiffs.length > 0) {
       differences.push({
-        productId: saved.productId,
-        title: saved.snapshotData?.title || saved.title || saved.productId,
+        productId: rawId,
+        title: saved.snapshotData?.title || saved.title || rawId,
         diffs: fieldDiffs,
       });
     }
@@ -914,17 +937,19 @@ export const action = async ({ request, params }) => {
       ? restorePoint.snapshotData
       : [];
 
+    const cleanId = (val) => String(val || "").replace("gid://shopify/Product/", "").trim();
+
     let targetProducts = allSavedProducts;
     if (intent === "restore_single_product") {
-      const targetProductId = String(formData.get("productId") || "").trim();
-      targetProducts = allSavedProducts.filter((s) => String(s.productId) === targetProductId);
+      const targetProductId = cleanId(formData.get("productId"));
+      targetProducts = allSavedProducts.filter((s) => cleanId(s.productId) === targetProductId);
       if (targetProducts.length === 0) {
         return { success: false, message: `Product #${targetProductId} not found in restore point snapshot.` };
       }
     } else if (intent === "restore_selected_products") {
       const selectedRaw = formData.get("selectedProductIds") || "";
-      const selectedIds = selectedRaw.split(",").map((s) => s.trim()).filter(Boolean);
-      targetProducts = allSavedProducts.filter((s) => selectedIds.includes(String(s.productId)));
+      const selectedIds = new Set(selectedRaw.split(",").map(cleanId).filter(Boolean));
+      targetProducts = allSavedProducts.filter((s) => selectedIds.has(cleanId(s.productId)));
       if (targetProducts.length === 0) {
         return { success: false, message: "No matching products found for selection." };
       }
@@ -973,9 +998,10 @@ export const action = async ({ request, params }) => {
     let failedCount = 0;
 
     for (const saved of targetProducts) {
-      const productId = saved.productId;
+      const rawProductId = saved.productId;
+      const productId = cleanId(rawProductId);
       const savedSnap = saved.snapshotData || saved;
-      const current = currentMap[productId];
+      const current = currentMap[productId] || currentMap[rawProductId] || currentMap[`gid://shopify/Product/${productId}`];
       if (!current) {
         await prisma.rollbackResult.create({
           data: {
@@ -1005,12 +1031,12 @@ export const action = async ({ request, params }) => {
         }
       }
 
-      const savedVariants = savedSnap.variants || [];
-      const currentVariants = current.variants || [];
+      const savedVariants = toVariantArray(savedSnap.variants);
+      const currentVariants = toVariantArray(current.variants);
       for (const sv of savedVariants) {
-        const cv = currentVariants.find((v) => v.id === sv.id);
+        const cv = currentVariants.find((v) => v && (v.id === sv.id || cleanId(v.id) === cleanId(sv.id)));
         if (!cv) continue;
-        const numId = sv.id.replace("gid://shopify/ProductVariant/", "");
+        const numId = String(sv.id || "").replace("gid://shopify/ProductVariant/", "");
         for (const vf of ["price", "compareAtPrice", "sku"]) {
           if (!restorePrices && (vf === "price" || vf === "compareAtPrice")) continue;
           if (String(sv[vf] ?? "") !== String(cv[vf] ?? "")) {
@@ -1056,9 +1082,10 @@ export const action = async ({ request, params }) => {
       const result = await rollbackProductFields(admin, shop, productId, tempIds);
 
       // Restore metafields if present
-      if (Array.isArray(savedSnap.metafields) && savedSnap.metafields.length > 0) {
+      const savedMf = toMetafieldArray(savedSnap.metafields);
+      if (savedMf.length > 0) {
         try {
-          await restoreProductMetafields(admin, productId, savedSnap.metafields);
+          await restoreProductMetafields(admin, productId, savedMf);
         } catch (mfErr) {
           console.warn(`Product metafield restore warning (${productId}):`, mfErr?.message);
         }
@@ -1554,7 +1581,7 @@ export default function RestorePointDetail() {
                 {themeData.files?.length || 0} critical theme files &amp; settings backed up ({themeData.activeTheme.role} role).
               </p>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
               <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
                 {selectedFiles.length} of {themeData.files?.length || 0} files selected
               </span>
@@ -1564,6 +1591,38 @@ export default function RestorePointDetail() {
                 className="rv-btn rv-btn-secondary rv-btn-sm"
               >
                 {selectedFiles.length === (themeData?.files?.length || 0) ? "Deselect All" : "Select All"}
+              </button>
+
+              {/* ── Top-Right Theme Restore Actions ── */}
+              {(() => {
+                const isDraftRestoring = isRestoring && fetcher.formData?.get("intent") === "restore_theme" && fetcher.formData?.get("mode") === "draft";
+                return (
+                  <fetcher.Form method="POST" style={{ display: "inline" }}>
+                    <input type="hidden" name="intent" value="restore_theme" />
+                    <input type="hidden" name="mode" value="draft" />
+                    <input type="hidden" name="selectedFiles" value={JSON.stringify(selectedFiles)} />
+                    <button
+                      type="submit"
+                      disabled={selectedFiles.length === 0 || isRestoring}
+                      className="rv-btn rv-btn-primary rv-btn-sm"
+                      title="Safely restore to an unpublished draft staging theme (leaves live storefront untouched)"
+                    >
+                      <ShieldCheckIcon size={14} className={isDraftRestoring ? "rv-spin" : ""} />
+                      <span>{isDraftRestoring ? "Creating Draft..." : `Restore to Draft Theme (${selectedFiles.length})`}</span>
+                    </button>
+                  </fetcher.Form>
+                );
+              })()}
+
+              <button
+                type="button"
+                disabled={selectedFiles.length === 0 || isRestoring}
+                className="rv-btn rv-btn-secondary rv-btn-sm"
+                style={{ color: "var(--rv-critical)", borderColor: "rgba(224, 49, 49, 0.35)" }}
+                onClick={() => setShowLiveRestoreModal(true)}
+                title="Directly restore into your active live theme"
+              >
+                <span>Instant Restore to Live</span>
               </button>
             </div>
           </div>

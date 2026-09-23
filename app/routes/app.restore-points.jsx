@@ -343,14 +343,20 @@ export const action = async ({ request }) => {
 
       if (!result.success) return { success: false, message: result.message || "Page backup failed." };
 
+      const pageCount = result.summary?.pages || 0;
+      const menuCount = result.summary?.menus || 0;
+
       await logAudit(shop, perm.actor, "BACKUP_CREATED", {
         resourceType: "RestorePoint",
         resourceId: result.restorePoint?.id,
-        details: { type: "PAGES", count: result.summary?.pages },
+        details: { type: "PAGES", pages: pageCount, menus: menuCount },
         request,
       });
 
-      return { success: true, message: `Page & Menu Backup completed (${result.summary?.pages || 0} pages & menus).` };
+      return {
+        success: true,
+        message: `Page & Menu Backup completed (${pageCount} ${pageCount === 1 ? "page" : "pages"}, ${menuCount} ${menuCount === 1 ? "menu" : "menus"}).`,
+      };
     }
 
     if (intent === "backupBlogs") {
@@ -391,19 +397,19 @@ export const action = async ({ request }) => {
 
       if (!result.success) return { success: false, message: result.message || "Navigation menu backup failed." };
 
-      if ((result.summary?.menus || 0) === 0) {
-        return {
-          success: true,
-          message: "Navigation Menu Backup completed, but no menus were found on this store. Check that the app has navigation permissions.",
-        };
-      }
-
       await logAudit(shop, perm.actor, "BACKUP_CREATED", {
         resourceType: "RestorePoint",
         resourceId: result.restorePoint?.id,
         details: { type: "MENUS", count: result.summary?.menus },
         request,
       });
+
+      if ((result.summary?.menus || 0) === 0) {
+        return {
+          success: true,
+          message: "Navigation Menu Backup completed, but no menus were found on this store. Check that the app has navigation permissions.",
+        };
+      }
 
       return { success: true, message: `Navigation Menu Backup completed (${result.summary?.menus || 0} menus).` };
     }
@@ -433,19 +439,19 @@ export const action = async ({ request }) => {
       const values = result.summary?.metafields || 0;
       const defs = result.summary?.metafieldDefinitions || 0;
 
-      if (values === 0 && defs === 0) {
-        return {
-          success: true,
-          message: "Metafield Backup completed, but no metafields or definitions were found on this store yet.",
-        };
-      }
-
       await logAudit(shop, perm.actor, "BACKUP_CREATED", {
         resourceType: "RestorePoint",
         resourceId: result.restorePoint?.id,
         details: { type: "METAFIELDS", metafields: values, definitions: defs },
         request,
       });
+
+      if (values === 0 && defs === 0) {
+        return {
+          success: true,
+          message: "Metafield Backup completed, but no metafields or definitions were found on this store yet.",
+        };
+      }
 
       // A partial capture is surfaced rather than hidden: a backup the merchant
       // believes is complete when it is not is the worst outcome here.
@@ -1493,22 +1499,22 @@ export default function RestorePoints() {
                       <span>{formatTime(rp.createdAt)}</span>
                     </span>
                     <span style={{ color: "var(--rv-text-subdued)" }}>·</span>
-                    <span className="rv-badge rv-badge-info rv-badge-sm">{rp.productCount} Products</span>
-                    {rp.themeCount > 0 && <span className="rv-badge rv-badge-success rv-badge-sm">1 Theme</span>}
+                    <span className="rv-badge rv-badge-info rv-badge-sm">{rp.productCount} {rp.productCount === 1 ? "Product" : "Products"}</span>
+                    {rp.themeCount > 0 && <span className="rv-badge rv-badge-success rv-badge-sm">{rp.themeCount === 1 ? "1 Theme" : `${rp.themeCount} Themes`}</span>}
                     {rp.collectionCount > 0 && (
-                      <span className="rv-badge rv-badge-info rv-badge-sm">{rp.collectionCount} Collections</span>
+                      <span className="rv-badge rv-badge-info rv-badge-sm">{rp.collectionCount} {rp.collectionCount === 1 ? "Collection" : "Collections"}</span>
                     )}
                     {rp.pageCount > 0 && (
-                      <span className="rv-badge rv-badge-neutral rv-badge-sm">{rp.pageCount} Pages</span>
+                      <span className="rv-badge rv-badge-neutral rv-badge-sm">{rp.pageCount} {rp.pageCount === 1 ? "Page" : "Pages"}</span>
                     )}
                     {rp.menuCount > 0 && (
-                      <span className="rv-badge rv-badge-neutral rv-badge-sm">{rp.menuCount} Menus</span>
+                      <span className="rv-badge rv-badge-neutral rv-badge-sm">{rp.menuCount} {rp.menuCount === 1 ? "Menu" : "Menus"}</span>
                     )}
                     {rp.articleCount > 0 && (
-                      <span className="rv-badge rv-badge-success rv-badge-sm">{rp.articleCount} Articles</span>
+                      <span className="rv-badge rv-badge-success rv-badge-sm">{rp.articleCount} {rp.articleCount === 1 ? "Article" : "Articles"}</span>
                     )}
                     {rp.metafieldCount > 0 && (
-                      <span className="rv-badge rv-badge-info rv-badge-sm">{rp.metafieldCount} Metafields</span>
+                      <span className="rv-badge rv-badge-info rv-badge-sm">{rp.metafieldCount} {rp.metafieldCount === 1 ? "Metafield" : "Metafields"}</span>
                     )}
                     <span style={{ color: "var(--rv-text-subdued)" }}>·</span>
                     {rp.cloudSyncStatus === "SYNCED" ? (

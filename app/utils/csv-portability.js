@@ -529,8 +529,15 @@ export function generateProductsCsv(products = []) {
 
   const rows = (products || []).map((p) => {
     const raw = p.snapshotData || p;
-    const variants = raw.variants || [];
-    const prices = variants.map((v) => parseFloat(v.price) || 0);
+    const rawVariants = raw.variants;
+    const variants = Array.isArray(rawVariants)
+      ? rawVariants
+      : Array.isArray(rawVariants?.nodes)
+      ? rawVariants.nodes
+      : Array.isArray(rawVariants?.edges)
+      ? rawVariants.edges.map((e) => e?.node).filter(Boolean)
+      : [];
+    const prices = variants.map((v) => parseFloat(v?.price) || 0);
     const minPrice = prices.length > 0 ? Math.min(...prices).toFixed(2) : "0.00";
     const maxPrice = prices.length > 0 ? Math.max(...prices).toFixed(2) : "0.00";
 

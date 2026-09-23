@@ -730,13 +730,13 @@ export default function ImportExportHub() {
                     </span>
                   </div>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", fontSize: "11px" }}>
-                    <span className="rv-badge rv-badge-neutral">{selectedRp.productCount} Products</span>
-                    <span className="rv-badge rv-badge-neutral">{selectedRp.themeCount} Themes</span>
-                    <span className="rv-badge rv-badge-neutral">{selectedRp.collectionCount} Collections</span>
-                    <span className="rv-badge rv-badge-neutral">{selectedRp.pageCount} Pages</span>
-                    <span className="rv-badge rv-badge-neutral">{selectedRp.menuCount || 0} Menus</span>
-                    <span className="rv-badge rv-badge-neutral">{selectedRp.articleCount || 0} Articles</span>
-                    <span className="rv-badge rv-badge-neutral">{selectedRp.metafieldCount || 0} Metafields</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.productCount} {selectedRp.productCount === 1 ? "Product" : "Products"}</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.themeCount} {selectedRp.themeCount === 1 ? "Theme" : "Themes"}</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.collectionCount} {selectedRp.collectionCount === 1 ? "Collection" : "Collections"}</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.pageCount} {selectedRp.pageCount === 1 ? "Page" : "Pages"}</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.menuCount || 0} {(selectedRp.menuCount || 0) === 1 ? "Menu" : "Menus"}</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.articleCount || 0} {(selectedRp.articleCount || 0) === 1 ? "Article" : "Articles"}</span>
+                    <span className="rv-badge rv-badge-neutral">{selectedRp.metafieldCount || 0} {(selectedRp.metafieldCount || 0) === 1 ? "Metafield" : "Metafields"}</span>
                   </div>
                 </div>
               ) : (
