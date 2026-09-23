@@ -1,7 +1,7 @@
 import prisma from "../app/db.server.js";
 import {
   saveMarketingConnection,
-  getMarketingSettings,
+  getMarketingStats,
   backupMarketingProvider,
 } from "../app/marketing.server.js";
 import { encrypt, decrypt, isEncrypted } from "../app/crypto.server.js";
@@ -52,18 +52,18 @@ async function runVerification() {
     passedCount++;
 
     console.log("\n--- TEST 2: CURRENT FLOW - READING ENCRYPTED CREDENTIALS & CAPTURING BACKUP ---");
-    const settings = await getMarketingSettings(TEST_SHOP);
+    const settings = await getMarketingStats(TEST_SHOP);
     assert.equal(settings.klaviyo.connected, true, "Klaviyo must be reported as connected");
     assert.equal(settings.klaviyo.simulated, true, "Simulation mode must be correctly detected via decrypted key");
 
     // Run actual backup capture using the encrypted key
     const backupRes = await backupMarketingProvider(TEST_SHOP, "KLAVIYO");
     assert.ok(backupRes.success, `Backup capture should succeed: ${backupRes.message}`);
-    assert.ok(backupRes.lists > 0, "Should have captured simulated lists");
-    assert.ok(backupRes.profiles > 0, "Should have captured simulated profiles");
+    assert.ok(backupRes.counts.lists > 0, "Should have captured simulated lists");
+    assert.ok(backupRes.counts.profiles > 0, "Should have captured simulated profiles");
 
     console.log("✅ Verified: Backup Capture flow decrypted key transparently and executed successfully!");
-    console.log(`   Captured: ${backupRes.lists} lists, ${backupRes.profiles} profiles.`);
+    console.log(`   Captured: ${backupRes.counts.lists} lists, ${backupRes.counts.profiles} profiles.`);
     passedCount++;
 
     console.log("\n--- TEST 3: PREVIOUS FLOW / ZERO REGRESSION - LEGACY UNENCRYPTED DB RECORD ---");
@@ -80,8 +80,8 @@ async function runVerification() {
     assert.equal(verifyRawLegacy.klaviyoApiKey, legacyPlainKey, "DB row must hold raw plain text for test");
     assert.ok(!isEncrypted(verifyRawLegacy.klaviyoApiKey), "Must not be encrypted");
 
-    // Call getMarketingSettings with legacy unencrypted key
-    const legacySettings = await getMarketingSettings(TEST_SHOP);
+    // Call getMarketingStats with legacy unencrypted key
+    const legacySettings = await getMarketingStats(TEST_SHOP);
     assert.equal(legacySettings.klaviyo.connected, true, "Legacy store must remain connected");
     assert.equal(legacySettings.klaviyo.simulated, true, "Legacy key must be read without crash");
 

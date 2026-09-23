@@ -66,6 +66,7 @@ const NAV_SECTIONS = [
     href: "/app/settings",
     prefixes: ["/app/settings", "/app/team"],
   },
+  { href: "/app/trust", prefixes: ["/app/trust"] },
   { href: "/app/plan", prefixes: ["/app/plan"] },
   { href: "/app/support", prefixes: ["/app/support"] },
   { href: "/app/admin", prefixes: ["/app/admin"] },

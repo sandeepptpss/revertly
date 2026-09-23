@@ -114,6 +114,8 @@ const PLANS = [
       "Email drift & bulk-anomaly alerts",
       "Incidents, Activity & Rollback History logs",
       "Offline JSON & CSV export and import",
+      "Bank-Grade AES-256-GCM data encryption at rest",
+      "Security Headers & HSTS transport protection",
     ],
   },
   {
@@ -135,6 +137,8 @@ const PLANS = [
       "Offsite Cloud Backup — Google Drive & Dropbox",
       "Auto-push every new snapshot to your cloud",
       "Restore directly from a Drive or Dropbox archive",
+      "Critical Action Safety Lock on destructive rollbacks",
+      "Trust & Security Center live audit status",
       // Starter has no vault (PLAN_LIMITS.starter.vaultOrders === 0). Stating
       // the boundary here is what keeps the omission from reading as an
       // oversight — a merchant comparing cards should not have to infer it
@@ -169,7 +173,9 @@ const PLANS = [
       // themeId, so fetchThemeBackup falls back to MAIN). That is Growth and
       // above, which is why this says so here rather than on Business.
       "1 Active Theme Backup (Templates, Sections & Settings)",
+      "Safe Restore as Draft Theme (Staging Sandbox Preview)",
       "Live theme captured in every scheduled backup",
+      "Selective field-level restoration (preserve live price/stock)",
       "Accountant-ready Tax Audit CSV export",
       "Chargeback Dispute Evidence Pack (JSON)",
     ],
@@ -194,6 +200,7 @@ const PLANS = [
       // so it now appears on Growth. What Business actually adds is drafts.
       "Unlimited Themes & Liquid Code Backup — drafts included",
       "1-Click Theme Code & Asset Rollback (Live & Draft Staging)",
+      "Safe Restore Sandbox — Preview draft themes before publishing",
       "Orders & Customers Vault (15,000 orders)",
       "Klaviyo & Mailchimp Backup — 50,000 subscriber profiles",
       "Klaviyo Flows & Mailchimp Journeys automation backup",
@@ -222,6 +229,8 @@ const PLANS = [
       "Orders & Customers Vault (100,000 orders)",
       "Klaviyo & Mailchimp Backup — 250,000 profiles",
       "Unlimited Klaviyo flows & Mailchimp journeys",
+      "Enterprise Trust & Compliance Center",
+      "Dedicated Legal DPA Agreement (GDPR / CCPA Ready)",
       "Priority support queue for your store",
     ],
   },

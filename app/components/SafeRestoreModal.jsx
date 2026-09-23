@@ -21,6 +21,12 @@ export default function SafeRestoreModal({
   const [restoreTags, setRestoreTags] = useState(true);
   const [restoreStatus, setRestoreStatus] = useState(true);
   const [preserveInventory, setPreserveInventory] = useState(true);
+  const [safetyConfirmText, setSafetyConfirmText] = useState("");
+
+  // Reset confirmation input when modal opens or closes
+  useEffect(() => {
+    if (isOpen) setSafetyConfirmText("");
+  }, [isOpen]);
 
   // Close on Escape key
   useEffect(() => {
@@ -323,6 +329,47 @@ export default function SafeRestoreModal({
           </div>
         </div>
 
+        {/* Critical Action Safety Lock (Only triggered for bulk restores of 5+ products) */}
+        {productCount >= 5 && (
+          <div
+            style={{
+              marginTop: "16px",
+              padding: "12px 14px",
+              background: "#fff1f2",
+              border: "1px solid #fecdd3",
+              borderRadius: "8px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
+              <AlertTriangleIcon size={16} color="#e11d48" />
+              <span style={{ fontSize: "12px", fontWeight: 700, color: "#9f1239", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                Critical Action Safety Lock
+              </span>
+            </div>
+            <p style={{ fontSize: "12px", color: "#881337", margin: "0 0 8px 0", lineHeight: "1.4" }}>
+              You are restoring <strong>{productCount} products</strong>. To protect your live store against accidental mass-overwrites, please type <strong>RESTORE</strong> below to confirm:
+            </p>
+            <input
+              type="text"
+              placeholder="Type RESTORE to unlock"
+              value={safetyConfirmText}
+              onChange={(e) => setSafetyConfirmText(e.target.value)}
+              disabled={isSubmitting}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                fontSize: "13px",
+                fontWeight: 600,
+                border: "1px solid #fda4af",
+                borderRadius: "6px",
+                background: "#ffffff",
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+        )}
+
         {/* Modal Action Buttons */}
         <div
           style={{
@@ -332,6 +379,7 @@ export default function SafeRestoreModal({
             gap: "10px",
             borderTop: "1px solid #f1f5f9",
             paddingTop: "16px",
+            marginTop: productCount >= 5 ? "14px" : "0",
           }}
         >
           <button
@@ -345,9 +393,16 @@ export default function SafeRestoreModal({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={isSubmitting || (productCount >= 5 && safetyConfirmText.trim().toUpperCase() !== "RESTORE")}
             className="rv-btn rv-btn-primary"
-            style={{ fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "6px" }}
+            style={{
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              opacity: (productCount >= 5 && safetyConfirmText.trim().toUpperCase() !== "RESTORE") ? 0.5 : 1,
+              cursor: (productCount >= 5 && safetyConfirmText.trim().toUpperCase() !== "RESTORE") ? "not-allowed" : "pointer",
+            }}
           >
             <ShieldCheckIcon size={16} />
             <span>{isSubmitting ? "Executing Safe Restore..." : `Execute Safe Restore (${productCount})`}</span>

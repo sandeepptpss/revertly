@@ -65,6 +65,7 @@ export default function App() {
         </s-link>
         <s-link href={navHref("/app/incidents")}>Store Protection</s-link>
         <s-link href={navHref("/app/settings")}>Settings &amp; Team</s-link>
+        <s-link href={navHref("/app/trust")}>Trust &amp; Security</s-link>
         <s-link href={navHref("/app/plan")}>Plans &amp; Billing</s-link>
         <s-link href={navHref("/app/support")}>Support</s-link>
         <s-link href={navHref("/app/support?emergency=1")}>Emergency SOS</s-link>
