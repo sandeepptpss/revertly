@@ -438,6 +438,11 @@ async function ensureInitialBaseline(admin, shop) {
           includeCollections: true,
           includePages: true,
           includeMenus: true,
+          // This runs at the end of a full catalog sync that has just written
+          // every product into the mirror from Shopify, so the mirror is the
+          // freshest thing available. Re-reading the live catalog here would
+          // page the entire store a second time for identical data.
+          useProductMirror: true,
         },
       });
     }

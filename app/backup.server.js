@@ -756,66 +756,92 @@ export async function restoreThemeFilesWithSafety({
 // 1B. LIVE PRODUCTS BACKUP & CATALOG SYNC
 // ============================================================================
 
-/**
- * Fetches live products, variants, pricing, inventory, and metafields directly from Shopify Admin.
- * If shop is provided, updates productSnapshot baseline table automatically.
- */
-export async function fetchLiveProductsBackup(admin, shop = null) {
-  try {
-    const allProducts = [];
-    let hasNextPage = true;
-    let cursor = null;
-
-    while (hasNextPage) {
-      const query = `#graphql
-        query getProductsForBackup($cursor: String) {
-          products(first: 50, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              id
-              title
-              status
-              vendor
-              productType
-              tags
-              handle
-              bodyHtml
-              templateSuffix
-              publishedAt
-              images(first: 20) {
-                nodes {
-                  id
-                  url
-                  altText
-                }
-              }
-              metafields(first: 50) {
-                nodes { id namespace key value type }
-              }
-              variants(first: 100) {
-                nodes {
-                  id title price compareAtPrice sku inventoryQuantity barcode
-                }
-              }
-            }
+const LIVE_PRODUCTS_QUERY = `#graphql
+  query getProductsForBackup($cursor: String) {
+    products(first: 50, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        title
+        status
+        vendor
+        productType
+        tags
+        handle
+        bodyHtml
+        templateSuffix
+        publishedAt
+        updatedAt
+        images(first: 20) {
+          nodes {
+            id
+            url
+            altText
           }
-        }`;
+        }
+        metafields(first: 50) {
+          nodes { id namespace key value type }
+        }
+        variants(first: 100) {
+          nodes {
+            id title price compareAtPrice sku inventoryQuantity barcode
+          }
+        }
+      }
+    }
+  }`;
 
-      const resp = await admin.graphql(query, { variables: { cursor } });
-      const json = await resp.json();
-      const productsData = json.data?.products;
-      if (!productsData) break;
+/**
+ * Reads the whole live catalog for a backup, in bounded pages.
+ *
+ * This is what a product backup is *for*, so it deliberately does not stop at
+ * an arbitrary count. It stops only for reasons the caller can report:
+ *
+ *   - `truncated` — the plan's product allowance or the MySQL payload ceiling
+ *     was reached, so the snapshot covers part of the catalog;
+ *   - `failed`    — Shopify errored or throttled past the retry budget, so what
+ *     was collected is incomplete for a reason the merchant did not choose.
+ *
+ * `complete` is true only when Shopify reported no further pages. A caller must
+ * never treat a `failed` partial read as a finished backup: that is exactly how
+ * a merchant ends up trusting a snapshot that holds a fraction of their store.
+ *
+ * When `shop` is given, every product read also refreshes the ProductSnapshot
+ * mirror, so a backup doubles as self-healing for a mirror that drifted.
+ */
+export async function collectLiveProductsForBackup(admin, shop = null, { maxProducts = Infinity } = {}) {
+  const items = [];
+  let approxBytes = 0;
+  let truncated = false;
+  let complete = false;
+  let failed = false;
+  let cursor = null;
 
-      const items = productsData.nodes || [];
-      for (const p of items) {
+  if (!admin) return { items, truncated, complete: false, failed: true };
+
+  try {
+    for (;;) {
+      const json = await graphqlWithRetry(admin, LIVE_PRODUCTS_QUERY, { cursor }, { label: "live products backup" });
+
+      if (json?.errors?.length) {
+        console.warn("collectLiveProductsForBackup GraphQL errors:", json.errors.map((e) => e.message).join("; "));
+        failed = true;
+        break;
+      }
+
+      const productsData = json?.data?.products;
+      if (!productsData) {
+        failed = true;
+        break;
+      }
+
+      for (const p of productsData.nodes || []) {
+        if (items.length >= maxProducts) {
+          truncated = true;
+          break;
+        }
+
         const numericId = String(p.id).replace("gid://shopify/Product/", "");
-        const rawVariants = p.variants?.nodes || [];
-        const rawMetafields = p.metafields?.nodes || [];
-        const rawImages = (p.images?.nodes || []).map((img) => ({
-          id: img.id,
-          url: img.url,
-          altText: img.altText || "",
-        }));
         const snap = {
           id: p.id,
           title: p.title,
@@ -826,10 +852,23 @@ export async function fetchLiveProductsBackup(admin, shop = null) {
           handle: p.handle,
           bodyHtml: p.bodyHtml,
           templateSuffix: p.templateSuffix || "",
-          images: rawImages,
-          variants: rawVariants,
-          metafields: rawMetafields,
+          updatedAt: p.updatedAt || "",
+          images: (p.images?.nodes || []).map((img) => ({
+            id: img.id,
+            url: img.url,
+            altText: img.altText || "",
+          })),
+          variants: p.variants?.nodes || [],
+          metafields: p.metafields?.nodes || [],
         };
+
+        const entry = { productId: numericId, title: p.title, snapshotData: snap };
+        const rowBytes = Buffer.byteLength(JSON.stringify(entry));
+        if (approxBytes + rowBytes > MAX_SNAPSHOT_PAYLOAD_BYTES) {
+          truncated = true;
+          break;
+        }
+        approxBytes += rowBytes;
 
         if (shop) {
           try {
@@ -852,28 +891,39 @@ export async function fetchLiveProductsBackup(admin, shop = null) {
                 snapshotData: snap,
               },
             });
-          } catch (e) {
-            // ignore individual upsert errors
+          } catch {
+            // A mirror write failing must not lose the product from the backup.
           }
         }
 
-        allProducts.push({
-          productId: numericId,
-          title: p.title,
-          snapshotData: snap,
-        });
+        items.push(entry);
       }
 
-      hasNextPage = productsData.pageInfo?.hasNextPage || false;
-      cursor = productsData.pageInfo?.endCursor || null;
-      if (allProducts.length >= 250) break;
+      if (truncated) break;
+      if (!productsData.pageInfo?.hasNextPage || !productsData.pageInfo?.endCursor) {
+        complete = true;
+        break;
+      }
+      cursor = productsData.pageInfo.endCursor;
     }
-
-    return allProducts;
   } catch (err) {
-    console.warn("fetchLiveProductsBackup error:", err?.message || err);
-    return [];
+    console.warn("collectLiveProductsForBackup error:", err?.message || err);
+    failed = true;
   }
+
+  return { items, truncated, complete, failed };
+}
+
+/**
+ * Live catalog as a plain array, for the export paths that only need the items.
+ *
+ * Retained for callers that have no way to act on a partial read; anything
+ * building a restore point should use collectLiveProductsForBackup so it can
+ * report truncation.
+ */
+export async function fetchLiveProductsBackup(admin, shop = null, options = {}) {
+  const { items } = await collectLiveProductsForBackup(admin, shop, options);
+  return items;
 }
 
 // ============================================================================
@@ -3051,19 +3101,49 @@ export async function createMultiResourceRestorePoint({
     // 2. Concurrently fetch all requested resources using Promise.allSettled
     const tasks = [];
 
-    // Task 0: Products (from local snapshot baseline or fetch live from Shopify if empty)
+    // Task 0: Products.
+    //
+    // Read the live catalog, not the local ProductSnapshot mirror. The mirror is
+    // maintained by the products/update webhook, so whenever delivery lags or a
+    // catalog sync has failed it holds stale titles and prices — and a backup
+    // that quietly captures yesterday's catalog is worse than no backup, because
+    // the merchant restores from it believing it is current.
+    //
+    // The mirror stays the fallback for the two cases where live is unusable:
+    // no admin client (an offline scheduled run that could not authenticate) and
+    // a live read that errored or throttled out. Falling back beats writing a
+    // short snapshot over a good baseline.
+    //
+    // `useProductMirror: true` opts out for callers that have *just* populated
+    // the mirror from Shopify and would otherwise pay for the same sweep twice.
     if (options.includeProducts !== false) {
       tasks.push(
         (async () => {
-          const totalCount = await prisma.productSnapshot.count({ where: { shop } });
-          if (totalCount === 0 && admin) {
-            return { items: await fetchLiveProductsBackup(admin, shop), truncated: false };
+          if (admin && options.useProductMirror !== true) {
+            // Same plan allowance the catalog sync applies to the mirror, so a
+            // backup never captures more of the catalog than the plan covers.
+            // Imported lazily to match enforceBackupRetentionPolicy below.
+            const limits = await import("./billing.server.js")
+              .then((m) => m.getEffectiveLimits(shop))
+              .catch(() => null);
+            const maxProducts =
+              limits?.products && Number.isFinite(limits.products) ? limits.products : Infinity;
+
+            const live = await collectLiveProductsForBackup(admin, shop, { maxProducts });
+            if (!live.failed) {
+              return { items: live.items, truncated: live.truncated, source: "live" };
+            }
+            console.warn(
+              `[Revertly] Live product read failed for ${shop}; falling back to the local baseline.`,
+            );
           }
-          return await collectProductSnapshotsForBackup(shop);
+
+          const mirrored = await collectProductSnapshotsForBackup(shop);
+          return { ...mirrored, source: "mirror" };
         })()
       );
     } else {
-      tasks.push(Promise.resolve({ items: [], truncated: false }));
+      tasks.push(Promise.resolve({ items: [], truncated: false, source: "none" }));
     }
 
     // Task 1: Theme & Assets
@@ -3115,6 +3195,10 @@ export async function createMultiResourceRestorePoint({
     const productResult = prodRes.status === "fulfilled" ? prodRes.value : { items: [], truncated: false };
     const products = Array.isArray(productResult) ? productResult : productResult.items || [];
     const productsTruncated = Boolean(productResult?.truncated);
+    // Recorded so a restore point says where its catalog came from. A snapshot
+    // built off the local baseline because the live read failed is materially
+    // different from one read straight out of Shopify.
+    const productSource = Array.isArray(productResult) ? "mirror" : productResult?.source || "mirror";
     const themeData = themeRes.status === "fulfilled" ? themeRes.value : null;
     const collections = colRes.status === "fulfilled" ? colRes.value : [];
     const pages = pageRes.status === "fulfilled" ? pageRes.value : [];
@@ -3145,9 +3229,13 @@ export async function createMultiResourceRestorePoint({
         articleCount,
         metafieldCount,
         // A truncated capture is surfaced rather than hidden: the merchant needs
-        // to know this restore point does not cover their whole catalog.
+        // to know this restore point does not cover their whole catalog. A
+        // fallback to the local baseline is called out for the same reason —
+        // it means the snapshot may not reflect the very latest edits.
         description: productsTruncated
-          ? `${description ? `${description} ` : ""}[Partial capture: catalog exceeded the maximum backup size, so ${products.length} products were stored.]`
+          ? `${description ? `${description} ` : ""}[Partial capture: the catalog exceeded this plan's product allowance or the maximum backup size, so ${products.length} products were stored.]`
+          : productSource === "mirror" && admin && options.includeProducts !== false && options.useProductMirror !== true
+          ? `${description ? `${description} ` : ""}[Products captured from the local baseline: Shopify's catalog could not be read during this backup.]`
           : description,
         snapshotData: products,
         themeData: themeData || undefined,
@@ -3169,6 +3257,7 @@ export async function createMultiResourceRestorePoint({
       summary: {
         products: products.length,
         productsTruncated,
+        productSource,
         themes: themeCount,
         collections: collectionCount,
         pages: pageCount,

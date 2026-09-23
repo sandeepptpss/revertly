@@ -202,7 +202,18 @@ function createMockAdmin() {
         return j({ blogs: { nodes: STORE.blogs.map((b) => ({ id: b.id, title: b.title, handle: b.handle })) } });
       }
       if (query.includes("getProductsForBackup")) {
-        return j({ products: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: STORE.products } });
+        // Real cursor pagination at Shopify's page size, so a fetcher that
+        // stops early is caught rather than handed the whole catalog at once.
+        const PAGE = 50;
+        const start = variables?.cursor ? Number(variables.cursor) : 0;
+        const slice = STORE.products.slice(start, start + PAGE);
+        const end = start + slice.length;
+        return j({
+          products: {
+            pageInfo: { hasNextPage: end < STORE.products.length, endCursor: end < STORE.products.length ? String(end) : null },
+            nodes: slice,
+          },
+        });
       }
 
       // ── Metafields ──────────────────────────────────────────────────────
@@ -300,13 +311,25 @@ function createMockAdmin() {
   };
 }
 
-async function resetShop() {
+async function resetShop({ planId = "business" } = {}) {
   await prisma.rollbackResult.deleteMany({ where: { rollbackJob: { shop: TEST_SHOP } } });
   await prisma.rollbackJob.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.restorePoint.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.changeEvent.deleteMany({ where: { shop: TEST_SHOP } });
+  // Product capture is bounded by the plan's allowance, so the plan has to be
+  // real for these assertions to mean anything.
+  await prisma.appSettings.upsert({
+    where: { shop: TEST_SHOP },
+    create: { shop: TEST_SHOP, planId },
+    update: { planId },
+  });
   STORE = freshStore();
+}
+
+async function cleanupShop() {
+  await resetShop();
+  await prisma.appSettings.deleteMany({ where: { shop: TEST_SHOP } });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -417,34 +440,93 @@ async function main() {
     assert.equal(s.products, 1);
   });
 
-  // ── 2. Product Backup freshness (KNOWN OPEN — documented, not a regression)
-  section("[2] Product Backup freshness — known open issue, reported not enforced");
+  // ── 2. Product Backup freshness ──────────────────────────────────────────
+  section("[2] Product Backup freshness — reads live Shopify, not the stale mirror");
 
-  // Product backups read the local ProductSnapshot mirror (seeded by
-  // sync.server.js, kept current by the products/update webhook) rather than
-  // re-reading Shopify. That is deliberate — the mirror is paged and complete,
-  // whereas fetchLiveProductsBackup stops at 250 items — but it means a backup
-  // taken while webhooks are lagging captures the stale title.
-  //
-  // Recorded here so the exposure is visible and measured; closing it needs a
-  // product decision about API budget, not a silent change in a QA pass.
+  // A product edited in Shopify while the products/update webhook is lagging:
+  // the mirror still holds the old title, so a backup that trusts the mirror
+  // captures yesterday's catalog and the merchant restores from it believing
+  // it is current.
   STORE.products[0].title = "Tee, Renamed In Shopify";
   const staleRes = await backupProducts({ admin, shop: TEST_SHOP });
-  const storedTitle = staleRes.restorePoint.snapshotData[0].snapshotData.title;
-  if (storedTitle === "Tee, Renamed In Shopify") {
-    ok("2.1 Product Backup reflects the live Shopify title (mirror was fresh)");
-  } else {
-    console.log(
-      `  ⚠ 2.1 KNOWN OPEN: Product Backup captured "${storedTitle}" from the local mirror,` +
-        ` not the live Shopify title. Exposure: webhook lag or a failed catalog sync.`,
-    );
-  }
+  await check("2.1 Product Backup captures the live Shopify title, not the stale mirror", () => {
+    const stored = staleRes.restorePoint.snapshotData[0].snapshotData.title;
+    assert.equal(stored, "Tee, Renamed In Shopify", `snapshot captured "${stored}"`);
+    assert.equal(staleRes.summary.productSource, "live");
+  });
+
+  await check("2.2 The live read also self-heals the drifted mirror", async () => {
+    const row = await prisma.productSnapshot.findUnique({
+      where: { shop_productId: { shop: TEST_SHOP, productId: "1" } },
+    });
+    assert.equal(row.title, "Tee, Renamed In Shopify", "mirror was not refreshed by the live read");
+  });
   STORE.products[0].title = 'Tee, "Basic"';
 
-  await check("2.2 Live-catalog fallback is only used when the mirror is empty", async () => {
-    const count = await prisma.productSnapshot.count({ where: { shop: TEST_SHOP } });
-    assert.ok(count > 0, "mirror should have been seeded by the first live fetch");
+  await check("2.3 Whole catalog is captured — no silent stop at 250 products", async () => {
+    const big = freshStore();
+    big.products = Array.from({ length: 640 }, (_, i) => ({
+      id: `gid://shopify/Product/${i + 1}`, title: `Bulk Product ${i + 1}`, status: "ACTIVE",
+      vendor: "Acme", productType: "Shirt", tags: [], handle: `bulk-${i + 1}`,
+      bodyHtml: "", templateSuffix: "", publishedAt: null, updatedAt: "2026-03-01T00:00:00Z",
+      images: { nodes: [] }, metafields: { nodes: [] },
+      variants: { nodes: [{ id: `gid://shopify/ProductVariant/${i + 1}`, title: "S", price: "5.00", compareAtPrice: null, sku: `S${i}`, inventoryQuantity: 1, barcode: "" }] },
+    }));
+    const prev = STORE;
+    STORE = big;
+    try {
+      const res = await backupProducts({ admin, shop: TEST_SHOP });
+      assert.equal(res.summary.products, 640, "catalog was truncated");
+      assert.equal(res.summary.productsTruncated, false);
+      assert.equal(res.restorePoint.productCount, 640);
+    } finally {
+      STORE = prev;
+      await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });
+    }
   });
+
+  await check("2.4 A failed live read falls back to the mirror rather than writing an empty snapshot", async () => {
+    await prisma.productSnapshot.create({
+      data: { shop: TEST_SHOP, productId: "777", title: "Baseline Only", status: "ACTIVE", snapshotData: { title: "Baseline Only" } },
+    });
+    const failing = {
+      graphql: async (query, opts) =>
+        query.includes("getProductsForBackup")
+          ? { json: async () => ({ errors: [{ message: "Internal error" }] }) }
+          : admin.graphql(query, opts),
+    };
+    const res = await backupProducts({ admin: failing, shop: TEST_SHOP });
+    assert.equal(res.summary.products, 1, "fallback did not return the baseline");
+    assert.equal(res.summary.productSource, "mirror");
+    assert.match(res.restorePoint.description, /local baseline/i, "fallback was not disclosed to the merchant");
+    await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });
+  });
+
+  await check("2.5 A live capture is bounded by the plan's product allowance and says so", async () => {
+    await prisma.appSettings.update({ where: { shop: TEST_SHOP }, data: { planId: "free" } });
+    const big = freshStore();
+    big.products = Array.from({ length: 260 }, (_, i) => ({
+      id: `gid://shopify/Product/${i + 1}`, title: `Capped ${i + 1}`, status: "ACTIVE",
+      vendor: "Acme", productType: "Shirt", tags: [], handle: `capped-${i + 1}`,
+      bodyHtml: "", templateSuffix: "", publishedAt: null, updatedAt: "2026-03-01T00:00:00Z",
+      images: { nodes: [] }, metafields: { nodes: [] }, variants: { nodes: [] },
+    }));
+    const prev = STORE;
+    STORE = big;
+    try {
+      const res = await backupProducts({ admin, shop: TEST_SHOP });
+      assert.equal(res.summary.products, 100, "free plan allowance of 100 products was not applied");
+      assert.equal(res.summary.productsTruncated, true, "a capped capture must report itself as partial");
+      assert.match(res.restorePoint.description, /Partial capture/i);
+    } finally {
+      STORE = prev;
+      await prisma.appSettings.update({ where: { shop: TEST_SHOP }, data: { planId: "business" } });
+      await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });
+    }
+  });
+
+  // Re-seed the mirror so later sections see the original fixture.
+  await backupProducts({ admin, shop: TEST_SHOP });
 
   // ── 3. Restore flows ─────────────────────────────────────────────────────
   section("[3] Restore — the live store ends up matching the snapshot");
@@ -748,7 +830,7 @@ async function main() {
   }
   console.log("=================================================================");
 
-  await resetShop();
+  await cleanupShop();
   await prisma.$disconnect();
   process.exit(failures.length === 0 ? 0 : 1);
 }
