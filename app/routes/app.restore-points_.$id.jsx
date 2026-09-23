@@ -15,6 +15,7 @@ import {
   METAFIELD_RESTORE_MODES,
   computeDiffLines,
   fetchThemeBackup,
+  readThemeFileBody,
 } from "../backup.server.js";
 import { checkFeatureAccess } from "../billing.server.js";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
@@ -197,13 +198,16 @@ export const loader = async ({ request, params }) => {
       console.warn("Could not fetch live theme files for diffing:", e?.message);
     }
 
+    // Both sides go through the shared reader: a snapshot that stored files in
+    // Shopify's raw `body { content }` shape would otherwise diff as empty, and
+    // every file would be reported as wholly rewritten.
     const liveMap = Object.fromEntries(
-      currentLiveFiles.map((lf) => [lf.filename || lf.key || "", lf.content || lf.value || ""])
+      currentLiveFiles.map((lf) => [lf.filename || lf.key || "", readThemeFileBody(lf)?.content ?? ""])
     );
 
     themeDiffFiles = themeData.files.map((f) => {
       const filename = f?.filename || f?.key || "";
-      const content = f?.content || f?.value || "";
+      const content = readThemeFileBody(f)?.content ?? "";
       const liveContent = liveMap[filename] ?? "";
       const diff = computeDiffLines(liveContent, content);
       return {

@@ -113,6 +113,27 @@ export const loader = async ({ request }) => {
   };
 };
 
+/**
+ * Turns a capture that fell short into words the merchant can act on.
+ *
+ * `createMultiResourceRestorePoint` marks `summary.partial` whenever a resource
+ * could not be read in full. The restore point is still saved — it holds real
+ * data — but reporting it as a completed backup is how someone ends up trusting
+ * a snapshot that is missing half their store.
+ */
+function partialCaptureNote(summary) {
+  if (!summary?.partial) return "";
+  const detail = (summary.disclosures || []).join("; ");
+  return ` This capture is INCOMPLETE — ${detail || "some resources could not be read"}. Please run the backup again before relying on it.`;
+}
+
+function backupResponse(summary, message) {
+  const note = partialCaptureNote(summary);
+  return note
+    ? { success: true, tone: "warning", message: `${message}${note}` }
+    : { success: true, message };
+}
+
 export const action = async ({ request }) => {
   try {
     const { session, admin } = await authenticate.admin(request);
@@ -202,10 +223,10 @@ export const action = async ({ request }) => {
         request,
       });
 
-      return {
-        success: true,
-        message: `Restore point "${result.restorePoint?.name || name}" successfully captured (${parts.join(", ") || "Full Store"}).`,
-      };
+      return backupResponse(
+        result.summary,
+        `Restore point "${result.restorePoint?.name || name}" successfully captured (${parts.join(", ") || "Full Store"}).`,
+      );
     }
 
     // ── Dedicated Backup Runners ───────────────────────────────────────────────
@@ -278,7 +299,10 @@ export const action = async ({ request }) => {
         request,
       });
 
-      return { success: true, message: `Full Theme Backup completed successfully.` };
+      return backupResponse(
+        result.summary,
+        `Full Theme Backup completed successfully (${result.summary?.themeFiles ?? result.restorePoint?.themeData?.files?.length ?? 0} files).`,
+      );
     }
 
     if (intent === "backupProducts") {
@@ -302,7 +326,10 @@ export const action = async ({ request }) => {
         request,
       });
 
-      return { success: true, message: `Product Catalog Backup completed (${result.summary?.products || 0} products).` };
+      return backupResponse(
+        result.summary,
+        `Product Catalog Backup completed (${result.summary?.products || 0} products).`,
+      );
     }
 
     if (intent === "backupCollections") {
@@ -326,7 +353,10 @@ export const action = async ({ request }) => {
         request,
       });
 
-      return { success: true, message: `Collection Backup completed (${result.summary?.collections || 0} collections).` };
+      return backupResponse(
+        result.summary,
+        `Collection Backup completed (${result.summary?.collections || 0} collections).`,
+      );
     }
 
     if (intent === "backupPages") {
@@ -353,10 +383,10 @@ export const action = async ({ request }) => {
         request,
       });
 
-      return {
-        success: true,
-        message: `Page & Menu Backup completed (${pageCount} ${pageCount === 1 ? "page" : "pages"}, ${menuCount} ${menuCount === 1 ? "menu" : "menus"}).`,
-      };
+      return backupResponse(
+        result.summary,
+        `Page & Menu Backup completed (${pageCount} ${pageCount === 1 ? "page" : "pages"}, ${menuCount} ${menuCount === 1 ? "menu" : "menus"}).`,
+      );
     }
 
     if (intent === "backupBlogs") {
@@ -380,7 +410,10 @@ export const action = async ({ request }) => {
         request,
       });
 
-      return { success: true, message: `Blog & Article Backup completed (${result.summary?.articles || 0} articles).` };
+      return backupResponse(
+        result.summary,
+        `Blog & Article Backup completed (${result.summary?.articles || 0} articles).`,
+      );
     }
 
     if (intent === "backupMenus") {
@@ -405,13 +438,16 @@ export const action = async ({ request }) => {
       });
 
       if ((result.summary?.menus || 0) === 0) {
-        return {
-          success: true,
-          message: "Navigation Menu Backup completed, but no menus were found on this store. Check that the app has navigation permissions.",
-        };
+        return backupResponse(
+          result.summary,
+          "Navigation Menu Backup completed, but no menus were found on this store. Check that the app has navigation permissions.",
+        );
       }
 
-      return { success: true, message: `Navigation Menu Backup completed (${result.summary?.menus || 0} menus).` };
+      return backupResponse(
+        result.summary,
+        `Navigation Menu Backup completed (${result.summary?.menus || 0} menus).`,
+      );
     }
 
     if (intent === "backupMetafields") {
@@ -447,10 +483,10 @@ export const action = async ({ request }) => {
       });
 
       if (values === 0 && defs === 0) {
-        return {
-          success: true,
-          message: "Metafield Backup completed, but no metafields or definitions were found on this store yet.",
-        };
+        return backupResponse(
+          result.summary,
+          "Metafield Backup completed, but no metafields or definitions were found on this store yet.",
+        );
       }
 
       // A partial capture is surfaced rather than hidden: a backup the merchant
@@ -459,10 +495,10 @@ export const action = async ({ request }) => {
         ? " Some resources could not be read — open the snapshot to review the warnings."
         : "";
 
-      return {
-        success: true,
-        message: `Metafield Backup completed (${values} metafields, ${defs} definitions).${warned}`,
-      };
+      return backupResponse(
+        result.summary,
+        `Metafield Backup completed (${values} metafields, ${defs} definitions).${warned}`,
+      );
     }
 
     if (intent === "delete") {
@@ -637,8 +673,16 @@ export default function RestorePoints() {
       {/* ── Action Feedback Banner ── */}
       {result?.message && (
         <Banner
-          tone={result.success ? "success" : "critical"}
-          title={result.success ? "Restore Point Action Complete" : "Action Failed"}
+          // A backup that captured only part of the store succeeds but must not
+          // look like a clean one, so it carries its own tone.
+          tone={result.success ? result.tone || "success" : "critical"}
+          title={
+            !result.success
+              ? "Action Failed"
+              : result.tone === "warning"
+              ? "Backup Saved — Incomplete Capture"
+              : "Restore Point Action Complete"
+          }
           action={
             !result.success && result.message?.includes("Settings") ? (
               <Link to="/app/settings" className="rv-btn rv-btn-secondary rv-btn-sm">

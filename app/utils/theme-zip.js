@@ -1,5 +1,46 @@
 import zlib from "node:zlib";
 
+/**
+ * Reads one theme file's bytes, whichever shape it arrives in.
+ *
+ * Theme files reach this app in three shapes and they are easy to confuse:
+ *
+ *   { filename, content, bodyType }        — a Revertly snapshot (normalized)
+ *   { filename, body: { content } }        — straight off the Admin API read
+ *   { filename, body: { type, value } }    — a themeFilesUpsert input
+ *
+ * Anything that understands only the first shape does not fail loudly on the
+ * others — it writes an *empty* file or drops it. That is how a theme ZIP full
+ * of blank liquid files, or a restore that quietly skips half a theme, gets
+ * handed to a merchant as a finished recovery.
+ *
+ * Returns null when there really is no content to read, so callers can report
+ * the file rather than silently substituting "".
+ */
+export function readThemeFileBody(file) {
+  if (!file) return null;
+
+  const base64Flag = file.bodyType === "BASE64" || file.isBase64 === true;
+  if (typeof file.content === "string") {
+    return { content: file.content, bodyType: base64Flag ? "BASE64" : "TEXT" };
+  }
+  if (typeof file.value === "string") {
+    return { content: file.value, bodyType: base64Flag ? "BASE64" : "TEXT" };
+  }
+
+  const body = file.body;
+  if (body && typeof body === "object") {
+    if (typeof body.contentBase64 === "string") return { content: body.contentBase64, bodyType: "BASE64" };
+    if (typeof body.encodedContent === "string") return { content: body.encodedContent, bodyType: "BASE64" };
+    if (typeof body.content === "string") return { content: body.content, bodyType: "TEXT" };
+    if (typeof body.value === "string") {
+      return { content: body.value, bodyType: body.type === "BASE64" ? "BASE64" : "TEXT" };
+    }
+  }
+
+  return null;
+}
+
 // CRC32 table for fast checksum computation
 const crcTable = new Int32Array(256);
 for (let i = 0; i < 256; i++) {
@@ -36,13 +77,17 @@ export function buildThemeZip(themeFiles = []) {
     const filePath = rawPath.replace(/^\/+/, "");
     const pathBuf = Buffer.from(filePath, "utf8");
 
-    // Decode binary base64 assets vs text files
-    let data;
-    if (f.bodyType === "BASE64" && f.content) {
-      data = Buffer.from(f.content, "base64");
-    } else {
-      data = Buffer.from(f.content || f.value || "", "utf8");
-    }
+    // Decode binary base64 assets vs text files. A file whose bytes cannot be
+    // read is left out of the archive entirely rather than written as an empty
+    // one — an empty layout/theme.liquid uploaded to Shopify is a broken store,
+    // and it looks identical to a successful restore.
+    const fileBody = readThemeFileBody(f);
+    if (!fileBody) continue;
+
+    const data =
+      fileBody.bodyType === "BASE64"
+        ? Buffer.from(fileBody.content, "base64")
+        : Buffer.from(fileBody.content, "utf8");
 
     const compressed = zlib.deflateRawSync(data);
     const useCompressed = compressed.length < data.length;

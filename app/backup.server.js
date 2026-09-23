@@ -6,7 +6,8 @@ import prisma from "./db.server.js";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { buildThemeZip } from "./utils/theme-zip.js";
+import { buildThemeZip, readThemeFileBody } from "./utils/theme-zip.js";
+import { pruneExpiredThemeZips } from "./themeZipStore.server.js";
 
 // ============================================================================
 // 0. SHARED GRAPHQL PLUMBING
@@ -69,13 +70,67 @@ function chunk(items, size) {
 }
 
 // ============================================================================
+// 0B. CAPTURE COMPLETENESS
+// ============================================================================
+
+/**
+ * Every resource fetcher below returns the plain shape its callers already
+ * expect (an array, or `{ blogs, articles }`). That shape has no room to say
+ * *how much* of the store it covers, so a fetcher that hit an error half way
+ * through used to be indistinguishable from a store that genuinely has that
+ * little in it — and the restore point was written READY either way.
+ *
+ * A caller that cares passes a `report` object, which the fetcher fills in:
+ *
+ *   complete  — Shopify confirmed there were no further pages
+ *   failed    — a read errored or throttled past the retry budget
+ *   truncated — collection stopped at this app's own safety ceiling
+ *   captured  — how many items were actually stored
+ *
+ * `createMultiResourceRestorePoint` reads these and discloses any gap on the
+ * restore point itself, so a merchant is never shown a clean backup of a store
+ * that was only partly read.
+ */
+function resetCaptureReport(report) {
+  const r = report || {};
+  r.complete = false;
+  r.failed = false;
+  r.truncated = false;
+  r.captured = 0;
+  r.error = null;
+  return r;
+}
+
+/** True when a GraphQL body carries top-level errors (throttling included). */
+function hasGraphqlErrors(json) {
+  return Array.isArray(json?.errors) && json.errors.length > 0;
+}
+
+function graphqlErrorText(json) {
+  return (json?.errors || [])
+    .map((e) => e?.message || "Unknown GraphQL error")
+    .slice(0, 3)
+    .join("; ");
+}
+
+// Safety ceilings. They exist so a pathological store cannot make a single
+// backup run unbounded; unlike the old hard caps they are reported as
+// `truncated` rather than passed off as a complete capture.
+const MAX_COLLECTIONS_PER_BACKUP = 5000;
+const MAX_PAGES_PER_BACKUP = 5000;
+const MAX_MENUS_PER_BACKUP = 500;
+const MAX_BLOGS_PER_BACKUP = 500;
+const MAX_ARTICLES_PER_BLOG = 5000;
+
+// ============================================================================
 // 1. THEMES BACKUP & RESTORE
 // ============================================================================
 
 /**
  * Fetches all themes and backs up the active (MAIN) theme's metadata and critical files.
  */
-export async function fetchThemeBackup(admin, targetThemeId = null) {
+export async function fetchThemeBackup(admin, targetThemeId = null, { report = null } = {}) {
+  const note = resetCaptureReport(report);
   try {
     const themeRes = await admin.graphql(
       `#graphql
@@ -103,6 +158,8 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
     }
 
     if (!mainTheme) {
+      note.failed = true;
+      note.error = "No theme was returned by Shopify.";
       return { themes: [], activeTheme: null, files: [] };
     }
 
@@ -117,7 +174,8 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
 
       while (hasNextPage && pageCount < MAX_THEME_PAGES) {
         pageCount++;
-        const filesRes = await admin.graphql(
+        const filesJson = await graphqlWithRetry(
+          admin,
           `#graphql
           query getAllThemeFiles($themeId: ID!, $cursor: String) {
             theme(id: $themeId) {
@@ -141,9 +199,20 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
               }
             }
           }`,
-          { variables: { themeId: mainTheme.id, cursor } }
+          { themeId: mainTheme.id, cursor },
+          { label: "theme files backup" }
         );
-        const filesJson = await filesRes.json();
+
+        // A theme page that errored is not the end of the theme. Treating it as
+        // one is how a 300-file theme gets stored as 250 files and still shown
+        // as a complete theme backup — the restore then quietly omits the rest.
+        if (hasGraphqlErrors(filesJson)) {
+          note.failed = true;
+          note.error = graphqlErrorText(filesJson);
+          console.warn(`[Revertly] Theme file read stopped early: ${note.error}`);
+          break;
+        }
+
         const filesConn = filesJson.data?.theme?.files;
         const nodes = filesConn?.nodes || [];
         if (nodes.length > 0) {
@@ -151,8 +220,16 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
         }
 
         hasNextPage = Boolean(filesConn?.pageInfo?.hasNextPage && filesConn?.pageInfo?.endCursor);
+        if (!hasNextPage) {
+          note.complete = true;
+          break;
+        }
         cursor = filesConn?.pageInfo?.endCursor || null;
         if (!cursor || nodes.length === 0) break;
+      }
+
+      if (hasNextPage && !note.failed && pageCount >= MAX_THEME_PAGES) {
+        note.truncated = true;
       }
 
       // If wild-card query returned empty (e.g. restrictive API permissions or stubbed environment),
@@ -225,23 +302,34 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
         );
         const filesJson = await filesRes.json();
         rawFiles = filesJson.data?.theme?.files?.nodes || [];
+        // The fallback is a fixed list of ~30 critical files, never the whole
+        // theme, so recovering through it is a partial capture by definition.
+        if (rawFiles.length > 0) note.truncated = true;
       }
     } catch (fileErr) {
       console.warn("Theme files fetch warning (non-fatal):", fileErr?.message || fileErr);
+      note.failed = true;
+      note.error = fileErr?.message || String(fileErr);
     }
 
     const files = rawFiles.map((f) => {
-      const textContent = f.body?.content;
-      const base64Content = f.body?.contentBase64 || f.body?.encodedContent;
-      const isBase64 = !textContent && typeof base64Content === "string";
-      const content = textContent ?? base64Content ?? "";
+      const body = readThemeFileBody(f) || { content: "", bodyType: "TEXT" };
       return {
         filename: f.filename,
-        size: f.size || (content ? content.length : 0),
-        content,
-        bodyType: isBase64 ? "BASE64" : "TEXT",
+        size: f.size || body.content.length,
+        content: body.content,
+        bodyType: body.bodyType,
       };
     });
+
+    note.captured = files.length;
+    // A theme whose files could not be read at all is not a theme backup, no
+    // matter that the theme's metadata came back fine.
+    if (files.length === 0) {
+      note.failed = true;
+      note.complete = false;
+      note.error = note.error || "No theme files could be read.";
+    }
 
     return {
       themes,
@@ -256,6 +344,8 @@ export async function fetchThemeBackup(admin, targetThemeId = null) {
     };
   } catch (err) {
     console.error("fetchThemeBackup error:", err?.message || err);
+    note.failed = true;
+    note.error = err?.message || String(err);
     return null;
   }
 }
@@ -403,19 +493,24 @@ export async function restoreThemeFiles(admin, themeId, files) {
   }
 
   try {
-    const inputFiles = files
-      .filter((f) => f && f.filename && (typeof f.content === "string" || typeof f.value === "string"))
-      .map((f) => {
-        const content = typeof f.content === "string" ? f.content : f.value || "";
-        const bodyType = f.bodyType === "BASE64" || f.isBase64 ? "BASE64" : "TEXT";
-        return {
-          filename: f.filename,
-          body: {
-            type: bodyType,
-            value: content,
-          },
-        };
+    // A file whose bytes cannot be read is named, not dropped. Skipping it
+    // quietly is how a restore reports "Successfully restored 180 theme files"
+    // for a 304-file theme and leaves the storefront half-reverted.
+    const unreadable = [];
+    const inputFiles = [];
+    for (const f of files) {
+      const filename = f?.filename || f?.key;
+      if (!filename) continue;
+      const body = readThemeFileBody(f);
+      if (!body) {
+        unreadable.push(filename);
+        continue;
+      }
+      inputFiles.push({
+        filename,
+        body: { type: body.bodyType, value: body.content },
       });
+    }
 
     if (inputFiles.length === 0) {
       return { success: false, message: "No valid file content found in theme backup." };
@@ -486,6 +581,12 @@ export async function restoreThemeFiles(admin, themeId, files) {
       };
     }
 
+    if (unreadable.length > 0) {
+      allErrors.push(
+        `${unreadable.length} file(s) held no readable content and were skipped: ${unreadable.slice(0, 3).join(", ")}`
+      );
+    }
+
     const message =
       allErrors.length > 0
         ? `Restored ${allUpserted.length} theme files with warnings: ${allErrors.slice(0, 2).join("; ")}`
@@ -495,6 +596,7 @@ export async function restoreThemeFiles(admin, themeId, files) {
       success: true,
       count: allUpserted.length,
       files: allUpserted,
+      skipped: unreadable,
       warnings: allErrors,
       message,
     };
@@ -614,6 +716,9 @@ export async function createDraftStagingTheme(admin, shop, baseName, files, sess
         if (!fs.existsSync(zipDir)) {
           fs.mkdirSync(zipDir, { recursive: true });
         }
+        // Every staging restore clears out archives whose download window has
+        // closed, so a merchant's theme source does not accumulate on disk.
+        pruneExpiredThemeZips();
         const zipBuf = buildThemeZip(files);
         fs.writeFileSync(path.join(zipDir, `${token}.zip`), zipBuf);
         srcUrl = `${effectiveAppOrigin.replace(/\/$/, "")}/api/theme-download/${token}.zip`;
@@ -1027,14 +1132,17 @@ export async function fetchLiveProductsBackup(admin, shop = null, options = {}) 
 /**
  * Fetches collections (smart & custom) along with ruleSet conditions
  */
-export async function fetchCollectionsBackup(admin) {
+export async function fetchCollectionsBackup(admin, { report = null } = {}) {
+  const note = resetCaptureReport(report);
+  const allCollections = [];
+
   try {
-    const allCollections = [];
     let hasNextPage = true;
     let cursor = null;
 
-    while (hasNextPage && allCollections.length < 250) {
-      const res = await admin.graphql(
+    while (hasNextPage && allCollections.length < MAX_COLLECTIONS_PER_BACKUP) {
+      const json = await graphqlWithRetry(
+        admin,
         `#graphql
         query getCollections($cursor: String) {
           collections(first: 100, after: $cursor) {
@@ -1065,21 +1173,45 @@ export async function fetchCollectionsBackup(admin) {
             }
           }
         }`,
-        { variables: { cursor } }
+        { cursor },
+        { label: "collections backup" }
       );
-      const json = await res.json();
+
+      // A page that errored is not an empty page. Stopping here and reporting
+      // the failure keeps a half-read catalog from being stored as the whole
+      // of it — the caller decides how to disclose that.
+      if (hasGraphqlErrors(json)) {
+        note.failed = true;
+        note.error = graphqlErrorText(json);
+        console.warn(`[Revertly] Collections backup stopped early: ${note.error}`);
+        break;
+      }
+
       const nodes = json.data?.collections?.nodes || [];
       allCollections.push(...nodes);
 
       hasNextPage = Boolean(json.data?.collections?.pageInfo?.hasNextPage);
       cursor = json.data?.collections?.pageInfo?.endCursor || null;
+      if (!hasNextPage) {
+        note.complete = true;
+        break;
+      }
       if (!cursor) break;
     }
 
+    if (hasNextPage && !note.failed && allCollections.length >= MAX_COLLECTIONS_PER_BACKUP) {
+      note.truncated = true;
+    }
+    note.captured = allCollections.length;
     return allCollections;
   } catch (err) {
     console.error("fetchCollectionsBackup error:", err?.message || err);
-    return [];
+    note.failed = true;
+    note.error = err?.message || String(err);
+    note.captured = allCollections.length;
+    // Whatever was read before the throw is still worth keeping; the caller is
+    // told it is partial.
+    return allCollections;
   }
 }
 
@@ -1246,14 +1378,17 @@ export async function restoreCollection(admin, col) {
 /**
  * Fetches content pages (About, Contact, Policies, Landing Pages)
  */
-export async function fetchPagesBackup(admin) {
+export async function fetchPagesBackup(admin, { report = null } = {}) {
+  const note = resetCaptureReport(report);
+  const allPages = [];
+
   try {
-    let allPages = [];
     let hasNextPage = true;
     let cursor = null;
 
-    while (hasNextPage && allPages.length < 250) {
-      const res = await admin.graphql(
+    while (hasNextPage && allPages.length < MAX_PAGES_PER_BACKUP) {
+      const json = await graphqlWithRetry(
+        admin,
         `#graphql
         query getPages($cursor: String) {
           pages(first: 50, after: $cursor) {
@@ -1272,21 +1407,40 @@ export async function fetchPagesBackup(admin) {
             }
           }
         }`,
-        { variables: { cursor } }
+        { cursor },
+        { label: "pages backup" }
       );
-      const json = await res.json();
+
+      if (hasGraphqlErrors(json)) {
+        note.failed = true;
+        note.error = graphqlErrorText(json);
+        console.warn(`[Revertly] Pages backup stopped early: ${note.error}`);
+        break;
+      }
+
       const nodes = json.data?.pages?.nodes || [];
       allPages.push(...nodes);
 
       hasNextPage = Boolean(json.data?.pages?.pageInfo?.hasNextPage);
       cursor = json.data?.pages?.pageInfo?.endCursor || null;
+      if (!hasNextPage) {
+        note.complete = true;
+        break;
+      }
       if (!cursor) break;
     }
 
+    if (hasNextPage && !note.failed && allPages.length >= MAX_PAGES_PER_BACKUP) {
+      note.truncated = true;
+    }
+    note.captured = allPages.length;
     return allPages;
   } catch (err) {
     console.warn("fetchPagesBackup warning (check scopes):", err?.message || err);
-    return [];
+    note.failed = true;
+    note.error = err?.message || String(err);
+    note.captured = allPages.length;
+    return allPages;
   }
 }
 
@@ -1435,24 +1589,32 @@ export async function restorePage(admin, p) {
 /**
  * Fetches navigation linklists (Header, Footer menus)
  */
-export async function fetchMenusBackup(admin) {
+export async function fetchMenusBackup(admin, { report = null } = {}) {
+  const note = resetCaptureReport(report);
+  const allMenus = [];
+
   try {
-    const res = await admin.graphql(
-      `#graphql
-      query getMenus {
-        menus(first: 50) {
-          nodes {
-            id
-            title
-            handle
-            isDefault
-            items {
+    let hasNextPage = true;
+    let cursor = null;
+
+    while (hasNextPage && allMenus.length < MAX_MENUS_PER_BACKUP) {
+      // Shopify navigation nests three levels deep (top item → sub item →
+      // sub-sub item). Selecting only two silently drops the third on capture,
+      // and `restoreMenu` then rebuilds a menu the merchant never had.
+      const json = await graphqlWithRetry(
+        admin,
+        `#graphql
+        query getMenus($cursor: String) {
+          menus(first: 50, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
               id
               title
-              url
-              type
-              resourceId
-              tags
+              handle
+              isDefault
               items {
                 id
                 title
@@ -1460,17 +1622,60 @@ export async function fetchMenusBackup(admin) {
                 type
                 resourceId
                 tags
+                items {
+                  id
+                  title
+                  url
+                  type
+                  resourceId
+                  tags
+                  items {
+                    id
+                    title
+                    url
+                    type
+                    resourceId
+                    tags
+                  }
+                }
               }
             }
           }
-        }
-      }`
-    );
-    const json = await res.json();
-    return json.data?.menus?.nodes || [];
+        }`,
+        { cursor },
+        { label: "menus backup" }
+      );
+
+      if (hasGraphqlErrors(json)) {
+        note.failed = true;
+        note.error = graphqlErrorText(json);
+        console.warn(`[Revertly] Menus backup stopped early: ${note.error}`);
+        break;
+      }
+
+      const nodes = json.data?.menus?.nodes || [];
+      allMenus.push(...nodes);
+
+      hasNextPage = Boolean(json.data?.menus?.pageInfo?.hasNextPage);
+      cursor = json.data?.menus?.pageInfo?.endCursor || null;
+      if (!hasNextPage) {
+        note.complete = true;
+        break;
+      }
+      if (!cursor) break;
+    }
+
+    if (hasNextPage && !note.failed && allMenus.length >= MAX_MENUS_PER_BACKUP) {
+      note.truncated = true;
+    }
+    note.captured = allMenus.length;
+    return allMenus;
   } catch (err) {
     console.warn("fetchMenusBackup warning (check scopes):", err?.message || err);
-    return [];
+    note.failed = true;
+    note.error = err?.message || String(err);
+    note.captured = allMenus.length;
+    return allMenus;
   }
 }
 
@@ -1701,49 +1906,76 @@ export async function restoreMenu(admin, menu) {
 /**
  * Fetches all blogs and published/draft articles with bodyHtml, tags, author, and handles
  */
-export async function fetchBlogsAndArticlesBackup(admin) {
-  try {
-    const res = await admin.graphql(
-      `#graphql
-      query getBlogsWithArticles {
-        blogs(first: 25) {
-          nodes {
+const ARTICLE_FIELDS = `#graphql
+  id
+  title
+  handle
+  body
+  summary
+  tags
+  templateSuffix
+  isPublished
+  publishedAt
+  author {
+    name
+  }
+  image {
+    url
+    altText
+  }`;
+
+export async function fetchBlogsAndArticlesBackup(admin, { report = null } = {}) {
+  const note = resetCaptureReport(report);
+  const blogs = [];
+  const flattenedArticles = [];
+
+  /**
+   * Reads the rest of one blog's articles.
+   *
+   * A blog is a connection of its own: `blogs { articles(first: 50) }` returns
+   * the first page and nothing else, so a news blog with 300 posts used to be
+   * backed up as 50 — a silent loss of the SEO content this backup exists to
+   * protect.
+   */
+  const drainArticles = async (blog, startCursor) => {
+    let cursor = startCursor;
+    while (cursor) {
+      const blogArticleCount = flattenedArticles.filter((a) => a.blogId === blog.id).length;
+      if (blogArticleCount >= MAX_ARTICLES_PER_BLOG) {
+        note.truncated = true;
+        return;
+      }
+
+      const json = await graphqlWithRetry(
+        admin,
+        `#graphql
+        query getBlogArticlesPage($blogId: ID!, $cursor: String) {
+          blog(id: $blogId) {
             id
-            title
-            handle
-            commentPolicy
-            templateSuffix
-            articles(first: 50) {
+            articles(first: 50, after: $cursor) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
               nodes {
-                id
-                title
-                handle
-                body
-                summary
-                tags
-                templateSuffix
-                isPublished
-                publishedAt
-                author {
-                  name
-                }
-                image {
-                  url
-                  altText
-                }
+                ${ARTICLE_FIELDS}
               }
             }
           }
-        }
-      }`
-    );
-    const json = await res.json();
-    const blogs = json.data?.blogs?.nodes || [];
+        }`,
+        { blogId: blog.id, cursor },
+        { label: "blog articles backup" }
+      );
 
-    const flattenedArticles = [];
-    for (const blog of blogs) {
-      const articles = blog.articles?.nodes || [];
-      for (const art of articles) {
+      if (hasGraphqlErrors(json)) {
+        note.failed = true;
+        note.error = graphqlErrorText(json);
+        console.warn(`[Revertly] Article backup stopped early on ${blog.handle}: ${note.error}`);
+        return;
+      }
+
+      const conn = json.data?.blog?.articles;
+      for (const art of conn?.nodes || []) {
         flattenedArticles.push({
           ...art,
           blogId: blog.id,
@@ -1751,22 +1983,102 @@ export async function fetchBlogsAndArticlesBackup(admin) {
           blogHandle: blog.handle,
         });
       }
+
+      cursor = conn?.pageInfo?.hasNextPage ? conn?.pageInfo?.endCursor || null : null;
+    }
+  };
+
+  try {
+    let hasNextPage = true;
+    let cursor = null;
+
+    while (hasNextPage && blogs.length < MAX_BLOGS_PER_BACKUP) {
+      const json = await graphqlWithRetry(
+        admin,
+        `#graphql
+        query getBlogsWithArticles($cursor: String) {
+          blogs(first: 25, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              title
+              handle
+              commentPolicy
+              templateSuffix
+              articles(first: 50) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  ${ARTICLE_FIELDS}
+                }
+              }
+            }
+          }
+        }`,
+        { cursor },
+        { label: "blogs backup" }
+      );
+
+      if (hasGraphqlErrors(json)) {
+        note.failed = true;
+        note.error = graphqlErrorText(json);
+        console.warn(`[Revertly] Blogs backup stopped early: ${note.error}`);
+        break;
+      }
+
+      const nodes = json.data?.blogs?.nodes || [];
+
+      for (const blog of nodes) {
+        const conn = blog.articles;
+        for (const art of conn?.nodes || []) {
+          flattenedArticles.push({
+            ...art,
+            blogId: blog.id,
+            blogTitle: blog.title,
+            blogHandle: blog.handle,
+          });
+        }
+        if (conn?.pageInfo?.hasNextPage && conn?.pageInfo?.endCursor) {
+          await drainArticles(blog, conn.pageInfo.endCursor);
+        }
+
+        blogs.push({
+          id: blog.id,
+          title: blog.title,
+          handle: blog.handle,
+          commentPolicy: blog.commentPolicy,
+          templateSuffix: blog.templateSuffix || "",
+          // Counted from what was actually captured, so the per-blog number a
+          // merchant sees can never exceed what a restore can put back.
+          articleCount: flattenedArticles.filter((a) => a.blogId === blog.id).length,
+        });
+      }
+
+      hasNextPage = Boolean(json.data?.blogs?.pageInfo?.hasNextPage);
+      cursor = json.data?.blogs?.pageInfo?.endCursor || null;
+      if (!hasNextPage) {
+        note.complete = true;
+        break;
+      }
+      if (!cursor) break;
     }
 
-    return {
-      blogs: blogs.map((b) => ({
-        id: b.id,
-        title: b.title,
-        handle: b.handle,
-        commentPolicy: b.commentPolicy,
-        templateSuffix: b.templateSuffix || "",
-        articleCount: b.articles?.nodes?.length || 0,
-      })),
-      articles: flattenedArticles,
-    };
+    if (hasNextPage && !note.failed && blogs.length >= MAX_BLOGS_PER_BACKUP) {
+      note.truncated = true;
+    }
+    note.captured = flattenedArticles.length;
+    return { blogs, articles: flattenedArticles };
   } catch (err) {
     console.warn("fetchBlogsAndArticlesBackup warning (check scopes):", err?.message || err);
-    return { blogs: [], articles: [] };
+    note.failed = true;
+    note.error = err?.message || String(err);
+    note.captured = flattenedArticles.length;
+    return { blogs, articles: flattenedArticles };
   }
 }
 
@@ -3195,6 +3507,19 @@ export async function createMultiResourceRestorePoint({
     // 2. Concurrently fetch all requested resources using Promise.allSettled
     const tasks = [];
 
+    // Completeness records, one per resource. A fetcher that stopped early
+    // fills these in, and step 3 turns them into something the merchant can
+    // actually see on the restore point.
+    const capture = {
+      products: resetCaptureReport({}),
+      themes: resetCaptureReport({}),
+      collections: resetCaptureReport({}),
+      pages: resetCaptureReport({}),
+      menus: resetCaptureReport({}),
+      articles: resetCaptureReport({}),
+      metafields: resetCaptureReport({}),
+    };
+
     // Task 0: Products.
     //
     // Read the live catalog, not the local ProductSnapshot mirror. The mirror is
@@ -3242,35 +3567,35 @@ export async function createMultiResourceRestorePoint({
 
     // Task 1: Theme & Assets
     if (options.includeThemes !== false) {
-      tasks.push(fetchThemeBackup(admin, themeId));
+      tasks.push(fetchThemeBackup(admin, themeId, { report: capture.themes }));
     } else {
       tasks.push(Promise.resolve(null));
     }
 
     // Task 2: Collections
     if (options.includeCollections !== false) {
-      tasks.push(fetchCollectionsBackup(admin));
+      tasks.push(fetchCollectionsBackup(admin, { report: capture.collections }));
     } else {
       tasks.push(Promise.resolve([]));
     }
 
     // Task 3: Pages
     if (options.includePages !== false) {
-      tasks.push(fetchPagesBackup(admin));
+      tasks.push(fetchPagesBackup(admin, { report: capture.pages }));
     } else {
       tasks.push(Promise.resolve([]));
     }
 
     // Task 4: Navigation Menus
     if (options.includeMenus !== false) {
-      tasks.push(fetchMenusBackup(admin));
+      tasks.push(fetchMenusBackup(admin, { report: capture.menus }));
     } else {
       tasks.push(Promise.resolve([]));
     }
 
     // Task 5: Blogs & Articles
     if (options.includeArticles !== false) {
-      tasks.push(fetchBlogsAndArticlesBackup(admin));
+      tasks.push(fetchBlogsAndArticlesBackup(admin, { report: capture.articles }));
     } else {
       tasks.push(Promise.resolve({ blogs: [], articles: [] }));
     }
@@ -3307,7 +3632,94 @@ export async function createMultiResourceRestorePoint({
     const articleCount = Array.isArray(articleData?.articles) ? articleData.articles.length : 0;
     const metafieldCount = metafieldData?.counts?.metafields || 0;
 
-    // 3. Update RestorePoint to READY status
+    // A fetcher that rejected outright never got to fill in its report, so
+    // record the rejection here — otherwise an exception would read as an
+    // empty store.
+    const settled = {
+      products: prodRes,
+      themes: themeRes,
+      collections: colRes,
+      pages: pageRes,
+      menus: menuRes,
+      articles: articleRes,
+      metafields: metafieldRes,
+    };
+    for (const [key, outcome] of Object.entries(settled)) {
+      if (outcome.status === "rejected") {
+        capture[key].failed = true;
+        capture[key].error = outcome.reason?.message || String(outcome.reason);
+      }
+    }
+
+    capture.products.failed = Boolean(productResult?.failed);
+    capture.products.truncated = productsTruncated;
+    capture.products.captured = products.length;
+    // Metafield capture already reports per-owner problems of its own.
+    capture.metafields.captured = metafieldCount;
+    if (metafieldData?.warnings?.length > 0) {
+      capture.metafields.failed = true;
+      capture.metafields.error = `${metafieldData.warnings.length} resources could not be read`;
+    } else if (metafieldData?.counts?.truncatedOwners > 0) {
+      capture.metafields.truncated = true;
+      capture.metafields.error = `${metafieldData.counts.truncatedOwners} owners had more metafields than one capture holds`;
+    }
+
+    // 3. Build the disclosure the merchant reads on the restore point.
+    //
+    // A backup whose capture stopped short is still worth keeping — it holds
+    // real data — but it must never be presented as a complete one. Silence
+    // here is the failure mode that matters: a merchant restores from what
+    // they were told was a full snapshot and finds half their store missing.
+    const requested = {
+      products: options.includeProducts !== false,
+      themes: options.includeThemes !== false,
+      collections: options.includeCollections !== false,
+      pages: options.includePages !== false,
+      menus: options.includeMenus !== false,
+      articles: options.includeArticles !== false,
+      metafields: options.includeMetafields === true,
+    };
+    const LABELS = {
+      products: "products",
+      themes: "theme files",
+      collections: "collections",
+      pages: "pages",
+      menus: "navigation menus",
+      articles: "blog articles",
+      metafields: "metafields",
+    };
+
+    const disclosures = [];
+    const incomplete = [];
+    for (const [key, wanted] of Object.entries(requested)) {
+      if (!wanted) continue;
+      const note = capture[key];
+      if (!note.failed && !note.truncated) continue;
+      incomplete.push(key);
+      disclosures.push(
+        note.failed
+          ? `${LABELS[key]} could not be fully read from Shopify (${note.captured} captured${note.error ? `: ${note.error}` : ""})`
+          : `${LABELS[key]} exceeded this backup's capture limit (${note.captured} captured)`
+      );
+    }
+
+    // The product path has two disclosures of its own that are not gaps in the
+    // capture but do change what the snapshot means.
+    if (
+      productSource === "mirror" &&
+      admin &&
+      options.includeProducts !== false &&
+      options.useProductMirror !== true
+    ) {
+      disclosures.push("products were captured from the local baseline because Shopify's catalog could not be read");
+    }
+
+    const partial = incomplete.length > 0;
+    const finalDescription = disclosures.length
+      ? `${description ? `${description} ` : ""}[Partial capture: ${disclosures.join("; ")}.]`
+      : description;
+
+    // 4. Update RestorePoint to READY status
     const updated = await prisma.restorePoint.update({
       where: { id: rp.id },
       data: {
@@ -3323,14 +3735,8 @@ export async function createMultiResourceRestorePoint({
         articleCount,
         metafieldCount,
         // A truncated capture is surfaced rather than hidden: the merchant needs
-        // to know this restore point does not cover their whole catalog. A
-        // fallback to the local baseline is called out for the same reason —
-        // it means the snapshot may not reflect the very latest edits.
-        description: productsTruncated
-          ? `${description ? `${description} ` : ""}[Partial capture: the catalog exceeded this plan's product allowance or the maximum backup size, so ${products.length} products were stored.]`
-          : productSource === "mirror" && admin && options.includeProducts !== false && options.useProductMirror !== true
-          ? `${description ? `${description} ` : ""}[Products captured from the local baseline: Shopify's catalog could not be read during this backup.]`
-          : description,
+        // to know this restore point does not cover their whole store.
+        description: finalDescription,
         snapshotData: products,
         themeData: themeData || undefined,
         collectionData: collections.length > 0 ? collections : undefined,
@@ -3352,7 +3758,15 @@ export async function createMultiResourceRestorePoint({
         products: products.length,
         productsTruncated,
         productSource,
+        // `partial` is what callers check before telling a merchant the backup
+        // is complete; `incomplete` names which resources fell short.
+        partial,
+        incomplete,
+        disclosures,
         themes: themeCount,
+        // The file count is what makes a theme backup meaningful — "completed"
+        // reads the same whether it stored 304 files or none.
+        themeFiles: Array.isArray(themeData?.files) ? themeData.files.length : 0,
         collections: collectionCount,
         pages: pageCount,
         menus: menuCount,
@@ -4277,4 +4691,8 @@ export {
   parseProductsCsv,
   detectAndParseCsvArchive,
 } from "./utils/csv-portability.js";
+
+// Re-exported so route modules can normalize theme file bodies without pulling
+// a node:zlib importer into the browser bundle.
+export { readThemeFileBody } from "./utils/theme-zip.js";
 
