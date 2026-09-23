@@ -385,15 +385,18 @@ export const action = async ({ request, params }) => {
         }
       }
 
+      const appOrigin = new URL(request.url).origin;
       const startTime = new Date();
       const res = await restoreThemeFilesWithSafety({
         admin,
+        session,
         shop,
         themeId: themeData.activeTheme.id,
         themeName: themeData.activeTheme.name,
         files: themeData.files,
         selectedFilenames,
         mode,
+        appOrigin,
       });
 
       const filesCount = res.filesRestored || (selectedFilenames ? selectedFilenames.length : themeData.files.length);
@@ -1428,6 +1431,16 @@ export default function RestorePointDetail() {
             );
           })()}
 
+          {themeData?.files?.length > 0 && (
+            <a
+              href={`/app/restore-points/${restorePoint.id}/export?format=zip`}
+              className="rv-btn rv-btn-primary rv-btn-sm"
+              title="Download standard Shopify theme (.zip) ready to upload in Shopify Admin > Online Store > Themes"
+            >
+              <DownloadIcon size={14} />
+              <span>Download Theme (.zip)</span>
+            </a>
+          )}
           <a
             href={`/app/restore-points/${restorePoint.id}/export`}
             className="rv-btn rv-btn-secondary rv-btn-sm"
@@ -1509,7 +1522,54 @@ export default function RestorePointDetail() {
               : "Operation Warning"
           }
         >
-          {result.message}
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <div>{result.message}</div>
+            {result.message?.includes("Theme API exemption") && (
+              <div
+                style={{
+                  background: "rgba(255, 255, 255, 0.85)",
+                  padding: "12px 14px",
+                  borderRadius: "8px",
+                  border: "1px solid rgba(0, 0, 0, 0.08)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                  marginTop: "4px",
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: "13px", color: "var(--rv-text-main, #202223)" }}>
+                  Instant 1-Click Recovery Solution:
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--rv-text-subdued, #6d7175)", lineHeight: 1.5 }}>
+                  1. Click <b>Download Theme as .ZIP</b> below to get your complete theme archive.
+                  <br />
+                  2. In your Shopify Admin, navigate to <b>Online Store &gt; Themes</b>.
+                  <br />
+                  3. Under <i>Theme library</i>, click <b>Add theme &gt; Upload zip file</b>. Your theme will be restored completely!
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginTop: "4px" }}>
+                  <a
+                    href={`/app/restore-points/${restorePoint.id}/export?format=zip`}
+                    className="rv-btn rv-btn-primary rv-btn-sm"
+                    style={{ textDecoration: "none" }}
+                  >
+                    <DownloadIcon size={14} />
+                    <span>Download Theme as .ZIP (Ready to Upload)</span>
+                  </a>
+                  <a
+                    href="https://docs.google.com/forms/d/e/1FAIpQLSfZTB1vxFC5d1-GPdqYunWRGUoDcOheHQzfK2RoEFEHrknt5g/viewform"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rv-btn rv-btn-secondary rv-btn-sm"
+                    style={{ textDecoration: "none" }}
+                  >
+                    <ExternalLinkIcon size={14} />
+                    <span>Submit Shopify Partner Exemption Form</span>
+                  </a>
+                </div>
+              </div>
+            )}
+          </div>
         </Banner>
       )}
 

@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
+import { buildThemeZip } from "../utils/theme-zip.js";
 
 export const loader = async ({ request, params }) => {
   const { session } = await authenticate.admin(request);
@@ -31,8 +32,35 @@ export const loader = async ({ request, params }) => {
     request,
   });
 
+  const url = new URL(request.url);
+  const format = url.searchParams.get("format");
   const cleanShop = shop.replace(/^https?:\/\//, "").replace(/[^a-zA-Z0-9_-]/g, "_");
   const dateStr = new Date(restorePoint.createdAt).toISOString().split("T")[0];
+
+  // Direct Shopify theme uploadable ZIP export
+  if (format === "zip") {
+    const themeFiles = restorePoint.themeData?.files || [];
+    if (!themeFiles.length) {
+      throw new Response("No theme files available in this restore point to generate ZIP", { status: 404 });
+    }
+
+    const themeName = restorePoint.themeData?.activeTheme?.name || "theme";
+    const cleanThemeName = themeName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
+    const zipFilename = `shopify-theme-${cleanThemeName}-rp${restorePoint.id}-${dateStr}.zip`;
+    const zipBuffer = buildThemeZip(themeFiles);
+
+    return new Response(zipBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${zipFilename}"`,
+        "Content-Length": String(zipBuffer.length),
+        "Access-Control-Expose-Headers": "Content-Disposition",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+      },
+    });
+  }
+
   const filename = `revertly-backup-${cleanShop}-rp${restorePoint.id}-${dateStr}.json`;
 
   const exportPayload = {
@@ -78,3 +106,4 @@ export const loader = async ({ request, params }) => {
     },
   });
 };
+
