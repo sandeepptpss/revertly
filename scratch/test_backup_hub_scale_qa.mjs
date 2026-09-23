@@ -18,7 +18,8 @@
  * tree — is caught here instead of in production.
  *
  * Run: export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22
- *      node scratch/test_backup_hub_scale_qa.mjs
+ *      node --import ./scratch/jsx-register.mjs scratch/test_backup_hub_scale_qa.mjs
+ *      (the loader is needed for the .jsx download route in section 9)
  */
 import assert from "node:assert";
 import fs from "node:fs";

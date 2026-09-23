@@ -464,7 +464,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || String(colIndex),
           productTitle: `Collection: ${target.title}`,
           status: res.success ? "SUCCESS" : "FAILED",
-          errorMessage: res.error || (res.success ? null : "Failed to restore collection"),
+          errorMessage: res.message || res.error || (res.success ? null : "Failed to restore collection"),
         }],
       });
 
@@ -503,7 +503,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || String(pageIndex),
           productTitle: `Page: ${target.title}`,
           status: res.success ? "SUCCESS" : "FAILED",
-          errorMessage: res.error || (res.success ? null : "Failed to restore page"),
+          errorMessage: res.message || res.error || (res.success ? null : "Failed to restore page"),
         }],
       });
 
@@ -542,7 +542,7 @@ export const action = async ({ request, params }) => {
           productId: target.id || String(articleIndex),
           productTitle: `Article: ${target.title}`,
           status: res?.success ? "SUCCESS" : "FAILED",
-          errorMessage: res?.error || (res?.success ? null : "Failed to restore article"),
+          errorMessage: res?.message || res?.error || (res?.success ? null : "Failed to restore article"),
         }],
       });
 
@@ -949,14 +949,18 @@ export const action = async ({ request, params }) => {
     let targetProducts = allSavedProducts;
     if (intent === "restore_single_product") {
       const targetProductId = cleanId(formData.get("productId"));
-      targetProducts = allSavedProducts.filter((s) => cleanId(s.productId) === targetProductId);
+      targetProducts = allSavedProducts.filter(
+        (s) => cleanId(s.productId || s.id || s.snapshotData?.id) === targetProductId
+      );
       if (targetProducts.length === 0) {
         return { success: false, message: `Product #${targetProductId} not found in restore point snapshot.` };
       }
     } else if (intent === "restore_selected_products") {
       const selectedRaw = formData.get("selectedProductIds") || "";
       const selectedIds = new Set(selectedRaw.split(",").map(cleanId).filter(Boolean));
-      targetProducts = allSavedProducts.filter((s) => selectedIds.has(cleanId(s.productId)));
+      targetProducts = allSavedProducts.filter((s) =>
+        selectedIds.has(cleanId(s.productId || s.id || s.snapshotData?.id))
+      );
       if (targetProducts.length === 0) {
         return { success: false, message: "No matching products found for selection." };
       }
@@ -974,9 +978,14 @@ export const action = async ({ request, params }) => {
       where: { shop },
       select: { productId: true, snapshotData: true },
     });
-    const currentMap = Object.fromEntries(
-      currentSnapshots.map((s) => [s.productId, s.snapshotData]),
-    );
+    const currentMap = {};
+    for (const s of currentSnapshots) {
+      if (s.productId) {
+        currentMap[s.productId] = s.snapshotData;
+        currentMap[cleanId(s.productId)] = s.snapshotData;
+        currentMap[`gid://shopify/Product/${cleanId(s.productId)}`] = s.snapshotData;
+      }
+    }
 
     const job = await prisma.rollbackJob.create({
       data: {
@@ -1005,7 +1014,7 @@ export const action = async ({ request, params }) => {
     let failedCount = 0;
 
     for (const saved of targetProducts) {
-      const rawProductId = saved.productId;
+      const rawProductId = saved.productId || saved.id || saved.snapshotData?.id;
       const productId = cleanId(rawProductId);
       const savedSnap = saved.snapshotData || saved;
       const current = currentMap[productId] || currentMap[rawProductId] || currentMap[`gid://shopify/Product/${productId}`];
@@ -1308,28 +1317,50 @@ export default function RestorePointDetail() {
     if (type === "PAGES" && (pageData.length > 0 || menuData.length > 0)) return "pages";
     if (type === "BLOGS" && (articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)) return "articles";
     if (type === "MENUS" && menuData.length > 0) return "pages";
-    if (type === "METAFIELDS" && metafieldTotal > 0) return "metafields";
+    if (type === "METAFIELDS") return "metafields";
     if (differences.length > 0) return "products";
     if (themeData?.activeTheme) return "theme";
     if (savedCount > 0) return "products";
     if (collectionData.length > 0) return "collections";
     if (pageData.length > 0 || menuData.length > 0) return "pages";
     if (articleData?.articles?.length > 0) return "articles";
-    if (metafieldTotal > 0) return "metafields";
+    if (metafieldTotal > 0 || type === "METAFIELDS") return "metafields";
     return "products";
   });
 
+  const isMetafieldBackup = restorePoint.backupType === "METAFIELDS";
+  const shouldShowProductsTab =
+    savedCount > 0 ||
+    differences.length > 0 ||
+    ["FULL", "PRODUCTS"].includes(restorePoint.backupType) ||
+    (!themeData?.activeTheme &&
+      collectionData.length === 0 &&
+      pageData.length === 0 &&
+      menuData.length === 0 &&
+      (!articleData?.articles || articleData.articles.length === 0) &&
+      metafieldTotal === 0 &&
+      !isMetafieldBackup);
+
   const tabs = [
     ...(themeData?.activeTheme ? [{ id: "theme", label: "Theme Code", count: filesList.length }] : []),
-    ...((savedCount > 0 || differences.length > 0 || ["FULL", "PRODUCTS"].includes(restorePoint.backupType) || (!themeData?.activeTheme && collectionData.length === 0 && pageData.length === 0 && menuData.length === 0 && (!articleData?.articles || articleData.articles.length === 0)))
-      ? [{ id: "products", label: "Products", count: differences.length }]
-      : []),
+    ...(shouldShowProductsTab ? [{ id: "products", label: "Products", count: differences.length }] : []),
     ...(collectionData.length > 0 ? [{ id: "collections", label: "Collections", count: collectionData.length }] : []),
-    ...(pageData.length > 0 || menuData.length > 0 ? [{ id: "pages", label: "Pages & Menus", count: pageData.length + menuData.length }] : []),
+    ...(pageData.length > 0 || menuData.length > 0
+      ? [{
+          id: "pages",
+          label:
+            pageData.length > 0 && menuData.length > 0
+              ? "Pages & Menus"
+              : menuData.length > 0
+              ? "Navigation Menus"
+              : "Pages",
+          count: pageData.length + menuData.length,
+        }]
+      : []),
     ...((articleData?.articles?.length > 0 || articleData?.blogs?.length > 0)
       ? [{ id: "articles", label: "Articles", count: articleData.articles?.length || 0 }]
       : []),
-    ...(metafieldTotal > 0
+    ...(isMetafieldBackup || metafieldTotal > 0
       ? [{ id: "metafields", label: "Metafields", count: metafieldValueCount }]
       : []),
     ...(lastJob ? [{ id: "history", label: "History" }] : []),
