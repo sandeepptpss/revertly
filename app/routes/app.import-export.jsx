@@ -137,6 +137,50 @@ export const action = async ({ request }) => {
         }
       }
 
+      // Metafield capture and restore are both Growth-gated. Import reached the
+      // same data through a third door, so an unentitled store could restore
+      // metafields live simply by uploading an archive. The gate is enforced
+      // here too: a metafields-only archive is refused outright, and a mixed
+      // archive imports everything else rather than failing wholesale.
+      const archiveMetafields =
+        parsed?.storeAssets?.metafields || parsed?.metafields || parsed?.metafieldData || null;
+      let metafieldsSkippedForPlan = false;
+
+      if (archiveMetafields) {
+        const metafieldAccess = await checkFeatureAccess(shop, "metafieldBackup");
+        if (!metafieldAccess.allowed) {
+          const hasOtherAssets = Boolean(
+            parsed?.storeAssets?.products?.length ||
+              parsed?.products?.length ||
+              parsed?.storeAssets?.theme ||
+              parsed?.theme ||
+              parsed?.storeAssets?.collections?.length ||
+              parsed?.collections?.length ||
+              parsed?.storeAssets?.pages?.length ||
+              parsed?.pages?.length ||
+              parsed?.storeAssets?.menus?.length ||
+              parsed?.menus?.length ||
+              parsed?.storeAssets?.blogsAndArticles ||
+              parsed?.blogsAndArticles ||
+              parsed?.articles?.length ||
+              parsed?.blogs?.length,
+          );
+
+          if (!hasOtherAssets) {
+            return {
+              success: false,
+              message:
+                "This archive contains only metafields, and metafield import requires a Growth plan or higher. Upgrade in Plans & Billing to import metafields and their definitions.",
+            };
+          }
+
+          if (parsed.storeAssets) delete parsed.storeAssets.metafields;
+          delete parsed.metafields;
+          delete parsed.metafieldData;
+          metafieldsSkippedForPlan = true;
+        }
+      }
+
       const res = await importBackupPayload({
         admin,
         shop,
@@ -218,7 +262,9 @@ export const action = async ({ request }) => {
 
       return {
         success: true,
-        message: res.message,
+        message: metafieldsSkippedForPlan
+          ? `${res.message} Metafields in this archive were skipped — metafield import requires a Growth plan or higher.`
+          : res.message,
         summary: res.summary,
         // Only the fields the banner links with. The full record carries the
         // entire archive, and echoing a multi-megabyte backup back to the

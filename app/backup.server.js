@@ -1580,6 +1580,9 @@ export async function fetchBlogsAndArticlesBackup(admin) {
                 templateSuffix
                 isPublished
                 publishedAt
+                author {
+                  name
+                }
                 image {
                   url
                   altText
@@ -1692,6 +1695,15 @@ export async function restoreArticle(admin, article) {
     return { success: false, message: "Invalid article data." };
   }
 
+  // The featured image is captured by the backup, so a restore that omits it
+  // silently strips the hero image off every recovered post. It is sent only
+  // when the snapshot actually holds a URL — never as null, because "the
+  // snapshot has no image" must not clear one that is live, matching how
+  // restoreCollection treats its image.
+  const articleImage = article.image?.url || article.image?.src
+    ? { url: article.image.url || article.image.src, altText: article.image.altText || "" }
+    : undefined;
+
   try {
     // 1. If article has an ID, try updating it in case it still exists
     if (article.id) {
@@ -1716,6 +1728,7 @@ export async function restoreArticle(admin, article) {
                 isPublished: article.isPublished ?? true,
                 tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
                 author: article.author ? { name: typeof article.author === "object" ? (article.author.name || "Revertly") : String(article.author) } : undefined,
+                ...(articleImage ? { image: articleImage } : {}),
               },
             },
           }
@@ -1810,6 +1823,7 @@ export async function restoreArticle(admin, article) {
             isPublished: article.isPublished ?? true,
             tags: Array.isArray(article.tags) ? article.tags : article.tags ? [article.tags] : [],
             author: { name: authorName },
+            ...(articleImage ? { image: articleImage } : {}),
           },
         },
       }

@@ -220,6 +220,27 @@ export const loader = async ({ request, params }) => {
   };
 };
 
+/**
+ * Renders one entry from `restoreMetafieldBackup`'s `summary.errors`.
+ *
+ * Those entries are objects ({ownerType, namespace, key, reason, message}), so
+ * interpolating them straight into a string wrote the literal text
+ * "[object Object]" into every RollbackResult row — leaving a merchant with a
+ * failed metafield restore and no way to tell which metafield failed or why.
+ */
+export function formatMetafieldError(err) {
+  if (typeof err === "string") return err;
+  if (!err || typeof err !== "object") return "Unknown metafield error";
+
+  const target = [err.ownerType, [err.namespace, err.key].filter(Boolean).join(".")]
+    .filter(Boolean)
+    .join(" ");
+  const reason = err.reason ? ` (${err.reason})` : "";
+  const message = err.message || "Unknown metafield error";
+
+  return target ? `${target}${reason}: ${message}` : `${message}${reason}`;
+}
+
 async function recordRestoreRollbackJob({
   shop,
   restorePointId,
@@ -783,11 +804,12 @@ export const action = async ({ request, params }) => {
       }
       if (res.summary?.errors?.length > 0) {
         res.summary.errors.slice(0, 20).forEach((e, idx) => {
+          const detail = formatMetafieldError(e);
           results.push({
             productId: `metafield_err_${idx}`,
-            productTitle: `Metafield Notice: ${String(e).slice(0, 120)}`,
+            productTitle: `Metafield Notice: ${detail.slice(0, 120)}`,
             status: "FAILED",
-            errorMessage: String(e),
+            errorMessage: detail,
           });
         });
       }
