@@ -354,10 +354,25 @@ s-page {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
+  align-items: start;
 }
 
 @media (max-width: 900px) {
   .rv-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Three Column Summary Cards Grid */
+.rv-three-col {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+@media (max-width: 1024px) {
+  .rv-three-col {
     grid-template-columns: 1fr;
   }
 }
@@ -2417,6 +2432,108 @@ s-page {
   line-height: 1.5;
   background: #fafbfb;
   border-top: 1px solid var(--rv-border-subtle);
+}
+
+/* ==========================================================================
+   Merchant Dashboard Command Center & Modern Chips
+   ========================================================================== */
+.rv-command-hero {
+  background: #ffffff;
+  border: 1px solid var(--rv-border);
+  border-radius: var(--rv-radius-lg);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.rv-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rv-border-subtle);
+}
+
+.rv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 20px;
+  background: var(--rv-surface-subdued);
+  border: 1px solid var(--rv-border);
+  color: var(--rv-text);
+  line-height: 1.4;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.rv-chip:hover {
+  background: var(--rv-surface-hover);
+  border-color: var(--rv-border-hover);
+}
+
+.rv-chip-success {
+  background: var(--rv-primary-surface);
+  border-color: var(--rv-primary-border);
+  color: var(--rv-primary-text);
+}
+
+.rv-chip-info {
+  background: var(--rv-info-surface);
+  border-color: var(--rv-info-border);
+  color: var(--rv-info-text);
+}
+
+.rv-chip-warning {
+  background: var(--rv-warning-surface);
+  border-color: var(--rv-warning-border);
+  color: var(--rv-warning-text);
+}
+
+.rv-chip-critical {
+  background: var(--rv-critical-surface);
+  border-color: var(--rv-critical-border);
+  color: var(--rv-critical-text);
+}
+
+.rv-urgent-incident-card {
+  background: #fff8f8;
+  border: 1px solid #fecaca;
+  border-left: 4px solid var(--rv-critical);
+  border-radius: var(--rv-radius-md);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.06);
+}
+
+.rv-urgent-incident-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 280px;
+}
+
+.rv-urgent-icon-wrapper {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #fee2e2;
+  color: var(--rv-critical);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 
