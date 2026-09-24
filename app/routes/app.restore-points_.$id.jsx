@@ -1246,6 +1246,81 @@ export default function RestorePointDetail() {
   // must never be able to overwrite live metafield values.
   const [metafieldMode, setMetafieldMode] = useState("SKIP_EXISTING");
 
+  const [downloadingZip, setDownloadingZip] = useState(false);
+  const [downloadingJson, setDownloadingJson] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
+
+  const handleDownload = async (format) => {
+    const isZip = format === "zip";
+    if (isZip) {
+      setDownloadingZip(true);
+    } else {
+      setDownloadingJson(true);
+    }
+    setDownloadError("");
+
+    try {
+      const url = `/app/restore-points/${restorePoint.id}/export${isZip ? "?format=zip" : ""}`;
+      // fetch() within Shopify App Bridge automatically attaches Authorization: Bearer <session-token>
+      const res = await fetch(url);
+      if (!res.ok) {
+        let reason = "";
+        try {
+          reason = (await res.text()).trim();
+        } catch {
+          reason = "";
+        }
+        if (reason.startsWith("<") || reason.length > 300) reason = "";
+        throw new Error(reason || `Export request failed with status ${res.status}`);
+      }
+
+      const contentType = res.headers.get("Content-Type") || "";
+      const blob = await res.blob();
+
+      // Guard against HTML redirect/bounce responses
+      if (contentType.includes("text/html")) {
+        const text = await blob.text();
+        if (text.includes("app-bridge") || text.includes("<html") || text.includes("<script")) {
+          throw new Error("Authentication session expired or unauthorized. Please refresh the page and try again.");
+        }
+      }
+
+      // Extract exact filename from Content-Disposition header if exposed
+      const cleanThemeName = (restorePoint.themeData?.activeTheme?.name || "theme").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
+      const dateStr = new Date(restorePoint.createdAt).toISOString().split("T")[0];
+      let fallbackFilename = isZip
+        ? `shopify-theme-${cleanThemeName}-rp${restorePoint.id}-${dateStr}.zip`
+        : `revertly-backup-rp${restorePoint.id}-${dateStr}.json`;
+      let filename = fallbackFilename;
+      const disposition = res.headers.get("Content-Disposition");
+      if (disposition && disposition.includes("filename=")) {
+        const matches = disposition.match(/filename="?([^"]+)"?/);
+        if (matches && matches[1]) {
+          filename = matches[1].replace(/['"]/g, "").trim();
+        }
+      }
+
+      // Trigger standard browser download of verified blob without navigating iframe
+      const blobUrl = window.URL.createObjectURL(blob);
+      const tempLink = document.createElement("a");
+      tempLink.href = blobUrl;
+      tempLink.setAttribute("download", filename);
+      document.body.appendChild(tempLink);
+      tempLink.click();
+      document.body.removeChild(tempLink);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error("Export download error:", err);
+      setDownloadError(`Export download failed: ${err?.message || "Unknown error"}`);
+    } finally {
+      if (isZip) {
+        setDownloadingZip(false);
+      } else {
+        setDownloadingJson(false);
+      }
+    }
+  };
+
   // Modern Theme (OS 2.0 & Horizon) category filters and live search
   const [themeFilterCategory, setThemeFilterCategory] = useState("ALL");
   const [themeSearchQuery, setThemeSearchQuery] = useState("");
@@ -1467,28 +1542,45 @@ export default function RestorePointDetail() {
           })()}
 
           {themeData?.files?.length > 0 && (
-            <a
-              href={`/app/restore-points/${restorePoint.id}/export?format=zip`}
+            <button
+              type="button"
+              onClick={() => handleDownload("zip")}
+              disabled={downloadingZip}
               className="rv-btn rv-btn-primary rv-btn-sm"
               title="Download standard Shopify theme (.zip) ready to upload in Shopify Admin > Online Store > Themes"
             >
-              <DownloadIcon size={14} />
-              <span>Download Theme (.zip)</span>
-            </a>
+              <DownloadIcon size={14} className={downloadingZip ? "rv-spin" : ""} />
+              <span>{downloadingZip ? "Downloading ZIP..." : "Download Theme (.zip)"}</span>
+            </button>
           )}
-          <a
-            href={`/app/restore-points/${restorePoint.id}/export`}
+          <button
+            type="button"
+            onClick={() => handleDownload("json")}
+            disabled={downloadingJson}
             className="rv-btn rv-btn-secondary rv-btn-sm"
+            title="Download offline backup (.json)"
           >
-            <DownloadIcon size={14} />
-            <span>Download Offline Backup (.json)</span>
-          </a>
+            <DownloadIcon size={14} className={downloadingJson ? "rv-spin" : ""} />
+            <span>{downloadingJson ? "Downloading JSON..." : "Download Offline Backup (.json)"}</span>
+          </button>
           <Link to="/app/restore-points" className="rv-btn rv-btn-subtle rv-btn-sm">
             <ArrowLeftIcon size={14} />
             <span>All Restore Points</span>
           </Link>
         </div>
       </div>
+
+      {downloadError && (
+        <div style={{ marginBottom: "16px" }}>
+          <Banner
+            tone="critical"
+            title="Export Download Failed"
+            onDismiss={() => setDownloadError("")}
+          >
+            {downloadError}
+          </Banner>
+        </div>
+      )}
 
       {/* ── Segmented Navigation Tabs ── */}
       <PillNav items={tabs} activeId={activeTab} onChange={setActiveTab} />
@@ -1583,14 +1675,16 @@ export default function RestorePointDetail() {
                   3. Under <i>Theme library</i>, click <b>Add theme &gt; Upload zip file</b>. Your theme will be restored completely!
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginTop: "4px" }}>
-                  <a
-                    href={`/app/restore-points/${restorePoint.id}/export?format=zip`}
+                  <button
+                    type="button"
+                    onClick={() => handleDownload("zip")}
+                    disabled={downloadingZip}
                     className="rv-btn rv-btn-primary rv-btn-sm"
                     style={{ textDecoration: "none" }}
                   >
-                    <DownloadIcon size={14} />
-                    <span>Download Theme as .ZIP (Ready to Upload)</span>
-                  </a>
+                    <DownloadIcon size={14} className={downloadingZip ? "rv-spin" : ""} />
+                    <span>{downloadingZip ? "Downloading ZIP..." : "Download Theme as .ZIP (Ready to Upload)"}</span>
+                  </button>
                   <a
                     href="https://docs.google.com/forms/d/e/1FAIpQLSfZTB1vxFC5d1-GPdqYunWRGUoDcOheHQzfK2RoEFEHrknt5g/viewform"
                     target="_blank"

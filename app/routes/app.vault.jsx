@@ -193,6 +193,40 @@ export default function DataVault() {
   const [orderSearchInput, setOrderSearchInput] = useState(searchOrder || "");
   const [customerSearchInput, setCustomerSearchInput] = useState(searchCustomer || "");
 
+  const [downloadingVaultType, setDownloadingVaultType] = useState(null);
+
+  const handleDownloadVault = async (type, fallbackFilename) => {
+    try {
+      setDownloadingVaultType(type);
+      const url = `/app/vault/export?type=${type}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Export failed with status ${res.status}`);
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition");
+      let filename = fallbackFilename;
+      if (disposition && disposition.includes("filename=")) {
+        const matches = disposition.match(/filename="?([^"]+)"?/);
+        if (matches && matches[1]) {
+          filename = matches[1].replace(/['"]/g, "").trim();
+        }
+      }
+      const blobUrl = window.URL.createObjectURL(blob);
+      const tempLink = document.createElement("a");
+      tempLink.href = blobUrl;
+      tempLink.setAttribute("download", filename);
+      document.body.appendChild(tempLink);
+      tempLink.click();
+      document.body.removeChild(tempLink);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error("Vault export error:", err);
+    } finally {
+      setDownloadingVaultType(null);
+    }
+  };
+
   useEffect(() => {
     setOrderSearchInput(searchOrder || "");
   }, [searchOrder]);
@@ -348,14 +382,24 @@ export default function DataVault() {
             </button>
           </fetcher.Form>
 
-          <a href="/app/vault/export?type=orders_csv" className="rv-btn rv-btn-secondary rv-btn-sm">
-            <DownloadIcon size={14} />
-            <span>Tax Audit CSV</span>
-          </a>
-          <a href="/app/vault/export?type=dispute_json" className="rv-btn rv-btn-secondary rv-btn-sm">
-            <DownloadIcon size={14} />
-            <span>Evidence JSON</span>
-          </a>
+          <button
+            type="button"
+            onClick={() => handleDownloadVault("orders_csv", "revertly-orders-vault.csv")}
+            disabled={downloadingVaultType === "orders_csv"}
+            className="rv-btn rv-btn-secondary rv-btn-sm"
+          >
+            <DownloadIcon size={14} className={downloadingVaultType === "orders_csv" ? "rv-spin" : ""} />
+            <span>{downloadingVaultType === "orders_csv" ? "Downloading..." : "Tax Audit CSV"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDownloadVault("dispute_json", "revertly-chargeback-evidence.json")}
+            disabled={downloadingVaultType === "dispute_json"}
+            className="rv-btn rv-btn-secondary rv-btn-sm"
+          >
+            <DownloadIcon size={14} className={downloadingVaultType === "dispute_json" ? "rv-spin" : ""} />
+            <span>{downloadingVaultType === "dispute_json" ? "Downloading..." : "Evidence JSON"}</span>
+          </button>
         </div>
       </div>
 

@@ -39,12 +39,20 @@ export const loader = async ({ request, params }) => {
 
   // Direct Shopify theme uploadable ZIP export
   if (format === "zip") {
-    const themeFiles = restorePoint.themeData?.files || [];
+    let themeData = restorePoint.themeData;
+    if (typeof themeData === "string") {
+      try {
+        themeData = JSON.parse(themeData);
+      } catch {
+        themeData = null;
+      }
+    }
+    const themeFiles = themeData?.files || [];
     if (!themeFiles.length) {
       throw new Response("No theme files available in this restore point to generate ZIP", { status: 404 });
     }
 
-    const themeName = restorePoint.themeData?.activeTheme?.name || "theme";
+    const themeName = themeData?.activeTheme?.name || "theme";
     const cleanThemeName = themeName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
     const zipFilename = `shopify-theme-${cleanThemeName}-rp${restorePoint.id}-${dateStr}.zip`;
     const zipBuffer = buildThemeZip(themeFiles);

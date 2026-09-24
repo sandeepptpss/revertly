@@ -621,6 +621,40 @@ export default function RestorePoints() {
     }
   }, [result, isDeleting]);
 
+  const [downloadingRpId, setDownloadingRpId] = useState(null);
+
+  const handleDownloadJson = async (rpId) => {
+    try {
+      setDownloadingRpId(rpId);
+      const url = `/app/restore-points/${rpId}/export`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Export failed with status ${res.status}`);
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition");
+      let filename = `revertly-backup-rp${rpId}.json`;
+      if (disposition && disposition.includes("filename=")) {
+        const matches = disposition.match(/filename="?([^"]+)"?/);
+        if (matches && matches[1]) {
+          filename = matches[1].replace(/['"]/g, "").trim();
+        }
+      }
+      const blobUrl = window.URL.createObjectURL(blob);
+      const tempLink = document.createElement("a");
+      tempLink.href = blobUrl;
+      tempLink.setAttribute("download", filename);
+      document.body.appendChild(tempLink);
+      tempLink.click();
+      document.body.removeChild(tempLink);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error("Export error:", err);
+    } finally {
+      setDownloadingRpId(null);
+    }
+  };
+
   const handleDeleteConfirm = () => {
     if (!deleteTarget) return;
     fetcher.submit(
@@ -1613,13 +1647,16 @@ export default function RestorePoints() {
                     );
                   })()}
 
-                  <a
-                    href={`/app/restore-points/${rp.id}/export`}
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadJson(rp.id)}
+                    disabled={downloadingRpId === rp.id}
                     className="rv-btn rv-btn-secondary rv-btn-sm"
+                    title="Download offline backup (.json)"
                   >
-                    <DownloadIcon size={13} />
-                    <span>JSON</span>
-                  </a>
+                    <DownloadIcon size={13} className={downloadingRpId === rp.id ? "rv-spin" : ""} />
+                    <span>{downloadingRpId === rp.id ? "..." : "JSON"}</span>
+                  </button>
 
                   <button
                     type="button"
