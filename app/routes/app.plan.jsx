@@ -132,7 +132,8 @@ const PLANS = [
       "30 days change history retention",
       "Up to 10 restore points",
       "3 active detection rules",
-      "Uptime Monitoring & Store Health Check",
+      "Store & App Monitoring (24/7 Downtime Alerts)",
+      "Automated QA & Backup Health",
       "Team roles, permissions & audit log",
       "Offsite Cloud Backup — Google Drive & Dropbox",
       "Auto-push every new snapshot to your cloud",
@@ -173,7 +174,7 @@ const PLANS = [
       // themeId, so fetchThemeBackup falls back to MAIN). That is Growth and
       // above, which is why this says so here rather than on Business.
       "1 Active Theme Backup (Templates, Sections & Settings)",
-      "Safe Restore as Draft Theme (Staging Sandbox Preview)",
+      "Safe Restore to Draft Theme (Live Preview First)",
       "Live theme captured in every scheduled backup",
       "Selective field-level restoration (preserve live price/stock)",
       "Accountant-ready Tax Audit CSV export",

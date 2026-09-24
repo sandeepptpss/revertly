@@ -27,8 +27,8 @@ const HUB_CONFIG = {
       { id: "incidents", label: "Incidents", to: "/app/incidents", icon: AlertTriangleIcon },
       { id: "activity", label: "Activity Feed", to: "/app/activity", icon: ClockIcon },
       { id: "rules", label: "Protection Rules", to: "/app/rules", icon: FilterIcon },
-      { id: "monitoring", label: "Uptime Monitoring", to: "/app/monitoring", icon: ZapIcon },
-      { id: "qa", label: "Health Check (QA)", to: "/app/qa", icon: ShieldCheckIcon },
+      { id: "monitoring", label: "Store & App Monitoring", to: "/app/monitoring", icon: ZapIcon },
+      { id: "qa", label: "QA & Backup Health", to: "/app/qa", icon: ShieldCheckIcon },
     ],
   },
   settings: {

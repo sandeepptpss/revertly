@@ -172,7 +172,7 @@ export default function Monitoring() {
   } = usePagination(recentChecks, 10);
 
   return (
-    <s-page heading="Uptime Monitoring" inlineSize="large">
+    <s-page heading="Store & App Monitoring" inlineSize="large">
       <HubNav hub="protection" activeTab="monitoring" />
       {result?.message && (
         <Banner tone={result.success ? "success" : "critical"}>{result.message}</Banner>

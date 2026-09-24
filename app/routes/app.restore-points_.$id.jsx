@@ -1794,10 +1794,10 @@ export default function RestorePointDetail() {
                       type="submit"
                       disabled={selectedFiles.length === 0 || isRestoring}
                       className="rv-btn rv-btn-primary rv-btn-sm"
-                      title="Safely restore to an unpublished draft staging theme (leaves live storefront untouched)"
+                      title="Safely restore to an unpublished draft preview theme (leaves live storefront untouched)"
                     >
                       <ShieldCheckIcon size={14} className={isDraftRestoring ? "rv-spin" : ""} />
-                      <span>{isDraftRestoring ? "Creating Draft..." : `Restore to Draft Theme (${selectedFiles.length})`}</span>
+                      <span>{isDraftRestoring ? "Creating Draft..." : `Safe Restore to Draft (${selectedFiles.length})`}</span>
                     </button>
                   </fetcher.Form>
                 );
@@ -2116,7 +2116,7 @@ export default function RestorePointDetail() {
                       className="rv-btn rv-btn-primary rv-btn-lg"
                     >
                       <ShieldCheckIcon size={16} className={isDraftRestoring ? "rv-spin" : ""} />
-                      <span>{isDraftRestoring ? "Creating Draft Theme..." : "Restore to Draft Theme (Safe Preview First)"}</span>
+                      <span>{isDraftRestoring ? "Creating Draft Theme..." : "Safe Restore to Draft Theme (Preview First)"}</span>
                     </button>
                   </fetcher.Form>
                 );

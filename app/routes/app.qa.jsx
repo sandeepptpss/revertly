@@ -95,7 +95,7 @@ export default function QaDiagnostics() {
         <div style={{ maxWidth: "680px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px", flexWrap: "wrap" }}>
             <strong style={{ fontSize: "17px", color: "var(--rv-text)", fontWeight: 700 }}>
-              Automated QA &amp; Backup Integrity Testing
+              Automated QA &amp; Backup Health
             </strong>
             {latest && (
               <span
