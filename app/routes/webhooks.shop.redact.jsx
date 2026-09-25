@@ -24,6 +24,7 @@ export const action = async ({ request }) => {
     ["orderArchive", () => prisma.orderArchive.deleteMany({ where: { shop } })],
     ["customerArchive", () => prisma.customerArchive.deleteMany({ where: { shop } })],
     ["productSnapshot", () => prisma.productSnapshot.deleteMany({ where: { shop } })],
+    ["catalogSyncJob", () => prisma.catalogSyncJob.deleteMany({ where: { shop } })],
     ["downtimeCheck", () => prisma.downtimeCheck.deleteMany({ where: { shop } })],
     ["monitoredService", () => prisma.monitoredService.deleteMany({ where: { shop } })],
     ["teamMember", () => prisma.teamMember.deleteMany({ where: { shop } })],

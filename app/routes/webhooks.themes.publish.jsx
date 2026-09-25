@@ -4,6 +4,12 @@ import { fetchThemeBackup, reserveRestorePointSlot } from "../backup.server.js";
 import { validateSlackWebhookUrl } from "../monitor.server.js";
 import { checkFeatureAccess } from "../billing.server.js";
 import { scheduleTagRecheck } from "../ga4Monitor.server.js";
+import { withJobLock } from "../cron.server.js";
+
+// A theme download takes far longer than Shopify's 5-second webhook timeout,
+// so the same publish is routinely delivered again while the first delivery
+// is still capturing, and again after it finishes.
+const REDELIVERY_WINDOW_MS = 10 * 60 * 1000;
 
 export const action = async ({ request }) => {
   const { topic, shop, payload, admin } = await authenticate.webhook(request);
@@ -40,35 +46,53 @@ export const action = async ({ request }) => {
     ]);
     let snapshotCreated = false;
 
-    const slot = themeAccess.allowed ? await reserveRestorePointSlot(shop, { source: "THEME_PUBLISH" }) : null;
-    if (slot?.allowed) {
-      // Capture theme files snapshot if admin API client is available
-      let themeData = null;
-      if (admin) {
-        themeData = await fetchThemeBackup(admin);
-      }
-
-      // Auto-create a safety restore point
-      await prisma.restorePoint.create({
-        data: {
-          shop,
-          source: "THEME_PUBLISH",
-          name: `Auto Snapshot: Theme Published - "${themeName}" (${timeStr})`,
-          description: `Automatically created by Revertly when "${themeName}" was published live to the storefront.`,
-          status: "READY",
-          backupType: "THEMES",
-          themeCount: 1,
-          themeData: themeData || {
-            activeTheme: {
-              id: theme?.id ? `gid://shopify/Theme/${theme.id}` : null,
-              name: themeName,
-              role: "MAIN",
-            },
-            files: [],
+    if (themeAccess.allowed) {
+      // One capture per shop at a time; a delivery that finds the lock held
+      // is a redelivery of a publish already being handled.
+      const outcome = await withJobLock(`theme-publish:${shop}`.slice(0, 191), REDELIVERY_WINDOW_MS, async () => {
+        const recent = await prisma.restorePoint.findFirst({
+          where: {
+            shop,
+            source: "THEME_PUBLISH",
+            createdAt: { gte: new Date(Date.now() - REDELIVERY_WINDOW_MS) },
+            name: { contains: `"${themeName}"` },
           },
-        },
+          select: { id: true },
+        });
+        if (recent) return { duplicate: true };
+
+        // Captured before a slot is reserved, so a failed read neither writes
+        // a "READY" snapshot with no files in it nor rotates out a good one.
+        const themeData = admin
+          ? await fetchThemeBackup(admin, theme?.id ? `gid://shopify/Theme/${theme.id}` : null)
+          : null;
+        if (!themeData?.files?.length) {
+          console.warn(`[Revertly] Theme publish snapshot skipped for ${shop}: no theme files could be read.`);
+          return { created: false };
+        }
+
+        const slot = await reserveRestorePointSlot(shop, { source: "THEME_PUBLISH" });
+        if (!slot.allowed) return { created: false };
+
+        await prisma.restorePoint.create({
+          data: {
+            shop,
+            source: "THEME_PUBLISH",
+            name: `Auto Snapshot: Theme Published - "${themeName}" (${timeStr})`,
+            description: `Automatically created by Revertly when "${themeName}" was published live to the storefront.`,
+            status: "READY",
+            backupType: "THEMES",
+            themeCount: 1,
+            themeData,
+          },
+        });
+        return { created: true };
       });
-      snapshotCreated = true;
+
+      if (outcome?.skipped || outcome?.duplicate) {
+        return new Response("Duplicate theme publish delivery", { status: 200 });
+      }
+      snapshotCreated = Boolean(outcome?.created);
     }
 
     // Notify merchant via Slack webhook if configured. Host-allowlisted so a

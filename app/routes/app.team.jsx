@@ -38,7 +38,10 @@ export const loader = async ({ request }) => {
   const teamLocked = !access.allowed;
 
   const [members, auditLogs] = await Promise.all([
-    prisma.teamMember.findMany({ where: { shop }, orderBy: [{ role: "asc" }, { createdAt: "asc" }] }),
+    prisma.teamMember.findMany({
+      where: { shop, status: { not: "REMOVED" } },
+      orderBy: [{ role: "asc" }, { createdAt: "asc" }],
+    }),
     teamLocked
       ? []
       : prisma.auditLog.findMany({ where: { shop }, orderBy: { createdAt: "desc" }, take: 50 }),
@@ -93,13 +96,20 @@ export const action = async ({ request }) => {
       }
 
       const existing = await prisma.teamMember.findUnique({ where: { shop_email: { shop, email } } });
-      if (existing) {
+      if (existing && existing.status !== "REMOVED") {
         return { success: false, message: `${email} is already on the team.` };
       }
 
-      const member = await prisma.teamMember.create({
-        data: { shop, email, name, role, status: "INVITED" },
-      });
+      // Inviting someone who was removed earlier revives their row, which is
+      // kept so that removal denies access (see resolveActor).
+      const member = existing
+        ? await prisma.teamMember.update({
+            where: { id: existing.id },
+            data: { name: name || existing.name, role, status: "INVITED", alertsEnabled: true },
+          })
+        : await prisma.teamMember.create({
+            data: { shop, email, name, role, status: "INVITED" },
+          });
 
       await logAudit(shop, perm.actor, "TEAM_MEMBER_INVITED", {
         resourceType: "TeamMember",
@@ -118,7 +128,7 @@ export const action = async ({ request }) => {
         return { success: false, message: "Invalid role change request." };
       }
 
-      const member = await prisma.teamMember.findFirst({ where: { id: memberId, shop } });
+      const member = await prisma.teamMember.findFirst({ where: { id: memberId, shop, status: { not: "REMOVED" } } });
       if (!member) return { success: false, message: "Team member not found." };
 
       if (role === "OWNER" && perm.actor.role !== "OWNER") {
@@ -149,7 +159,7 @@ export const action = async ({ request }) => {
 
     if (intent === "toggleAlerts") {
       const memberId = parseInt(formData.get("memberId"), 10);
-      const member = await prisma.teamMember.findFirst({ where: { id: memberId, shop } });
+      const member = await prisma.teamMember.findFirst({ where: { id: memberId, shop, status: { not: "REMOVED" } } });
       if (!member) return { success: false, message: "Team member not found." };
 
       const updated = await prisma.teamMember.update({
@@ -165,7 +175,7 @@ export const action = async ({ request }) => {
 
     if (intent === "remove") {
       const memberId = parseInt(formData.get("memberId"), 10);
-      const member = await prisma.teamMember.findFirst({ where: { id: memberId, shop } });
+      const member = await prisma.teamMember.findFirst({ where: { id: memberId, shop, status: { not: "REMOVED" } } });
       if (!member) return { success: false, message: "Team member not found." };
 
       if (member.role === "OWNER") {
@@ -176,7 +186,14 @@ export const action = async ({ request }) => {
         if (!guard.ok) return { success: false, message: guard.message };
       }
 
-      await prisma.teamMember.delete({ where: { id: member.id } });
+      // Not deleted: a Shopify staff account with no roster row resolves to
+      // ADMIN, so deleting the row handed the person more access than they had.
+      // The REMOVED row denies them, and role/alerts are cleared so it can never
+      // count as an owner or receive incident alerts.
+      await prisma.teamMember.update({
+        where: { id: member.id },
+        data: { status: "REMOVED", role: "VIEWER", alertsEnabled: false },
+      });
       await logAudit(shop, perm.actor, "TEAM_MEMBER_REMOVED", {
         resourceType: "TeamMember",
         resourceId: memberId,

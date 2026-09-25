@@ -106,8 +106,11 @@ export async function resolveActor(shop, session) {
     }
 
     if (member) {
-      if (member.status === "SUSPENDED") {
-        return { member, role: "NONE", email, suspended: true };
+      // A removed member keeps a REMOVED row rather than none at all: with no
+      // row they would be "authenticated staff not on the roster" below and
+      // come back as ADMIN, so removing someone used to promote them.
+      if (member.status === "SUSPENDED" || member.status === "REMOVED") {
+        return { member, role: "NONE", email, suspended: true, removed: member.status === "REMOVED" };
       }
       // Signing in accepts a pending invitation.
       const activated = member.status === "INVITED";
@@ -186,6 +189,12 @@ async function ensureAccountOwner(shop, email, name, member) {
   return actor;
 }
 
+function suspendedMessage(actor) {
+  return actor.removed
+    ? "You have been removed from this store's team. Please contact a store Owner for access."
+    : "Your account has been suspended. Please contact a store Owner.";
+}
+
 /**
  * Throws a 403 Response unless the acting user holds `permission`.
  * Returns the resolved actor so callers can attribute the action.
@@ -197,7 +206,7 @@ export async function requirePermission(shop, session, permission) {
     throw new Response(
       JSON.stringify({
         success: false,
-        message: "Your account has been suspended. Please contact a store Owner.",
+        message: suspendedMessage(actor),
       }),
       { status: 403, headers: { "Content-Type": "application/json" } },
     );
@@ -229,7 +238,7 @@ export async function checkPermission(shop, session, permission) {
     return {
       allowed: false,
       actor,
-      message: "Your account has been suspended. Please contact a store Owner.",
+      message: suspendedMessage(actor),
     };
   }
 

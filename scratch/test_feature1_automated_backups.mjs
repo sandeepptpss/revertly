@@ -24,6 +24,13 @@ async function main() {
   await prisma.auditLog.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });
   await prisma.appSettings.deleteMany({ where: { shop: TEST_SHOP } });
+  await prisma.session.deleteMany({ where: { shop: TEST_SHOP } });
+
+  // The sweep only backs up installed stores, which is to say stores with an
+  // offline session (uninstall deletes it).
+  await prisma.session.create({
+    data: { id: `offline_${TEST_SHOP}`, shop: TEST_SHOP, state: "qa", isOnline: false, accessToken: "qa-token" },
+  });
 
   await prisma.appSettings.create({
     data: {
@@ -100,6 +107,18 @@ async function main() {
     where: { shop: TEST_SHOP, action: "AUTOMATED_BACKUP_EXECUTED" },
   });
   assert(auditLogs.length === 1, "Audit log entry created for automated backup");
+
+  // Uninstalled: the offline session is gone, so the next due run is skipped
+  // and the schedule is left for a reinstall to resume.
+  await prisma.session.deleteMany({ where: { shop: TEST_SHOP } });
+  await prisma.appSettings.update({ where: { shop: TEST_SHOP }, data: { nextAutoBackupAt: new Date(Date.now() - 10000) } });
+  const before = await prisma.restorePoint.count({ where: { shop: TEST_SHOP } });
+  const uninstalledSweep = await runDueAutomatedBackups();
+  const skipped = uninstalledSweep.results.find((r) => r.shop === TEST_SHOP);
+  assert(skipped?.skipped && /not installed/i.test(skipped.reason), "Uninstalled store is skipped by the sweep");
+  assert((await prisma.restorePoint.count({ where: { shop: TEST_SHOP } })) === before, "No restore point created for an uninstalled store");
+  assert((await prisma.appSettings.findUnique({ where: { shop: TEST_SHOP } })).autoBackupSchedule === "DAILY", "Schedule kept for reinstall");
+  console.log("  ✅ PASS: Uninstalled store is skipped and its schedule kept");
 
   console.log("  ✅ PASS: Automated Daily Backups executed, persisted, and verified end-to-end!\n");
   process.exit(0);

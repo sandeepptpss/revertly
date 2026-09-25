@@ -1,12 +1,21 @@
 // Test double for app/shopify.server.js so route loaders/actions can be invoked
 // directly without a live Shopify session token.
-import { getMockAdmin, getMockShop } from "./_qa_mock_admin.mjs";
+import { getMockAdmin, getMockShop, getMockSessionExtras, getMockWebhook } from "./_qa_mock_admin.mjs";
 
 export const authenticate = {
   admin: async () => ({
-    session: { shop: getMockShop(), id: "offline_" + getMockShop() },
+    session: { shop: getMockShop(), id: "offline_" + getMockShop(), ...getMockSessionExtras() },
     admin: getMockAdmin(),
   }),
+  webhook: async () => {
+    const event = getMockWebhook();
+    return {
+      shop: getMockShop(),
+      topic: event.topic,
+      payload: event.payload,
+      admin: "admin" in event ? event.admin : getMockAdmin(),
+    };
+  },
 };
 export const apiVersion = "2025-07";
 export const login = async () => ({});

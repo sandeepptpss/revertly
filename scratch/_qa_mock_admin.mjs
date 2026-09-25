@@ -10,6 +10,25 @@ export function getMockShop() {
   return currentShop;
 }
 
+// Extra session fields merged into the stubbed session, e.g. an online
+// account-owner identity so checkPermission resolves a real OWNER.
+let sessionExtras = {};
+export function setMockSessionExtras(extras) {
+  sessionExtras = extras || {};
+}
+export function getMockSessionExtras() {
+  return sessionExtras;
+}
+
+// What the stubbed authenticate.webhook returns: { topic, payload, admin }.
+let webhookEvent = { topic: null, payload: {} };
+export function setMockWebhook(event) {
+  webhookEvent = { topic: null, payload: {}, ...event };
+}
+export function getMockWebhook() {
+  return webhookEvent;
+}
+
 export const LIVE = {
   themes: [{ id: "gid://shopify/Theme/900", name: "Dawn", role: "MAIN", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-02-01T00:00:00Z" }],
   themeFiles: [
@@ -44,6 +63,16 @@ export function getMockAdmin() {
     graphql: async (query, opts = {}) => {
       const j = (data) => ({ json: async () => ({ data }) });
       if (query.includes("getThemes")) return j({ themes: { nodes: LIVE.themes } });
+      // Role lookups (checkThemeRole / checkRestoreThemeRole): null for a theme
+      // the store does not have, as Shopify returns.
+      if (query.includes("metafieldsSet(")) {
+        const written = (opts.variables?.metafields || []).map((m, i) => ({ id: `gid://shopify/Metafield/${i + 1}`, namespace: m.namespace, key: m.key }));
+        return j({ metafieldsSet: { metafields: written, userErrors: [] } });
+      }
+      if (/query check\w*ThemeRole/.test(query)) {
+        const id = String(opts.variables?.id || "");
+        return j({ theme: LIVE.themes.find((t) => t.id === id || t.id.endsWith(`/${id.replace(/^.*\//, "")}`)) || null });
+      }
       if (query.includes("ThemeFiles")) return j({ theme: { files: { nodes: LIVE.themeFiles } } });
       if (query.includes("getCollections")) return j({ collections: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: LIVE.collections } });
       if (query.includes("getPages")) return j({ pages: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: LIVE.pages } });

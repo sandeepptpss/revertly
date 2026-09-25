@@ -84,6 +84,16 @@ async function run() {
   console.log("  IMPORT & EXPORT HUB — ROUTE-LEVEL QA");
   console.log("=".repeat(78));
 
+  // The hub exercises every export and import format, including theme files
+  // and more restore points than Free allows, so the fixture store has to be
+  // on a plan that includes all of them. Plan gating itself is covered by the
+  // entitlement suites.
+  await prisma.appSettings.upsert({
+    where: { shop: SHOP },
+    create: { shop: SHOP, planId: "enterprise" },
+    update: { planId: "enterprise" },
+  });
+
   // ── 1. Every export button produces a downloadable file ─────────────────────
   console.log("\n[1] Export loader: every offered format returns a real download");
   const exported = {};
@@ -189,7 +199,7 @@ async function run() {
     const job = jobs[jobs.length - 1];
     if (job) {
       const lr = resL.summary.liveResults || {};
-      const expectedTotal = (lr.collections || 0) + (lr.pages || 0) + (lr.menus || 0) + (lr.articles || 0) +
+      const expectedTotal = (lr.collections || 0) + (lr.pages || 0) + (lr.menus || 0) + (lr.articles || 0) + (lr.blogs || 0) +
         (lr.products || 0) + (lr.metafields || 0) + (lr.themeStagingCreated ? 1 : 0);
       check("rollback job totals match what was actually restored",
         job.totalProducts === expectedTotal && job.successCount === expectedTotal,
@@ -221,7 +231,16 @@ async function run() {
   if (mf.res.status === 200) {
     check("metafields JSON export returns a file when entitled", mf.text.length > 20);
     const resMf = await importViaRoute(mf.text);
-    check("metafields JSON re-imports", resMf.success, resMf.message);
+    // The mock store has no metafields, so its export is an empty document,
+    // and an importer must refuse an empty file rather than save a blank
+    // restore point. A store with metafields must round-trip.
+    const mfCount = JSON.parse(mf.text).metafieldCount + JSON.parse(mf.text).definitionCount;
+    if (mfCount > 0) {
+      check("metafields JSON re-imports", resMf.success, resMf.message);
+    } else {
+      check("an empty metafields export is refused on import, with a reason",
+        resMf.success === false && /no recognizable/i.test(resMf.message || ""), resMf.message);
+    }
   } else {
     check("refusal uses 403", mf.res.status === 403, `status=${mf.res.status}`);
     check("refusal body is a readable sentence, not a bare code",
@@ -244,6 +263,8 @@ async function run() {
   await prisma.restorePoint.deleteMany({ where: { shop: SHOP } });
   await prisma.productSnapshot.deleteMany({ where: { shop: SHOP } }).catch(() => {});
   await prisma.auditLog.deleteMany({ where: { shop: SHOP } }).catch(() => {});
+  await prisma.teamMember.deleteMany({ where: { shop: SHOP } }).catch(() => {});
+  await prisma.appSettings.deleteMany({ where: { shop: SHOP } }).catch(() => {});
 
   console.log("\n" + "=".repeat(78));
   console.log(`  RESULT: ${pass} passed, ${fail} failed`);

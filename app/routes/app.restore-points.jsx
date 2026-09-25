@@ -515,10 +515,24 @@ export const action = async ({ request }) => {
       }
       const rp = await prisma.restorePoint.findFirst({
         where: { id: rpId, shop },
-        select: { id: true, name: true },
+        select: { id: true, name: true, status: true, updatedAt: true },
       });
       if (!rp) {
         return { success: false, message: "Restore point not found or access denied." };
+      }
+
+      // A point being captured or restored from is in use: deleting it makes
+      // the running restore fail after it has already written to the store.
+      // One untouched for an hour is left over from a crashed process and may
+      // go, or it could never be removed at all.
+      const inUse =
+        (rp.status === "CREATING" || rp.status === "RESTORING") &&
+        Date.now() - new Date(rp.updatedAt).getTime() < 60 * 60 * 1000;
+      if (inUse) {
+        return {
+          success: false,
+          message: `"${rp.name}" is ${rp.status === "CREATING" ? "still being captured" : "being restored right now"}. Wait for it to finish, then delete it.`,
+        };
       }
 
       // Decouple rollback jobs from the deleted restore point to preserve the permanent audit trail

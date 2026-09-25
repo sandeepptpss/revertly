@@ -22,18 +22,19 @@ export function computeNextAutoBackup(schedule, timeStr, fromDate = new Date()) 
   const now = new Date(fromDate);
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0));
 
-  if (next.getTime() <= now.getTime()) {
-    if (schedule === "TWICE_DAILY") {
-      next.setUTCHours(next.getUTCHours() + 12);
-    } else if (schedule === "WEEKLY") {
-      next.setUTCDate(next.getUTCDate() + 7);
-    } else {
-      // DAILY
-      next.setUTCDate(next.getUTCDate() + 1);
-    }
+  // Step forward until the slot is in the future. A single twice-daily step
+  // of 12h from a 02:00 slot still lands at 14:00, which is in the past from
+  // 14:00 to midnight; the sweep then saw the backup as due on every 5-minute
+  // run for the rest of the day.
+  const stepHours = { TWICE_DAILY: 12, WEEKLY: 7 * 24 }[schedule] || 24;
+  while (next.getTime() <= now.getTime()) {
+    next.setUTCHours(next.getUTCHours() + stepHours);
   }
   return next;
 }
+
+// How long a failed scheduled backup waits before it is tried again.
+const FAILED_BACKUP_RETRY_MS = 60 * 60 * 1000;
 
 /**
  * Executes a scheduled backup for a single shop
@@ -91,6 +92,17 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
   });
 
   if (!backupRes.success) {
+    // Push the next attempt out. Left as it was, the backup stayed due and
+    // the 5-minute sweep retried it all day, each attempt reserving a slot
+    // (and so rotating out an automatic backup) before failing again.
+    const retryAt = new Date(now.getTime() + FAILED_BACKUP_RETRY_MS);
+    const nextSlot = computeNextAutoBackup(settings.autoBackupSchedule, settings.autoBackupTime, now);
+    await prisma.appSettings
+      .update({
+        where: { shop },
+        data: { nextAutoBackupAt: nextSlot && nextSlot < retryAt ? nextSlot : retryAt },
+      })
+      .catch(() => {});
     return { success: false, error: backupRes.message || "Failed to create automated snapshot" };
   }
 
@@ -196,7 +208,25 @@ export async function runDueAutomatedBackups() {
   let successCount = 0;
   let failedCount = 0;
 
+  // An uninstalled store keeps its settings row until shop/redact, 48 hours
+  // later, but the offline session is deleted on uninstall. Without one there
+  // is nothing to back up from, and the run would still push the local mirror
+  // to the merchant's cloud and pull their ESP data. The schedule itself is
+  // left alone so a reinstall picks it straight back up.
+  const installed = new Set(
+    (
+      await prisma.session.findMany({
+        where: { shop: { in: dueSettings.map((s) => s.shop) }, isOnline: false },
+        select: { shop: true },
+      })
+    ).map((row) => row.shop),
+  );
+
   for (const s of dueSettings) {
+    if (!installed.has(s.shop)) {
+      results.push({ shop: s.shop, success: false, skipped: true, reason: "App is not installed" });
+      continue;
+    }
     try {
       const res = await runScheduledBackupForShop(s.shop, { force: false });
       if (res.success) {

@@ -11,13 +11,14 @@ import {
   restoreMenu,
   restoreArticle,
   restoreProductMetafields,
+  isReservedNamespace,
   restoreMetafieldBackup,
   METAFIELD_RESTORE_MODES,
   computeDiffLines,
   fetchThemeBackup,
   readThemeFileBody,
 } from "../backup.server.js";
-import { checkFeatureAccess } from "../billing.server.js";
+import { checkFeatureAccess, checkThemeAccess } from "../billing.server.js";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 import { syncRestorePointToCloud } from "../cloudSync.server.js";
 import {
@@ -365,7 +366,7 @@ export const action = async ({ request, params }) => {
     }
 
     if (intent === "restore_theme") {
-      const themeAccess = await checkFeatureAccess(shop, "themes");
+      const themeAccess = await checkThemeAccess(shop);
       if (!themeAccess.allowed) {
         return { success: false, message: "Theme restoration requires a Growth, Business or Enterprise plan." };
       }
@@ -379,6 +380,40 @@ export const action = async ({ request, params }) => {
       }
 
       const mode = formData.get("mode") || "live";
+
+      // A live restore writes into the captured theme itself. Growth covers
+      // the live theme only, so on a capped plan that target has to be the
+      // published theme right now — a snapshot of a draft (taken on Business
+      // before a downgrade) or of a theme since unpublished is a draft-theme
+      // rollback. Restoring to a new draft copy stays available. As with the
+      // backup gate, a role that cannot be confirmed is refused, not assumed.
+      if (mode !== "draft" && !themeAccess.unlimitedThemes) {
+        let role = null;
+        try {
+          const themeRes = await admin.graphql(
+            `#graphql
+            query checkRestoreThemeRole($id: ID!) {
+              theme(id: $id) {
+                id
+                role
+              }
+            }`,
+            { variables: { id: themeData.activeTheme.id } },
+          );
+          role = (await themeRes.json()).data?.theme?.role ?? null;
+        } catch (err) {
+          console.warn(`[Revertly] Theme role lookup failed for ${shop}: ${err?.message}`);
+        }
+        if (role !== "MAIN") {
+          return {
+            success: false,
+            message:
+              role === null
+                ? "We could not confirm this snapshot's theme is your live theme, so nothing was restored. Try again, or use Restore to Draft Theme."
+                : "This snapshot is of a theme that is not currently live. Your plan restores your live theme; use Restore to Draft Theme to review it, or upgrade to Business for draft theme rollback.",
+          };
+        }
+      }
       const selectedFilesRaw = formData.get("selectedFiles");
       let selectedFilenames = null;
       if (selectedFilesRaw) {
@@ -1066,7 +1101,21 @@ export const action = async ({ request, params }) => {
         }
       }
 
-      if (mockEvents.length === 0) {
+      // Metafields are restored separately from the field rollback below, so
+      // a product whose only difference is a metafield must not be skipped
+      // here — that diff is shown on the page and has to be restorable.
+      const savedMf = toMetafieldArray(savedSnap.metafields);
+      const metafieldKey = (list) =>
+        JSON.stringify(
+          list
+            .filter((m) => m?.namespace && !isReservedNamespace(m.namespace))
+            .map((m) => [`${m?.namespace}.${m?.key}`, String(m?.value ?? "")])
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        );
+      const metafieldsDiffer =
+        savedMf.length > 0 && metafieldKey(savedMf) !== metafieldKey(toMetafieldArray(current.metafields));
+
+      if (mockEvents.length === 0 && !metafieldsDiffer) {
         await prisma.rollbackResult.create({
           data: {
             rollbackJobId: job.id,
@@ -1095,15 +1144,26 @@ export const action = async ({ request, params }) => {
         tempIds.push(created.id);
       }
 
-      const result = await rollbackProductFields(admin, shop, productId, tempIds);
+      const result =
+        tempIds.length > 0
+          ? await rollbackProductFields(admin, shop, productId, tempIds)
+          : { success: true, restoredFields: {} };
 
-      // Restore metafields if present
-      const savedMf = toMetafieldArray(savedSnap.metafields);
-      if (savedMf.length > 0) {
+      // A metafield write that fails fails the product: it used to be logged
+      // and dropped, so the history said SUCCESS for a value never written.
+      if (metafieldsDiffer) {
+        let mfRes;
         try {
-          await restoreProductMetafields(admin, productId, savedMf);
+          mfRes = await restoreProductMetafields(admin, productId, savedMf);
         } catch (mfErr) {
-          console.warn(`Product metafield restore warning (${productId}):`, mfErr?.message);
+          mfRes = { success: false, message: mfErr?.message };
+        }
+        if (mfRes?.success) {
+          result.restoredFields = { ...(result.restoredFields || {}), metafields: mfRes.count ?? savedMf.length };
+        } else {
+          const mfError = `Metafields not restored: ${mfRes?.message || "unknown error"}`;
+          result.success = false;
+          result.error = result.error ? `${result.error}; ${mfError}` : mfError;
         }
       }
 
@@ -1223,6 +1283,15 @@ export default function RestorePointDetail() {
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isRestoring = fetcher.state !== "idle";
+
+  // fetcher.formData is gone once the action returns, so remember what was
+  // submitted: the "restore completed" panel is for restores only, not for a
+  // cloud sync or any other action that also returns success.
+  const [submittedIntent, setSubmittedIntent] = useState(null);
+  useEffect(() => {
+    const intent = fetcher.formData?.get("intent");
+    if (intent) setSubmittedIntent(String(intent));
+  }, [fetcher.formData]);
 
   const filesList = themeDiffFiles?.length > 0 ? themeDiffFiles : (themeData?.files || []);
 
@@ -1703,8 +1772,9 @@ export default function RestorePointDetail() {
       )}
 
       {/* ── Post-Restore Delight & 5-Star Review Trigger ── */}
-      {((result?.success && !result?.isPartial && result?.message) ||
-        (lastJob?.status === "COMPLETED" && !result?.isPartial)) && (
+      {((result?.success && !result?.isPartial && result?.message &&
+        submittedIntent?.startsWith("restore") && !result?.draftThemeName) ||
+        (!result && lastJob?.status === "COMPLETED" && lastJob.successCount > 0)) && (
         <div
           style={{
             background: "linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 50%, #eff6ff 100%)",

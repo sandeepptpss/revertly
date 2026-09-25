@@ -462,15 +462,25 @@ export async function reserveRestorePointSlot(shop, { source = "MANUAL" } = {}) 
   let count = await prisma.restorePoint.count({ where: { shop } });
   let rotated = 0;
   while (count >= limit) {
-    const oldest = await prisma.restorePoint.findFirst({
-      where: {
-        shop,
-        source: { in: AUTOMATIC_RESTORE_POINT_SOURCES },
-        status: { notIn: ["CREATING", "RESTORING"] },
-      },
-      orderBy: { createdAt: "asc" },
-      select: { id: true },
-    });
+    // A failed automatic capture holds nothing restorable, so it makes way
+    // before any good backup does. Oldest-first alone meant a backup that kept
+    // failing replaced the store's working automatic backups with FAILED rows.
+    const automatic = {
+      shop,
+      source: { in: AUTOMATIC_RESTORE_POINT_SOURCES },
+      status: { notIn: ["CREATING", "RESTORING"] },
+    };
+    const oldest =
+      (await prisma.restorePoint.findFirst({
+        where: { ...automatic, status: "FAILED" },
+        orderBy: { createdAt: "asc" },
+        select: { id: true },
+      })) ||
+      (await prisma.restorePoint.findFirst({
+        where: automatic,
+        orderBy: { createdAt: "asc" },
+        select: { id: true },
+      }));
     if (!oldest) break;
     // Decouple related rollback jobs first so the audit trail is preserved,
     // exactly as the retention policy below does.
@@ -502,11 +512,15 @@ export async function enforceBackupRetentionPolicy(shop) {
 
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
-  // Prune expired restore points (keep at least the latest 2 regardless)
+  // Prune expired restore points (keep at least the latest 2 regardless).
+  // A point that is still being captured or is being restored from right now
+  // is in use: deleting it mid-restore fails the restore after it has already
+  // written to the live store. It is pruned on a later run once it settles.
   const expiredRps = await prisma.restorePoint.findMany({
     where: {
       shop,
       createdAt: { lt: cutoff },
+      status: { notIn: ["CREATING", "RESTORING"] },
     },
     orderBy: { createdAt: "asc" },
     select: { id: true },
@@ -975,10 +989,20 @@ export async function restoreThemeFilesWithSafety({
   }
 
   // 3. If LIVE mode: take pre-rollback safety snapshot first!
+  // The snapshot must be of the theme about to be overwritten. A restore
+  // point may hold a draft theme, or a theme that has since been unpublished,
+  // and snapshotting the published theme instead left the merchant an "undo"
+  // for a theme the restore never touched. fetchThemeBackup falls back to the
+  // published theme when the target is gone, so the id is checked too.
   let safetyRpId = null;
   try {
-    const currentThemeData = await fetchThemeBackup(admin);
-    if (currentThemeData?.activeTheme) {
+    const currentThemeData = await fetchThemeBackup(admin, themeId);
+    const snapshotId = String(currentThemeData?.activeTheme?.id || "");
+    const targetId = String(themeId || "");
+    const isTargetTheme =
+      Boolean(snapshotId) &&
+      (!targetId || snapshotId === targetId || snapshotId.endsWith(`/${targetId.replace(/^.*\//, "")}`));
+    if (isTargetTheme) {
       const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       await reserveRestorePointSlot(shop, { source: "PRE_RESTORE" });
       const safetyPoint = await prisma.restorePoint.create({
@@ -1044,6 +1068,7 @@ const LIVE_PRODUCTS_QUERY = `#graphql
         variants(first: 100) {
           nodes {
             id title price compareAtPrice sku inventoryQuantity barcode
+            inventoryItem { measurement { weight { value unit } } }
           }
         }
       }
@@ -1077,6 +1102,12 @@ export async function collectLiveProductsForBackup(admin, shop = null, { maxProd
   let cursor = null;
 
   if (!admin) return { items, truncated, complete: false, failed: true };
+
+  // The mirror row is what products/update diffs against, so it is built by
+  // the same function the webhook and catalog sync use. A hand-built row here
+  // stored tags as an array and dropped publishedAt and weight, and the next
+  // webhook after every backup logged false changes for all three.
+  const { buildSnapshot } = await import("./monitor.server.js");
 
   try {
     for (;;) {
@@ -1112,6 +1143,7 @@ export async function collectLiveProductsForBackup(admin, shop = null, { maxProd
           handle: p.handle,
           bodyHtml: p.bodyHtml,
           templateSuffix: p.templateSuffix || "",
+          publishedAt: p.publishedAt || null,
           updatedAt: p.updatedAt || "",
           images: (p.images?.nodes || []).map((img) => ({
             id: img.id,
@@ -1132,24 +1164,20 @@ export async function collectLiveProductsForBackup(admin, shop = null, { maxProd
 
         if (shop) {
           try {
+            const mirrorRow = {
+              title: p.title || "",
+              status: p.status || "ACTIVE",
+              vendor: p.vendor || "",
+              productType: p.productType || "",
+              tags: Array.isArray(p.tags) ? p.tags.join(", ") : p.tags || "",
+              handle: p.handle || "",
+              publishedAt: p.publishedAt ? new Date(p.publishedAt) : null,
+              snapshotData: buildSnapshot(p),
+            };
             await prisma.productSnapshot.upsert({
               where: { shop_productId: { shop, productId: numericId } },
-              create: {
-                shop,
-                productId: numericId,
-                title: p.title || "",
-                status: p.status || "ACTIVE",
-                vendor: p.vendor || "",
-                productType: p.productType || "",
-                tags: Array.isArray(p.tags) ? p.tags.join(", ") : p.tags || "",
-                handle: p.handle || "",
-                snapshotData: snap,
-              },
-              update: {
-                title: p.title || "",
-                status: p.status || "ACTIVE",
-                snapshotData: snap,
-              },
+              create: { shop, productId: numericId, ...mirrorRow },
+              update: mirrorRow,
             });
           } catch {
             // A mirror write failing must not lose the product from the backup.
@@ -2401,7 +2429,7 @@ const METAFIELDS_SET_LIMIT = 25;
  * and already exist on any target store, so attempting them only produces
  * noise in the error list.
  */
-function isReservedNamespace(namespace) {
+export function isReservedNamespace(namespace) {
   const ns = String(namespace || "");
   return ns.startsWith("shopify--") || ns === "shopify" || ns.startsWith("app--");
 }
@@ -3723,7 +3751,9 @@ export async function createMultiResourceRestorePoint({
       }
     }
 
-    capture.products.failed = Boolean(productResult?.failed);
+    // OR, not assignment: a product task that rejected outright was already
+    // marked failed just above and has no productResult to say so again.
+    capture.products.failed = capture.products.failed || Boolean(productResult?.failed);
     capture.products.truncated = productsTruncated;
     capture.products.captured = products.length;
     // Metafield capture already reports per-owner problems of its own.
@@ -4732,14 +4762,38 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         if (res.success) liveTheme = true;
       }
 
-      // Sync imported products to baseline
+      // Sync imported products to baseline. The baseline is the set of
+      // monitored products, so it stays inside the plan's product allowance
+      // exactly as sync and the products/update webhook keep it: products
+      // already monitored are refreshed, new ones are added only while there
+      // is room. An import used to add them all, so a Free store could
+      // import a 5,000-product archive and have all 5,000 monitored.
       let liveProducts = 0;
+      let productsOverAllowance = 0;
+      const { getEffectiveLimits: effectiveLimitsFor } = await import("./billing.server.js");
+      const productAllowance = (await effectiveLimitsFor(shop)).products;
+      let monitoredCount = Number.isFinite(productAllowance)
+        ? await prisma.productSnapshot.count({ where: { shop, isDeleted: false } })
+        : 0;
       for (const p of products) {
         const pId = p.productId || p.id;
         const snap = p.snapshotData || p;
         const rawId = pId ? String(pId).replace("gid://shopify/Product/", "") : (p.handle ? `handle_${p.handle}` : null);
         if (rawId) {
           const numericId = rawId;
+          if (Number.isFinite(productAllowance)) {
+            const known = await prisma.productSnapshot.findUnique({
+              where: { shop_productId: { shop, productId: numericId } },
+              select: { id: true, isDeleted: true },
+            });
+            if (!known || known.isDeleted) {
+              if (monitoredCount >= productAllowance) {
+                productsOverAllowance++;
+                continue;
+              }
+              monitoredCount++;
+            }
+          }
           try {
             await prisma.productSnapshot.upsert({
               where: { shop_productId: { shop, productId: numericId } },
@@ -4776,6 +4830,7 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       summary.restoredLive = true;
       summary.liveResults = {
         products: liveProducts,
+        productsOverAllowance,
         collections: liveCollections,
         pages: livePages,
         menus: liveMenus,
@@ -4788,6 +4843,9 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
 
       const resultParts = [];
       if (liveProducts > 0) resultParts.push(`${liveProducts} products baseline synced`);
+      if (productsOverAllowance > 0) {
+        resultParts.push(`${productsOverAllowance} products not monitored (over your plan's ${productAllowance.toLocaleString("en-US")}-product allowance; they stay in the saved restore point)`);
+      }
       if (liveCollections > 0) resultParts.push(`${liveCollections} collections restored`);
       if (livePages > 0) resultParts.push(`${livePages} pages restored`);
       if (liveMenus > 0) resultParts.push(`${liveMenus} menus restored`);

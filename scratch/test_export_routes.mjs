@@ -2,16 +2,22 @@ import assert from "node:assert";
 import prisma from "../app/db.server.js";
 import { loader as exportLoader } from "../app/routes/app.export.jsx";
 import { action as importAction } from "../app/routes/app.import-export.jsx";
+import { setMockShop } from "./_qa_mock_admin.mjs";
 
+// Run with --import ./scratch/_qa_route_register.mjs, which stubs
+// authenticate.admin; it must sign in as the shop whose restore point is read.
 const TEST_SHOP = "quickstart-749ac396.myshopify.com";
+setMockShop(TEST_SHOP);
 
 // Test route loader and action
 async function runRouteTests() {
   console.log("=== TESTING EXPORT & IMPORT ROUTES ===");
 
   // 1. Check existing restore point for snapshot export
+  // Step 4 re-imports the collections CSV, and an export with no collection
+  // rows is (correctly) refused, so read a restore point that has some.
   const rp = await prisma.restorePoint.findFirst({
-    where: { shop: TEST_SHOP },
+    where: { shop: TEST_SHOP, status: "READY", collectionCount: { gt: 0 } },
     orderBy: { createdAt: "desc" },
   });
   console.log(`Using restore point: #${rp?.id || "None"}`);
