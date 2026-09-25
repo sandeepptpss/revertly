@@ -4,7 +4,8 @@ import {
   INTERVAL_MONTHLY,
   INTERVAL_ANNUAL,
   planInfoForSubscriptionName,
-  customStatusForActiveSubscription,
+  customOfferPatchForActiveSubscription,
+  customCancellationPatch,
 } from "../billing.server.js";
 
 // Statuses that mean the subscription is permanently gone and the shop should
@@ -56,9 +57,10 @@ export const action = async ({ request }) => {
 
       // Only the dedicated custom plan accepts a custom offer; any other
       // charge becoming active means a Shopify-billed custom plan was replaced.
-      const customStatus = customStatusForActiveSubscription(existing, planInfo.isCustom);
-      const customStatusChange =
-        existing && customStatus !== (existing.customPriceStatus || null) ? { customPriceStatus: customStatus } : {};
+      const customStatusChange = customOfferPatchForActiveSubscription(existing, planInfo.isCustom, {
+        price: subscription.price ?? subscription?.line_items?.[0]?.plan?.pricing_details?.price?.amount ?? null,
+        isNewSubscription: Boolean(subscriptionId) && subscriptionId !== existing?.subscriptionId,
+      });
 
       await prisma.appSettings.upsert({
         where: { shop },
@@ -111,9 +113,7 @@ export const action = async ({ request }) => {
           subscriptionId: null,
           billingInterval: INTERVAL_MONTHLY,
           circuitBreakerEnabled: false,
-          ...(existing?.customPriceStatus === "ACTIVE" && existing?.customBillingMethod !== "EXTERNAL"
-            ? { customPriceStatus: "CANCELLED" }
-            : {}),
+          ...customCancellationPatch(existing),
         },
       });
 

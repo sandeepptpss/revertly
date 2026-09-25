@@ -79,16 +79,24 @@ export async function resolveActor(shop, session) {
 
   // First ever caller becomes OWNER so the shop always has one.
   if (memberCount === 0) {
-    const owner = await prisma.teamMember.create({
-      data: {
-        shop,
-        email: email || placeholderOwnerEmail(shop),
-        name: name || "Store Owner",
-        role: "OWNER",
-        status: "ACTIVE",
-        lastActiveAt: new Date(),
-      },
-    });
+    let owner;
+    try {
+      owner = await prisma.teamMember.create({
+        data: {
+          shop,
+          email: email || placeholderOwnerEmail(shop),
+          name: name || "Store Owner",
+          role: "OWNER",
+          status: "ACTIVE",
+          lastActiveAt: new Date(),
+        },
+      });
+    } catch (err) {
+      // A simultaneous first request provisioned the owner already (a first
+      // page load fires several). The roster now exists, so resolve normally.
+      if (err?.code === "P2002") return resolveActor(shop, session);
+      throw err;
+    }
     return { member: owner, role: "OWNER", email: owner.email, provisioned: true };
   }
 
@@ -164,16 +172,32 @@ async function ensureAccountOwner(shop, email, name, member) {
     });
     actor = { member: promoted, role: "OWNER", email, accountOwnerRestored: true };
   } else {
-    const created = await prisma.teamMember.create({
-      data: {
-        shop,
-        email,
-        name: name || "Store Owner",
-        role: "OWNER",
-        status: "ACTIVE",
-        lastActiveAt: new Date(),
-      },
-    });
+    let created;
+    try {
+      created = await prisma.teamMember.create({
+        data: {
+          shop,
+          email,
+          name: name || "Store Owner",
+          role: "OWNER",
+          status: "ACTIVE",
+          lastActiveAt: new Date(),
+        },
+      });
+    } catch (err) {
+      // The owner's first page load fires several requests at once; another
+      // one created the row first. Use that row rather than failing this one.
+      if (err?.code !== "P2002") throw err;
+      const existing = await prisma.teamMember.findUnique({ where: { shop_email: { shop, email } } });
+      if (!existing) throw err;
+      created =
+        existing.role === "OWNER" && existing.status === "ACTIVE"
+          ? existing
+          : await prisma.teamMember.update({
+              where: { id: existing.id },
+              data: { role: "OWNER", status: "ACTIVE", lastActiveAt: new Date() },
+            });
+    }
     actor = { member: created, role: "OWNER", email, accountOwnerRestored: true };
   }
 

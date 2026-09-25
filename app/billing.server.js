@@ -15,9 +15,13 @@ import {
   PLAN_TIERS,
   PLAN_ENTERPRISE_CUSTOM,
   ALL_BILLING_PLAN_NAMES,
+  ENTERPRISE_PRODUCT_CAP,
+  DEFAULT_CUSTOM_PRICE,
 } from "./billing.constants.js";
 
 export {
+  ENTERPRISE_PRODUCT_CAP,
+  DEFAULT_CUSTOM_PRICE,
   PLAN_ENTERPRISE_CUSTOM,
   ALL_BILLING_PLAN_NAMES,
   PLAN_STARTER,
@@ -175,7 +179,7 @@ export const PLAN_LIMITS = {
     teamRoles: true,
   },
   enterprise: {
-    products: 200000,
+    products: ENTERPRISE_PRODUCT_CAP,
     restorePoints: Infinity,
     rules: Infinity,
     retentionDays: 365,
@@ -250,18 +254,96 @@ function applyCustomQuota(baseLimits, row, effectivePlan) {
   };
 }
 
+/** Whether new terms are waiting on top of an ACTIVE Shopify-billed custom plan. */
+export function hasPendingCustomTerms(row) {
+  return Boolean(
+    row?.customPendingProductLimit > 0 &&
+      row?.customPendingPriceAmount > 0 &&
+      row?.customPriceStatus === "ACTIVE" &&
+      row?.customBillingMethod !== "EXTERNAL",
+  );
+}
+
+/** Fields of `patch` whose value differs from `row` (so callers write only real changes). */
+function changedFields(row, patch) {
+  return Object.fromEntries(Object.entries(patch).filter(([k, v]) => (row?.[k] ?? null) !== v));
+}
+
+function samePrice(a, b) {
+  return Math.abs(Number(a) - Number(b)) < 0.005;
+}
+
 /**
- * The custom-offer status implied by the subscription Shopify reports as
- * active. Only the dedicated custom plan can accept an offer. Any other active
- * charge means an accepted Shopify-billed custom plan has been replaced by a
- * standard one, so it is no longer in force. External contracts are managed
- * by hand and are never touched here.
+ * The custom-offer fields to write when a Shopify-billed custom plan ends
+ * (downgrade, cancellation, replacement by a standard plan). Terms the admin
+ * had pending become the offer on file, so re-offering shows the latest ones.
  */
-export function customStatusForActiveSubscription(row, isCustomSubscription) {
-  const status = row?.customPriceStatus || null;
-  if (!row?.customProductLimit || row.customBillingMethod === "EXTERNAL") return status;
-  if (isCustomSubscription) return "ACTIVE";
-  return status === "ACTIVE" ? "CANCELLED" : status;
+export function customCancellationPatch(row) {
+  if (!row?.customProductLimit || row.customBillingMethod === "EXTERNAL" || row.customPriceStatus !== "ACTIVE") {
+    return {};
+  }
+  const pending = hasPendingCustomTerms(row)
+    ? { customProductLimit: row.customPendingProductLimit, customPriceAmount: row.customPendingPriceAmount }
+    : {};
+  return changedFields(row, {
+    customPriceStatus: "CANCELLED",
+    ...pending,
+    customPendingProductLimit: null,
+    customPendingPriceAmount: null,
+  });
+}
+
+/**
+ * The custom-offer fields implied by the subscription Shopify reports as
+ * active — only the changes, so `{}` means nothing to write.
+ *
+ * Only the dedicated custom plan can accept an offer, and only at the price on
+ * offer. `subscription.price` is the charge's recurring amount when known:
+ *   - equal to pending terms' price → the merchant approved them; they
+ *     replace the current terms;
+ *   - equal to the current price → the current terms are (or become) ACTIVE,
+ *     and any pending terms keep waiting;
+ *   - anything else → nothing on file is being paid for, so an ACTIVE plan
+ *     falls back to OFFERED rather than granting terms nobody approved.
+ * When the price is not known (a webhook payload without one), only a
+ * subscription other than the one already on file — a charge the merchant has
+ * just approved — can accept, and it accepts the newest terms.
+ *
+ * Any other active charge means an accepted Shopify-billed custom plan has
+ * been replaced by a standard one, so it is no longer in force. External
+ * contracts are managed by hand and are never touched here.
+ */
+export function customOfferPatchForActiveSubscription(row, isCustomSubscription, subscription = {}) {
+  if (!row?.customProductLimit || row.customBillingMethod === "EXTERNAL") return {};
+  if (!isCustomSubscription) return customCancellationPatch(row);
+
+  const status = row.customPriceStatus || null;
+  const pending = hasPendingCustomTerms(row);
+  const promotePending = {
+    customProductLimit: row.customPendingProductLimit,
+    customPriceAmount: row.customPendingPriceAmount,
+    customPendingProductLimit: null,
+    customPendingPriceAmount: null,
+    customPriceStatus: "ACTIVE",
+  };
+
+  const price = Number(subscription.price);
+  if (subscription.price != null && Number.isFinite(price)) {
+    if (pending && samePrice(price, row.customPendingPriceAmount)) return changedFields(row, promotePending);
+    // Same default as the Plan page's activateCustomPlus request.
+    const currentPrice = Number(row.customPriceAmount) || DEFAULT_CUSTOM_PRICE;
+    if (samePrice(price, currentPrice)) return changedFields(row, { customPriceStatus: "ACTIVE" });
+    return status === "ACTIVE" ? changedFields(row, { customPriceStatus: "OFFERED" }) : {};
+  }
+
+  if (!subscription.isNewSubscription) return {};
+  return pending ? changedFields(row, promotePending) : changedFields(row, { customPriceStatus: "ACTIVE" });
+}
+
+/** The custom-offer status after `customOfferPatchForActiveSubscription`. */
+export function customStatusForActiveSubscription(row, isCustomSubscription, subscription = {}) {
+  const patch = customOfferPatchForActiveSubscription(row, isCustomSubscription, subscription);
+  return "customPriceStatus" in patch ? patch.customPriceStatus : row?.customPriceStatus || null;
 }
 
 // Exact (case-insensitive) map from a Shopify subscription name to our plan.
@@ -317,12 +399,23 @@ export async function getEffectivePlanId(shop, settings) {
     return "enterprise";
   }
 
-  const paidPlan = normalizePlanId(row?.planId);
-
   const { getActiveFreeGrowthGrant } = await import("./freeGrowth.server.js");
   const grant = await getActiveFreeGrowthGrant(shop);
+  return effectivePlanFromState(row, Boolean(grant));
+}
 
-  let plan = grant && planRank(paidPlan) <= planRank("growth") ? "growth" : paidPlan;
+/**
+ * The synchronous core of getEffectivePlanId, for callers that have already
+ * loaded the settings row and the store's seat — the platform admin panel
+ * reads every store at once and must report the same plan this enforces.
+ */
+export function effectivePlanFromState(row, hasActiveFreeGrowthSeat) {
+  if (row?.customBillingMethod === "EXTERNAL" && row?.customPriceStatus === "ACTIVE") {
+    return "enterprise";
+  }
+
+  const paidPlan = normalizePlanId(row?.planId);
+  let plan = hasActiveFreeGrowthSeat && planRank(paidPlan) <= planRank("growth") ? "growth" : paidPlan;
 
   // The flag is refreshed on every token exchange (shopify.server.js afterAuth)
   // because this function has no admin client to ask Shopify itself.
@@ -469,49 +562,36 @@ export async function getStorePlan(shop, billing = null, isTest = true, admin = 
     if (activeShopifyPlan) {
       const nextInterval = activeShopifyInterval || INTERVAL_MONTHLY;
       const nextSubscriptionId = activeSubscription?.id || settings.subscriptionId;
-      const nextCustomStatus = customStatusForActiveSubscription(settings, isCustomSubscription);
+      const customPatch = customOfferPatchForActiveSubscription(settings, isCustomSubscription, {
+        price: activeSubscription?.lineItems?.[0]?.plan?.pricingDetails?.price?.amount ?? null,
+        isNewSubscription: Boolean(activeSubscription?.id) && activeSubscription.id !== settings.subscriptionId,
+      });
       const needsPlanUpdate =
         settings.planId !== activeShopifyPlan ||
         settings.billingInterval !== nextInterval ||
         settings.subscriptionId !== nextSubscriptionId ||
-        settings.customPriceStatus !== nextCustomStatus;
+        Object.keys(customPatch).length > 0;
       if (needsPlanUpdate) {
-        await prisma.appSettings.update({
-          where: { shop },
-          data: {
-            planId: activeShopifyPlan,
-            billingInterval: nextInterval,
-            subscriptionId: nextSubscriptionId,
-            ...(settings.customPriceStatus !== nextCustomStatus ? { customPriceStatus: nextCustomStatus } : {}),
-          },
-        });
-        Object.assign(settings, {
+        const data = {
           planId: activeShopifyPlan,
           billingInterval: nextInterval,
           subscriptionId: nextSubscriptionId,
-          customPriceStatus: nextCustomStatus,
-        });
+          ...customPatch,
+        };
+        await prisma.appSettings.update({ where: { shop }, data });
+        Object.assign(settings, data);
       }
       if (!isExternalActive) currentPlan = activeShopifyPlan;
     } else if (noActivePaymentConfirmed && settings.planId !== "free" && !isExternalActive) {
       // Shopify has no active payment, but DB still says paid plan -> downgrade to free
-      const lapsedCustom =
-        settings.customBillingMethod !== "EXTERNAL" && settings.customPriceStatus === "ACTIVE";
-      await prisma.appSettings.update({
-        where: { shop },
-        data: {
-          planId: "free",
-          subscriptionId: null,
-          billingInterval: INTERVAL_MONTHLY,
-          ...(lapsedCustom ? { customPriceStatus: "CANCELLED" } : {}),
-        },
-      });
-      Object.assign(settings, {
+      const data = {
         planId: "free",
         subscriptionId: null,
         billingInterval: INTERVAL_MONTHLY,
-        ...(lapsedCustom ? { customPriceStatus: "CANCELLED" } : {}),
-      });
+        ...customCancellationPatch(settings),
+      };
+      await prisma.appSettings.update({ where: { shop }, data });
+      Object.assign(settings, data);
       currentPlan = "free";
     }
   }
@@ -678,6 +758,94 @@ export async function checkRuleLimit(shop) {
     limit: limits.rules,
     plan,
   };
+}
+
+/**
+ * Run `write(tx)` — creating or re-activating a detection rule — only if the
+ * store is below its active-rule allowance, counting and writing inside one
+ * transaction that holds a per-store row lock. Checking with checkRuleLimit
+ * and then writing let two simultaneous requests both see room for one rule.
+ *
+ * Returns { allowed: true } after writing, or checkRuleLimit's shape with
+ * `allowed: false` when the allowance is full (nothing is written).
+ */
+export async function withActiveRuleSlot(shop, write) {
+  const plan = await getEffectivePlanId(shop);
+  const limit = getPlanLimits(plan).rules;
+
+  // Every authenticated store has a session row; the platform row is the
+  // fallback lock (and is created if missing, as the free-Growth claim does).
+  const hasSession = await prisma.session.findFirst({ where: { shop }, select: { id: true } });
+  if (!hasSession) {
+    await prisma.platformSettings.upsert({ where: { id: 1 }, create: { id: 1 }, update: {} });
+  }
+
+  return prisma.$transaction(async (tx) => {
+    if (hasSession) {
+      await tx.$queryRaw`SELECT id FROM \`Session\` WHERE shop = ${shop} FOR UPDATE`;
+    } else {
+      await tx.$queryRaw`SELECT id FROM \`PlatformSettings\` WHERE id = 1 FOR UPDATE`;
+    }
+    const activeCount = await tx.detectionRule.count({ where: { shop, isActive: true } });
+    if (limit !== Infinity && activeCount >= limit) {
+      return { allowed: false, activeCount, limit, plan };
+    }
+    await write(tx);
+    return { allowed: true, activeCount: activeCount + 1, limit, plan };
+  });
+}
+
+/**
+ * Cancel every active subscription this app has on a store, through that
+ * store's Admin API client. Used when the platform admin moves a store onto a
+ * directly invoiced contract: its Shopify charge must end, or the merchant
+ * pays twice. Unused time is prorated back to the merchant, as the Plan page
+ * does when a free Growth seat replaces Starter.
+ *
+ * Returns { cancelled: [{id, name}], failed: [{id, name, message}] }. Throws if
+ * the store's subscriptions could not be read at all.
+ */
+export async function cancelActiveAppSubscriptions(admin, { prorate = true } = {}) {
+  const res = await admin.graphql(
+    `#graphql
+    query activeAppSubscriptions {
+      currentAppInstallation {
+        activeSubscriptions { id name status }
+      }
+    }`,
+  );
+  const json = await res.json();
+  if (json?.errors?.length || !json?.data?.currentAppInstallation) {
+    throw new Error(json?.errors?.[0]?.message || "Could not read the store's app subscriptions.");
+  }
+  const subs = json.data.currentAppInstallation.activeSubscriptions || [];
+
+  const cancelled = [];
+  const failed = [];
+  for (const sub of subs) {
+    try {
+      const cancelRes = await admin.graphql(
+        `#graphql
+        mutation cancelAppSubscription($id: ID!, $prorate: Boolean) {
+          appSubscriptionCancel(id: $id, prorate: $prorate) {
+            appSubscription { id status }
+            userErrors { field message }
+          }
+        }`,
+        { variables: { id: sub.id, prorate } },
+      );
+      const cancelJson = await cancelRes.json();
+      const userErrors = cancelJson?.data?.appSubscriptionCancel?.userErrors || [];
+      if (cancelJson?.errors?.length || userErrors.length) {
+        failed.push({ id: sub.id, name: sub.name, message: (userErrors[0] || cancelJson.errors[0]).message });
+      } else {
+        cancelled.push({ id: sub.id, name: sub.name });
+      }
+    } catch (err) {
+      failed.push({ id: sub.id, name: sub.name, message: err?.message || String(err) });
+    }
+  }
+  return { cancelled, failed };
 }
 
 /**

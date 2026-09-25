@@ -291,6 +291,11 @@ model AppSettings {
   customPriceAmount     Int?     // Custom monthly price in USD (e.g. 199, 249, 299)
   customBillingMethod   String?  @default("SHOPIFY") @db.VarChar(50) // SHOPIFY or EXTERNAL
   customPriceStatus     String?  @db.VarChar(50) // OFFERED, ACTIVE, CANCELLED
+  // New terms offered on top of an ACTIVE Shopify-billed custom plan. The
+  // current terms stay in force until the merchant approves a charge at the
+  // pending price; then these replace them and are cleared.
+  customPendingProductLimit Int?
+  customPendingPriceAmount  Int?
   // GA4 / Google Tag Manager tag health (ga4Monitor.server.js). All optional:
   // a null status means the store has never been checked. IDs keep the last
   // detected value through MISSING/UNKNOWN checks so an alert can name the tag
@@ -428,6 +433,16 @@ model PlatformSettings {
 // Seats are released when a store uninstalls (the row is deleted), so the
 // count always reflects currently-installed stores and the next installer
 // takes the freed seat.
+// One row per store that has ever claimed a free Growth seat, keyed by a
+// one-way SHA-256 of the shop domain. Unlike FreeGrowthGrant it survives
+// uninstall and shop/redact, so a store cannot reinstall to claim again, and it
+// is what the seat count reads.
+model FreeGrowthClaim {
+  id        Int      @id @default(autoincrement())
+  shopHash  String   @unique @db.Char(64)
+  claimedAt DateTime @default(now())
+}
+
 model FreeGrowthGrant {
   id        Int      @id @default(autoincrement())
   shop      String   @unique @db.VarChar(255)

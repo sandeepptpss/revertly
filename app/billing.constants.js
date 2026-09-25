@@ -29,6 +29,13 @@ export const ALL_BILLING_PLAN_NAMES = [
   PLAN_ENTERPRISE_CUSTOM,
 ];
 
+// The standard Enterprise product ceiling. A negotiated custom quota must sit
+// above it, because the quota replaces the cap rather than adding to it.
+export const ENTERPRISE_PRODUCT_CAP = 200000;
+
+// The monthly price a Custom Enterprise Plus offer is billed at when none is on file.
+export const DEFAULT_CUSTOM_PRICE = 249;
+
 export const INTERVAL_MONTHLY = "EVERY_30_DAYS";
 export const INTERVAL_ANNUAL = "ANNUAL";
 

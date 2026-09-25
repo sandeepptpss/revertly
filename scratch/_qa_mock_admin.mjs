@@ -58,7 +58,15 @@ export const LIVE = {
   }],
 };
 
+// A suite can substitute its own admin client (e.g. one that scripts the
+// billing subscription queries); null restores the shared mock below.
+let adminOverride = null;
+export function setMockAdminOverride(admin) {
+  adminOverride = admin || null;
+}
+
 export function getMockAdmin() {
+  if (adminOverride) return adminOverride;
   return {
     graphql: async (query, opts = {}) => {
       const j = (data) => ({ json: async () => ({ data }) });

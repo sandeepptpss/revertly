@@ -1,7 +1,7 @@
 import { Fragment, useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useRouteError, redirect } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate } from "../shopify.server.js";
+import { authenticate, unauthenticated } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { isPlatformAdmin, getSessionEmail, PLATFORM_ADMIN_SHOP } from "../platformAdmin.server.js";
 import {
@@ -10,15 +10,28 @@ import {
   getActiveGlobalDiscount,
   isStoreDiscountInForce,
 } from "../storeDiscount.server.js";
-import { getFreeGrowthStatus } from "../freeGrowth.server.js";
+import { getFreeGrowthStatus, countFreeGrowthSeatsUsed } from "../freeGrowth.server.js";
 import {
   DISCOUNT_DURATION_MONTHS,
   normalizeTier,
   TIER_STANDARD,
   TIER_VIP,
 } from "../discount.constants.js";
-import { PLAN_TIERS } from "../billing.constants.js";
-import { normalizePlanId } from "../billing.server.js";
+import {
+  PLAN_TIERS,
+  PLAN_ENTERPRISE_CUSTOM,
+  ENTERPRISE_PRODUCT_CAP,
+  DEFAULT_CUSTOM_PRICE,
+} from "../billing.constants.js";
+import {
+  PLAN_LIMITS,
+  normalizePlanId,
+  effectivePlanFromState,
+  isCustomQuotaInForce,
+  isSimulatedSubscriptionId,
+  hasPendingCustomTerms,
+  cancelActiveAppSubscriptions,
+} from "../billing.server.js";
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
@@ -46,6 +59,11 @@ import {
  * because a route guard on the page alone would not stop a direct POST.
  */
 const TICKET_PRIORITY_WEIGHT = { URGENT: 3, HIGH: 2, NORMAL: 1 };
+const TICKET_STATUSES = new Set(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]);
+
+// A custom quota replaces the Enterprise product cap outright, so one at or
+// below that cap would lower a paying Enterprise store's allowance.
+const MAX_CUSTOM_PRODUCT_LIMIT = 5000000;
 const OPEN_TICKET_STATUSES = new Set(["OPEN", "IN_PROGRESS"]);
 function compareSupportTickets(a, b) {
   const open = Number(OPEN_TICKET_STATUSES.has(b.status)) - Number(OPEN_TICKET_STATUSES.has(a.status));
@@ -97,6 +115,7 @@ export const loader = async ({ request }) => {
   // one. Union the two lists so a freshly-installed merchant is still visible
   // here — and therefore still grantable.
   const settingsByShop = new Map(settingsRows.map((s) => [s.shop, s]));
+  const installedShopSet = new Set(installedShops.map((s) => s.shop));
   const merchants = [
     ...settingsRows,
     ...installedShops.filter((s) => !settingsByShop.has(s.shop)).map((s) => ({ shop: s.shop })),
@@ -146,13 +165,28 @@ export const loader = async ({ request }) => {
         }
       : null;
 
-    const normPlan = normalizePlanId(m.planId);
-    const planOrder = PLAN_TIERS[normPlan]?.order ?? 0;
-    const effectivePlanId = seatActive && planOrder < (PLAN_TIERS.growth?.order ?? 2) ? "growth" : normPlan;
+    // The plan the store is entitled to, resolved exactly as enforcement
+    // does (external contracts, the seat, Partner development stores).
+    const effectivePlanId = effectivePlanFromState(m, seatActive);
+    const customQuotaActive = isCustomQuotaInForce(m, effectivePlanId);
 
     return {
       shop: m.shop,
       planId: effectivePlanId,
+      isPartnerDevelopment: Boolean(m.isPartnerDevelopment),
+      // AppSettings outlives an uninstall; only a stored session means the
+      // app is still installed.
+      isInstalled: installedShopSet.has(m.shop),
+      productCap: customQuotaActive ? m.customProductLimit : PLAN_LIMITS[effectivePlanId].products,
+      customQuotaInForce: customQuotaActive,
+      // A paid plan the store is being charged for through Shopify, per the
+      // last sync. Switching it to a direct contract must end that charge.
+      billedThroughShopify:
+        normalizePlanId(m.planId) !== "free" && Boolean(m.subscriptionId) && !isSimulatedSubscriptionId(m.subscriptionId),
+      billedPlanName: PLAN_TIERS[normalizePlanId(m.planId)].name,
+      pendingCustomTerms: hasPendingCustomTerms(m)
+        ? { products: m.customPendingProductLimit, price: m.customPendingPriceAmount }
+        : null,
       hasUsedTrial: Boolean(m.hasUsedTrial),
       trialEndsAt: m.trialEndsAt ?? null,
       monitoringEnabled: Boolean(m.monitoringEnabled),
@@ -334,7 +368,7 @@ export const action = async ({ request }) => {
 
     const enabled = formData.get("freeGrowthEnabled") === "1";
 
-    const used = await prisma.freeGrowthGrant.count();
+    const used = await countFreeGrowthSeatsUsed();
     if (limit < used) {
       return {
         success: false,
@@ -387,10 +421,18 @@ export const action = async ({ request }) => {
   }
 
   if (intent === "updateTicketStatus") {
-    const ticketId = parseInt(formData.get("ticketId"), 10);
-    const status = String(formData.get("status") || "RESOLVED").toUpperCase();
+    const rawTicketId = String(formData.get("ticketId") ?? "").trim();
+    const ticketId = /^\d{1,9}$/.test(rawTicketId) ? Number(rawTicketId) : 0;
+    const status = String(formData.get("status") || "RESOLVED").trim().toUpperCase();
     if (!ticketId) {
       return { success: false, message: "Invalid ticket ID." };
+    }
+    if (!TICKET_STATUSES.has(status)) {
+      return { success: false, message: `"${status}" is not a ticket status. Use Open, In Progress or Resolved.` };
+    }
+    const existingTicket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });
+    if (!existingTicket) {
+      return { success: false, message: `Ticket #${ticketId} no longer exists. Refresh the page.` };
     }
     const updated = await prisma.supportTicket.update({
       where: { id: ticketId },
@@ -417,34 +459,120 @@ export const action = async ({ request }) => {
   }
 
   if (intent === "setCustomQuota") {
-    const customLimit = parseInt(formData.get("customProductLimit"), 10);
-    if (!customLimit || customLimit < 1000) {
-      return { success: false, message: "Custom product limit must be a valid number of at least 1,000 products." };
+    // Strict digits only: parseInt read "350000abc" as 350000 and "1e9" as 1.
+    const rawLimit = String(formData.get("customProductLimit") ?? "").trim().replace(/,/g, "");
+    const customLimit = /^\d{1,8}$/.test(rawLimit) ? Number(rawLimit) : NaN;
+    if (!Number.isInteger(customLimit) || customLimit <= ENTERPRISE_PRODUCT_CAP || customLimit > MAX_CUSTOM_PRODUCT_LIMIT) {
+      return {
+        success: false,
+        message: `Custom product limit must be a whole number above the standard Enterprise cap of ${ENTERPRISE_PRODUCT_CAP.toLocaleString("en-US")} and at most ${MAX_CUSTOM_PRODUCT_LIMIT.toLocaleString("en-US")}.`,
+      };
     }
     const billingMethod =
       String(formData.get("customBillingMethod") || "SHOPIFY").toUpperCase() === "EXTERNAL"
         ? "EXTERNAL"
         : "SHOPIFY";
-    const rawPrice = formData.get("customPriceAmount");
-    const customPrice = rawPrice ? parseInt(rawPrice, 10) : null;
-    if (customPrice !== null && (isNaN(customPrice) || customPrice < 0 || customPrice > 10000)) {
-      return { success: false, message: "Custom monthly price must be a valid dollar amount (e.g. 199, 249)." };
+    const rawPrice = String(formData.get("customPriceAmount") ?? "").trim();
+    const customPrice = rawPrice === "" ? null : /^\d{1,5}$/.test(rawPrice) ? Number(rawPrice) : NaN;
+    // A Shopify-billed offer is charged at exactly this price, so it cannot be
+    // left blank (the Plan page would silently bill the $249 default) or zero.
+    if (billingMethod === "SHOPIFY" && customPrice === null) {
+      return { success: false, message: "Enter the monthly price the merchant will approve through Shopify Billing." };
+    }
+    if (customPrice !== null && (!Number.isInteger(customPrice) || customPrice < 1 || customPrice > 10000)) {
+      return { success: false, message: "Custom monthly price must be a whole dollar amount between $1 and $10,000 (e.g. 199, 249)." };
     }
     const note = truncateNote(formData.get("customPlanNote"));
 
-    // If EXTERNAL (Direct Invoice / Contract), mark as ACTIVE immediately.
-    // If SHOPIFY:
-    // - If switching from EXTERNAL to SHOPIFY, mark as OFFERED so merchant approves via Shopify.
-    // - If price or limit changed, mark as OFFERED for merchant approval.
-    // - Otherwise retain existing status (ACTIVE or OFFERED).
+    // EXTERNAL (direct invoice / contract) is in force immediately.
+    // SHOPIFY must be approved by the merchant at the price on offer, so:
+    // - an accepted plan whose price is unchanged stays ACTIVE (a new product
+    //   limit needs no new charge and takes effect at once);
+    // - an accepted plan given a new price keeps its current terms in force
+    //   and holds the new ones as pending until the merchant approves them;
+    // - anything else — a new offer, a lapsed (CANCELLED) plan being
+    //   re-offered, or a switch from an external contract — is OFFERED.
+    const previousPrice = merchantSettings?.customPriceAmount ?? null;
+    const wasActiveShopifyPlan =
+      Boolean(merchantSettings?.customProductLimit) &&
+      merchantSettings?.customBillingMethod !== "EXTERNAL" &&
+      merchantSettings?.customPriceStatus === "ACTIVE";
+    const repricedActivePlan =
+      billingMethod === "SHOPIFY" && wasActiveShopifyPlan && (previousPrice ?? DEFAULT_CUSTOM_PRICE) !== customPrice;
     const priceStatus =
-      billingMethod === "EXTERNAL"
-        ? "ACTIVE"
-        : merchantSettings?.customBillingMethod === "EXTERNAL"
-        ? "OFFERED"
-        : merchantSettings?.customPriceAmount !== customPrice || merchantSettings?.customProductLimit !== customLimit
-        ? "OFFERED"
-        : merchantSettings?.customPriceStatus || "OFFERED";
+      billingMethod === "EXTERNAL" || wasActiveShopifyPlan ? "ACTIVE" : "OFFERED";
+
+    // A direct contract replaces Shopify billing, so any charge the store has
+    // through Shopify must end first — otherwise the merchant pays twice. It
+    // is only cancelled on the admin's explicit say-so, and nothing is saved
+    // unless every cancellation succeeds.
+    let cancelledSubscriptions = [];
+    if (billingMethod === "EXTERNAL") {
+      const confirmCancel = formData.get("cancelShopifySubscription") === "1";
+      const storedCharge =
+        normalizePlanId(merchantSettings?.planId) !== "free" &&
+        Boolean(merchantSettings?.subscriptionId) &&
+        !isSimulatedSubscriptionId(merchantSettings?.subscriptionId);
+
+      let storeAdmin = null;
+      try {
+        ({ admin: storeAdmin } = await unauthenticated.admin(targetShop));
+      } catch {
+        storeAdmin = null;
+      }
+
+      let liveSubscriptions = null;
+      if (storeAdmin) {
+        try {
+          if (confirmCancel) {
+            const result = await cancelActiveAppSubscriptions(storeAdmin);
+            cancelledSubscriptions = result.cancelled;
+            if (result.failed.length) {
+              return {
+                success: false,
+                message: `Shopify refused to cancel ${result.failed.map((f) => `"${f.name}" (${f.message})`).join(", ")} for ${targetShop}, so the contract was not saved.${result.cancelled.length ? ` Already cancelled: ${result.cancelled.map((c) => `"${c.name}"`).join(", ")}.` : ""}`,
+              };
+            }
+            liveSubscriptions = [];
+          } else {
+            const res = await storeAdmin.graphql(
+              `#graphql
+              query activeAppSubscriptions { currentAppInstallation { activeSubscriptions { id name } } }`,
+            );
+            const json = await res.json();
+            liveSubscriptions = json?.data?.currentAppInstallation?.activeSubscriptions ?? null;
+          }
+        } catch (err) {
+          console.warn("[Revertly Admin] Could not read subscriptions for", targetShop, err?.message || err);
+          liveSubscriptions = null;
+        }
+      }
+
+      if (liveSubscriptions === null && (storedCharge || confirmCancel)) {
+        return {
+          success: false,
+          message: `Couldn't reach Shopify to check ${targetShop}'s current subscription, so the contract was not saved. Try again once the store's app session is available.`,
+        };
+      }
+      if (liveSubscriptions?.length) {
+        return {
+          success: false,
+          message: `${targetShop} is still billed through Shopify (${liveSubscriptions.map((sub) => `"${sub.name}"`).join(", ")}). Tick "Cancel their Shopify subscription" to end that charge when the contract starts, or the merchant pays twice.`,
+        };
+      }
+    }
+
+    const terms = repricedActivePlan
+      ? { customPendingProductLimit: customLimit, customPendingPriceAmount: customPrice }
+      : {
+          customProductLimit: customLimit,
+          customPriceAmount: customPrice,
+          customPendingProductLimit: null,
+          customPendingPriceAmount: null,
+        };
+    const endsShopifyBilling = billingMethod === "EXTERNAL" && cancelledSubscriptions.length > 0
+      ? { planId: "free", subscriptionId: null, billingInterval: "EVERY_30_DAYS" }
+      : {};
 
     await prisma.appSettings.upsert({
       where: { shop: targetShop },
@@ -458,9 +586,9 @@ export const action = async ({ request }) => {
         productLimitReachedAt: null,
       },
       update: {
-        customProductLimit: customLimit,
+        ...terms,
+        ...endsShopifyBilling,
         customPlanNote: note,
-        customPriceAmount: customPrice,
         customBillingMethod: billingMethod,
         customPriceStatus: priceStatus,
         productLimitReachedAt: null,
@@ -479,23 +607,54 @@ export const action = async ({ request }) => {
           customPriceAmount: customPrice,
           customBillingMethod: billingMethod,
           customPriceStatus: priceStatus,
+          pendingApproval: repricedActivePlan,
+          cancelledShopifySubscriptions: cancelledSubscriptions.map((c) => c.id),
         },
       },
     });
     const priceLabel = customPrice
       ? ` at $${customPrice}/mo (${billingMethod === "EXTERNAL" ? "External Contract" : "Shopify Billing"})`
+      : billingMethod === "EXTERNAL"
+      ? " (External Contract)"
       : "";
+    const statusLabel = repricedActivePlan
+      ? ` The merchant keeps their current ${merchantSettings.customProductLimit.toLocaleString("en-US")} products at $${previousPrice ?? DEFAULT_CUSTOM_PRICE}/mo until they approve the new price on their Plans & Billing page.`
+      : priceStatus === "ACTIVE"
+      ? billingMethod === "EXTERNAL"
+        ? ` It is in force now.${cancelledSubscriptions.length ? ` Cancelled their Shopify subscription (${cancelledSubscriptions.map((c) => `"${c.name}"`).join(", ")}); unused time is prorated back to them.` : ""}`
+        : " It is in force now on the merchant's existing custom subscription."
+      : " The merchant sees it as an offer to approve on their Plans & Billing page.";
     return {
       success: true,
-      message: `Custom quota of ${customLimit.toLocaleString()} products${priceLabel} configured for ${targetShop}.`,
+      message: `Custom quota of ${customLimit.toLocaleString("en-US")} products${priceLabel} configured for ${targetShop}.${statusLabel}`,
     };
   }
 
   if (intent === "resetCustomQuota") {
+    if (!merchantSettings?.customProductLimit) {
+      return { success: false, message: `${targetShop} has no custom quota to reset.` };
+    }
+    // The merchant approved a Shopify charge under the custom plan name. Removing
+    // the quota would leave them paying that price for standard Enterprise,
+    // with Enterprise shown as their current plan so there is nothing on their
+    // billing page to switch to.
+    if (
+      merchantSettings.customBillingMethod !== "EXTERNAL" &&
+      merchantSettings.customPriceStatus === "ACTIVE" &&
+      normalizePlanId(merchantSettings.planId) === "enterprise" &&
+      !isSimulatedSubscriptionId(merchantSettings.subscriptionId)
+    ) {
+      return {
+        success: false,
+        message: `${targetShop} is paying $${merchantSettings.customPriceAmount ?? DEFAULT_CUSTOM_PRICE}/mo through Shopify for "${PLAN_ENTERPRISE_CUSTOM}". Ask them to change plan on their Plans & Billing page first; removing the quota now would keep that charge running for standard Enterprise.`,
+      };
+    }
     await prisma.appSettings.update({
       where: { shop: targetShop },
       data: {
         customProductLimit: null,
+        customPendingProductLimit: null,
+        customPendingPriceAmount: null,
         customPlanNote: null,
         customPriceAmount: null,
         customBillingMethod: "SHOPIFY",
@@ -607,6 +766,20 @@ function formatDate(value) {
   return new Date(value).toISOString().slice(0, 10);
 }
 
+function formatProductCount(count) {
+  return `${count.toLocaleString("en-US")} ${count === 1 ? "product" : "products"}`;
+}
+
+/**
+ * A starting custom limit: 50,000 above the catalog, rounded up to 10,000 and
+ * never at or below the Enterprise cap — the field's step and minimum would
+ * otherwise block the form on submit.
+ */
+function suggestedCustomLimit(productCount, floor = 300000) {
+  const aboveCatalog = Math.ceil(((productCount || 0) + 50000) / 10000) * 10000;
+  return Math.max(floor, ENTERPRISE_PRODUCT_CAP + 10000, aboveCatalog);
+}
+
 export default function AdminPanel() {
   const { merchants, tickets = [], durationMonths, global: globalDiscount, freeGrowth } = useLoaderData();
   const globalFetcher = useFetcher();
@@ -621,13 +794,16 @@ export default function AdminPanel() {
   const isTicketBusy = ticketFetcher.state !== "idle";
   const isQuotaBusy = quotaFetcher.state !== "idle";
 
-  // Display the result message from whichever action was triggered
-  const result =
-    globalFetcher.data ||
-    freeGrowthFetcher.data ||
-    storeFetcher.data ||
-    ticketFetcher.data ||
-    quotaFetcher.data;
+  // Show the outcome of the action submitted most recently. Taking the first
+  // fetcher with any data pinned the banner to an old result (e.g. the global
+  // discount's) and hid every later success or failure.
+  const actionFetchers = [globalFetcher, freeGrowthFetcher, storeFetcher, ticketFetcher, quotaFetcher];
+  const busyFetcherIndex = actionFetchers.findIndex((f) => f.state !== "idle");
+  const [resultFetcherIndex, setResultFetcherIndex] = useState(-1);
+  useEffect(() => {
+    if (busyFetcherIndex !== -1) setResultFetcherIndex(busyFetcherIndex);
+  }, [busyFetcherIndex]);
+  const result = busyFetcherIndex === -1 ? actionFetchers[resultFetcherIndex]?.data : null;
 
   const [editingShop, setEditingShop] = useState(null);
   const [percentDraft, setPercentDraft] = useState("10");
@@ -641,6 +817,7 @@ export default function AdminPanel() {
   const [freeGrowthOn, setFreeGrowthOn] = useState(freeGrowth.enabled);
 
   const [removeDiscountTarget, setRemoveDiscountTarget] = useState(null);
+  const [resetQuotaTarget, setResetQuotaTarget] = useState(null);
   const [showClearGlobalModal, setShowClearGlobalModal] = useState(false);
 
   // Ticket management state
@@ -656,6 +833,7 @@ export default function AdminPanel() {
 
   const isClearingGlobal = globalFetcher.state !== "idle" && globalFetcher.formData?.get("intent") === "clearGlobalDiscount";
   const isRemovingDiscount = storeFetcher.state !== "idle" && storeFetcher.formData?.get("intent") === "removeDiscount";
+  const isResettingQuota = quotaFetcher.state !== "idle" && quotaFetcher.formData?.get("intent") === "resetCustomQuota";
 
   useEffect(() => {
     if (globalFetcher.data && !isClearingGlobal) {
@@ -672,6 +850,9 @@ export default function AdminPanel() {
   useEffect(() => {
     if (quotaFetcher.data?.success) {
       setQuotaTargetShop(null);
+    }
+    if (quotaFetcher.data) {
+      setResetQuotaTarget(null);
     }
   }, [quotaFetcher.data]);
 
@@ -707,8 +888,8 @@ export default function AdminPanel() {
 
   function startQuotaEdit(row) {
     setQuotaTargetShop(row);
-    setCustomLimitDraft(String(row.customProductLimit || Math.max(300000, (row.productCount || 0) + 50000)));
-    setCustomPriceDraft(String(row.customPriceAmount || 249));
+    setCustomLimitDraft(String(row.customProductLimit || suggestedCustomLimit(row.productCount)));
+    setCustomPriceDraft(String(row.customPriceAmount || DEFAULT_CUSTOM_PRICE));
     setCustomBillingMethodDraft(row.customBillingMethod || "SHOPIFY");
     setCustomNoteDraft(row.customPlanNote || "");
   }
@@ -924,8 +1105,9 @@ export default function AdminPanel() {
 
             <p style={{ margin: "12px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
               Stores that install but never claim take up nothing, so you always give away{" "}
-              {freeGrowth.limit} real activations. A seat returns to the pool when that store uninstalls.
-              Seats are never revoked automatically, so the total cannot be lowered below {freeGrowth.used}.
+              {freeGrowth.limit} real activations. Each store can claim once: uninstalling does not return
+              its seat to the pool, and a store that reinstalls gets the rest of its original term, never a
+              new one. Seats are never revoked automatically, so the total cannot be lowered below {freeGrowth.used}.
               Once all {freeGrowth.limit} places are claimed, the offer automatically closes to new users.
             </p>
           </div>
@@ -1047,7 +1229,7 @@ export default function AdminPanel() {
                               {" · "}
                               <span>Plan: {t.planTier || "Unknown"}</span>
                               {matchingMerchant && (
-                                <span> · Catalog: {matchingMerchant.productCount.toLocaleString()} products</span>
+                                <span> · Catalog: {formatProductCount(matchingMerchant.productCount)}</span>
                               )}
                             </div>
                           </td>
@@ -1165,6 +1347,11 @@ export default function AdminPanel() {
                         <tr>
                           <td>
                             <strong>{row.shop}</strong>
+                            {!row.isInstalled && (
+                              <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ marginLeft: "6px", fontWeight: 700 }}>
+                                Uninstalled
+                              </span>
+                            )}
                             {row.alertEmail && (
                               <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>{row.alertEmail}</div>
                             )}
@@ -1173,6 +1360,13 @@ export default function AdminPanel() {
                             <span className="rv-badge rv-badge-neutral" style={{ textTransform: "uppercase", fontWeight: 700 }}>
                               {PLAN_TIERS[row.planId]?.name || row.planId}
                             </span>
+                            {row.isPartnerDevelopment && (
+                              <div style={{ marginTop: "4px" }}>
+                                <span className="rv-badge rv-badge-info rv-badge-sm" style={{ fontWeight: 700 }}>
+                                  Partner dev store
+                                </span>
+                              </div>
+                            )}
                             {row.freeGrowthSeat?.isActive && (
                               <div style={{ marginTop: "4px" }}>
                                 <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
@@ -1182,12 +1376,19 @@ export default function AdminPanel() {
                             )}
                           </td>
                           <td>
-                            <div style={{ fontWeight: 600 }}>{row.productCount.toLocaleString()} products</div>
+                            <div style={{ fontWeight: 600 }}>{formatProductCount(row.productCount)}</div>
+                            <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                              {row.customQuotaInForce ? "Custom cap" : "Plan cap"}: {row.productCap.toLocaleString("en-US")}
+                            </div>
                             {row.customProductLimit ? (
                               <div style={{ marginTop: "4px" }}>
                                 <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", alignItems: "center" }}>
-                                  <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                                    Custom: {row.customProductLimit.toLocaleString()}
+                                  <span
+                                    className={`rv-badge rv-badge-sm ${row.customQuotaInForce ? "rv-badge-success" : "rv-badge-warning"}`}
+                                    style={{ fontWeight: 700 }}
+                                    title={row.customQuotaInForce ? "In force" : "Not in force until the merchant is on it"}
+                                  >
+                                    Custom: {row.customProductLimit.toLocaleString("en-US")}
                                   </span>
                                   {row.customPriceAmount && (
                                     <span
@@ -1201,7 +1402,19 @@ export default function AdminPanel() {
                                         ? "Contract"
                                         : row.customPriceStatus === "ACTIVE"
                                         ? "Active"
+                                        : row.customPriceStatus === "CANCELLED"
+                                        ? "Lapsed"
                                         : "Offered"}
+                                    </span>
+                                  )}
+                                  {row.pendingCustomTerms && (
+                                    <span
+                                      className="rv-badge rv-badge-warning rv-badge-sm"
+                                      style={{ fontWeight: 700 }}
+                                      title="New terms waiting for the merchant's approval; the current ones stay in force"
+                                    >
+                                      Pending: {row.pendingCustomTerms.products.toLocaleString("en-US")} at $
+                                      {row.pendingCustomTerms.price}/mo
                                     </span>
                                   )}
                                 </div>
@@ -1213,10 +1426,6 @@ export default function AdminPanel() {
                                     {row.customPlanNote}
                                   </div>
                                 )}
-                              </div>
-                            ) : row.planId === "enterprise" ? (
-                              <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                                Plan cap: 200,000
                               </div>
                             ) : null}
                           </td>
@@ -1261,7 +1470,9 @@ export default function AdminPanel() {
                                 <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
                                   {row.effectiveDiscount.percent}%
                                   <span style={{ fontWeight: 500, marginLeft: "4px" }}>
-                                    ({EFFECTIVE_LABELS[row.effectiveDiscount.source]})
+                                    {/* The global discount is yearly-only: a monthly store pays full price. */}
+                                    ({EFFECTIVE_LABELS[row.effectiveDiscount.source]}
+                                    {row.effectiveDiscount.monthly ? "" : " · yearly only"})
                                   </span>
                                 </span>
                               )
@@ -1412,8 +1623,9 @@ export default function AdminPanel() {
               <li>The merchant sees it immediately on their own Plans &amp; Billing page — no separate sync step.</li>
               <li>
                 <strong>Discounts never stack.</strong> A store gets the single largest one it qualifies for —
-                its own VIP or standard grant, or the global discount, whichever is bigger. The
-                &ldquo;Effective&rdquo; column shows which one actually applies.
+                its own VIP or standard grant, or the global discount, whichever is bigger. The global
+                discount applies to yearly billing only, so a store with no grant of its own pays full
+                price monthly. The &ldquo;Effective&rdquo; column shows which one actually applies.
               </li>
               <li>
                 <strong>VIP is a label on the store&apos;s own grant</strong>, not a second discount. Switching a
@@ -1488,6 +1700,33 @@ export default function AdminPanel() {
         }}
         onClose={() => {
           if (!isRemovingDiscount) setRemoveDiscountTarget(null);
+        }}
+      />
+
+      {/* ── Reset Custom Quota Modal ── */}
+      <ConfirmModal
+        isOpen={Boolean(resetQuotaTarget)}
+        title="Reset Custom Quota"
+        message={
+          resetQuotaTarget ? (
+            <>
+              Remove the custom quota of{" "}
+              <strong>{resetQuotaTarget.customProductLimit?.toLocaleString("en-US")} products</strong> for{" "}
+              <strong>{resetQuotaTarget.shop}</strong>?
+            </>
+          ) : null
+        }
+        dangerNote="The store drops back to its plan's standard product cap immediately, and any pending offer disappears from its Plans & Billing page."
+        confirmLabel="Reset to Plan Default"
+        submittingLabel="Resetting..."
+        tone="critical"
+        isSubmitting={isResettingQuota}
+        onConfirm={() => {
+          if (!resetQuotaTarget) return;
+          quotaFetcher.submit({ intent: "resetCustomQuota", targetShop: resetQuotaTarget.shop }, { method: "POST" });
+        }}
+        onClose={() => {
+          if (!isResettingQuota) setResetQuotaTarget(null);
         }}
       />
 
@@ -1816,14 +2055,12 @@ export default function AdminPanel() {
             >
               <div>
                 <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>STORE CATALOG</strong>
-                <span>{quotaTargetShop.productCount.toLocaleString()} products</span>
+                <span>{formatProductCount(quotaTargetShop.productCount)}</span>
               </div>
               <div>
                 <strong style={{ color: "var(--rv-text-subdued)", fontSize: "11px", display: "block" }}>CURRENT ACTIVE QUOTA</strong>
                 <span>
-                  {quotaTargetShop.customProductLimit
-                    ? `${quotaTargetShop.customProductLimit.toLocaleString()} (Custom)`
-                    : `${(PLAN_TIERS[quotaTargetShop.planId]?.limits?.products || 200000).toLocaleString()} (Plan)`}
+                  {`${quotaTargetShop.productCap.toLocaleString("en-US")} (${quotaTargetShop.customQuotaInForce ? "Custom" : "Plan"})`}
                 </span>
               </div>
               <div>
@@ -1844,8 +2081,8 @@ export default function AdminPanel() {
                   id="customProductLimit"
                   name="customProductLimit"
                   type="number"
-                  min="1000"
-                  max="5000000"
+                  min={ENTERPRISE_PRODUCT_CAP + 1000}
+                  max={MAX_CUSTOM_PRODUCT_LIMIT}
                   step="1000"
                   required
                   value={customLimitDraft}
@@ -1872,7 +2109,7 @@ export default function AdminPanel() {
                       className="rv-btn rv-btn-secondary rv-btn-sm"
                       style={{ fontSize: "11px", padding: "2px 8px" }}
                       onClick={() =>
-                        setCustomLimitDraft(String(Math.ceil((quotaTargetShop.productCount + 50000) / 10000) * 10000))
+                        setCustomLimitDraft(String(suggestedCustomLimit(quotaTargetShop.productCount, 0)))
                       }
                     >
                       +50k over store
@@ -1945,6 +2182,24 @@ export default function AdminPanel() {
                     </span>
                   </label>
                 </div>
+                {customBillingMethodDraft === "EXTERNAL" && (
+                  <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", fontSize: "12px", marginTop: "10px" }}>
+                    <input
+                      type="checkbox"
+                      name="cancelShopifySubscription"
+                      value="1"
+                      required={quotaTargetShop.billedThroughShopify}
+                      style={{ marginTop: "2px" }}
+                    />
+                    <span>
+                      Cancel their Shopify subscription when the contract starts (unused time is prorated back to
+                      them).{" "}
+                      {quotaTargetShop.billedThroughShopify
+                        ? `Required: ${quotaTargetShop.shop} is billed ${quotaTargetShop.billedPlanName} through Shopify.`
+                        : "Only used if Shopify reports an active subscription."}
+                    </span>
+                  </label>
+                )}
               </div>
 
               {/* ── Custom Monthly Price ── */}
@@ -1961,6 +2216,7 @@ export default function AdminPanel() {
                     min="1"
                     max="10000"
                     step="1"
+                    required={customBillingMethodDraft === "SHOPIFY"}
                     placeholder="e.g. 249"
                     value={customPriceDraft}
                     onChange={(e) => setCustomPriceDraft(e.target.value)}
@@ -2022,10 +2278,9 @@ export default function AdminPanel() {
                     disabled={isQuotaBusy}
                     className="rv-btn rv-btn-critical rv-btn-sm"
                     onClick={() => {
-                      quotaFetcher.submit(
-                        { intent: "resetCustomQuota", targetShop: quotaTargetShop.shop },
-                        { method: "POST" }
-                      );
+                      // One dialog at a time: the confirmation replaces the editor.
+                      setResetQuotaTarget(quotaTargetShop);
+                      setQuotaTargetShop(null);
                     }}
                   >
                     Reset to Plan Default

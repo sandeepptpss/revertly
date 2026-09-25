@@ -18,6 +18,7 @@ import {
   PLAN_ENTERPRISE_ANNUAL,
   PLAN_ENTERPRISE_CUSTOM,
   ALL_BILLING_PLAN_NAMES,
+  DEFAULT_CUSTOM_PRICE,
 } from "../billing.constants.js";
 import {
   getStorePlan,
@@ -25,6 +26,8 @@ import {
   planRank,
   planInfoForSubscriptionName,
   isSimulatedSubscriptionId,
+  hasPendingCustomTerms,
+  customCancellationPatch,
   PLAN_LIMITS,
 } from "../billing.server.js";
 import { resolveBestDiscount, resolveDiscounts, getClaimableVipOffer, claimVipOffer } from "../storeDiscount.server.js";
@@ -34,6 +37,7 @@ import {
   getFreeGrowthStatus,
   getActiveFreeGrowthGrant,
   releaseFreeGrowthSeat,
+  hasClaimedFreeGrowth,
 } from "../freeGrowth.server.js";
 import { DISCOUNT_DURATION_MONTHS } from "../discount.constants.js";
 import { Banner } from "../components/Banner.jsx";
@@ -347,8 +351,8 @@ export const loader = async ({ request }) => {
     // A free Growth seat is likewise claimed, not handed out at install.
     getFreeGrowthOffer(shop),
     getFreeGrowthStatus(),
-    // Any seat this store ever held, expired or not.
-    prisma.freeGrowthGrant.findUnique({ where: { shop }, select: { id: true } }),
+    // Any seat this store ever held — expired, or from before a reinstall.
+    hasClaimedFreeGrowth(shop),
   ]);
 
   if (settings?.productLimitReachedAt && (limits.products === Infinity || productCount < limits.products)) {
@@ -407,13 +411,25 @@ export const loader = async ({ request }) => {
     // estimate stored at first activation.
     trialEndsAt,
     productLimitReachedAt: settings?.productLimitReachedAt || null,
-    customPlanOffer: settings?.customProductLimit
+    // New terms on top of the custom plan the store already pays for are
+    // offered like any other, while the current terms stay in force.
+    customPlanOffer: hasPendingCustomTerms(settings)
+      ? {
+          products: settings.customPendingProductLimit,
+          price: settings.customPendingPriceAmount,
+          billingMethod: "SHOPIFY",
+          status: "OFFERED",
+          note: settings.customPlanNote || null,
+          replaces: { products: settings.customProductLimit, price: settings.customPriceAmount || DEFAULT_CUSTOM_PRICE },
+        }
+      : settings?.customProductLimit
       ? {
           products: settings.customProductLimit,
-          price: settings.customPriceAmount || 249,
+          price: settings.customPriceAmount || DEFAULT_CUSTOM_PRICE,
           billingMethod: settings.customBillingMethod || "SHOPIFY",
           status: settings.customPriceStatus || "OFFERED",
           note: settings.customPlanNote || null,
+          replaces: null,
         }
       : null,
     // A custom Enterprise Plus plan the store is actually on.
@@ -543,8 +559,9 @@ export const action = async ({ request }) => {
     if (!grant) {
       return {
         success: false,
-        message:
-          "Those free Growth seats have all been taken. Refresh the page to see your current options.",
+        message: (await hasClaimedFreeGrowth(shop))
+          ? "Your store has already claimed its free Growth seat. The promotion is one seat per store, including after a reinstall."
+          : "Those free Growth seats have all been taken. Refresh the page to see your current options.",
       };
     }
 
@@ -626,12 +643,15 @@ export const action = async ({ request }) => {
     if (!settings?.customProductLimit) {
       return { success: false, message: "No custom plan offer is currently configured for this store." };
     }
-    if (settings.customPriceStatus === "ACTIVE") {
+    // Approving pending terms charges the new price; the current terms stay
+    // in force until Shopify reports that charge (getStorePlan / webhook).
+    const pendingTerms = hasPendingCustomTerms(settings);
+    if (settings.customPriceStatus === "ACTIVE" && !pendingTerms) {
       return { success: false, message: "Your Custom Enterprise Plus plan is already active." };
     }
 
-    const customPrice = settings.customPriceAmount || 249;
-    const customQuota = settings.customProductLimit;
+    const customPrice = pendingTerms ? settings.customPendingPriceAmount : settings.customPriceAmount || DEFAULT_CUSTOM_PRICE;
+    const customQuota = pendingTerms ? settings.customPendingProductLimit : settings.customProductLimit;
 
     // If it's a direct contract handled externally
     if (settings.customBillingMethod === "EXTERNAL") {
@@ -658,7 +678,7 @@ export const action = async ({ request }) => {
     const returnUrl = `${url.origin}/app/plan`;
 
     try {
-      await audit("CUSTOM_PLAN_REQUESTED", { billingMethod: "SHOPIFY", products: customQuota, price: customPrice });
+      await audit("CUSTOM_PLAN_REQUESTED", { billingMethod: "SHOPIFY", products: customQuota, price: customPrice, updatesActivePlan: pendingTerms });
       return await billing.request({
         plan: PLAN_ENTERPRISE_CUSTOM,
         isTest,
@@ -696,6 +716,10 @@ export const action = async ({ request }) => {
           subscriptionId: simSubId,
           billingInterval: INTERVAL_MONTHLY,
           customPriceStatus: "ACTIVE",
+          customProductLimit: customQuota,
+          customPriceAmount: customPrice,
+          customPendingProductLimit: null,
+          customPendingPriceAmount: null,
           productLimitReachedAt: null,
         },
       });
@@ -833,7 +857,7 @@ export const action = async ({ request }) => {
         subscriptionId: null,
         billingInterval: INTERVAL_MONTHLY,
         circuitBreakerEnabled: false,
-        ...(isShopifyCustomPlan ? { customPriceStatus: "CANCELLED" } : {}),
+        ...customCancellationPatch(settings),
       },
     });
 
@@ -1193,10 +1217,14 @@ export default function Plan() {
                 </span>
               </div>
               <h3 style={{ margin: "0 0 4px", fontSize: "17px", fontWeight: 800, color: "var(--rv-text)" }}>
-                Your Custom Enterprise Plus Plan ({formatNumber(customPlanOffer.products)} Products) is Ready!
+                {customPlanOffer.replaces
+                  ? `Updated Custom Enterprise Plus terms: ${formatNumber(customPlanOffer.products)} Products`
+                  : `Your Custom Enterprise Plus Plan (${formatNumber(customPlanOffer.products)} Products) is Ready!`}
               </h3>
               <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-                {customPlanOffer.note
+                {customPlanOffer.replaces
+                  ? `Your current plan — ${formatNumber(customPlanOffer.replaces.products)} products at $${customPlanOffer.replaces.price}/month — stays in force until you approve the new price. Approving replaces that charge.`
+                  : customPlanOffer.note
                   ? customPlanOffer.note
                   : `Your store has been approved for a tailored catalog capacity of ${formatNumber(customPlanOffer.products)} products with full Enterprise protections, priority sync queue, and 365-day change retention.`}
               </p>

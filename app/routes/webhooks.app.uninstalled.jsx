@@ -1,6 +1,5 @@
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { releaseFreeGrowthSeat } from "../freeGrowth.server.js";
 
 export const action = async ({ request }) => {
   const { shop, session, topic } = await authenticate.webhook(request);
@@ -13,8 +12,8 @@ export const action = async ({ request }) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
-  // Free the store's promotional Growth seat so the next new store can take it.
-  await releaseFreeGrowthSeat(shop);
+  // A free Growth seat is deliberately kept: releasing it here let a store
+  // uninstall and reinstall to claim the promotion again (freeGrowth.server.js).
 
   return new Response();
 };

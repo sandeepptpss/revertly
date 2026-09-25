@@ -142,6 +142,24 @@ export const action = async ({ request }) => {
       return new Response("First snapshot saved", { status: 200 });
     }
 
+    // A store that downgrades keeps the snapshots it tracked on the bigger
+    // plan (nothing is deleted), so the allowance must also apply to products
+    // already on file: only the store's first `products` tracked products are
+    // monitored. The rest keep a current mirror — so tracking resumes cleanly
+    // on upgrade — but record no changes, rules or incidents.
+    if (limits.products !== Infinity) {
+      const trackedBefore = await prisma.productSnapshot.count({ where: { shop, id: { lt: prevRecord.id } } });
+      if (trackedBefore >= limits.products) {
+        await prisma.productSnapshot.update({ where: { id: prevRecord.id }, data: upsertData });
+        await prisma.appSettings.upsert({
+          where: { shop },
+          create: { shop, productLimitReachedAt: new Date() },
+          update: { productLimitReachedAt: new Date() },
+        });
+        return new Response("Product is beyond the current plan's allowance", { status: 200 });
+      }
+    }
+
     // Enforce change-history retention for this plan: prune change events
     // older than the plan's retention window so old history doesn't linger
     // (and isn't queryable) past what the shop is entitled to.

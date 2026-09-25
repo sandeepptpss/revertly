@@ -65,6 +65,10 @@ const CATEGORIES = [
   "General",
 ];
 
+// The fields getEffectivePlanId reads. With planId alone, an external
+// Enterprise contract or a Partner development store resolved as its stored plan.
+const PLAN_FIELDS = { planId: true, customBillingMethod: true, customPriceStatus: true, isPartnerDevelopment: true };
+
 export const loader = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
@@ -95,7 +99,7 @@ export const loader = async ({ request }) => {
   try {
     const settings = await prisma.appSettings.findUnique({
       where: { shop },
-      select: { alertEmail: true, planId: true },
+      select: { alertEmail: true, ...PLAN_FIELDS },
     });
     if (settings?.alertEmail) defaultEmail = settings.alertEmail;
     planTier = await getEffectivePlanId(shop, settings);
@@ -140,18 +144,33 @@ export const loader = async ({ request }) => {
   };
 };
 
+const TICKET_PRIORITIES = new Set(["NORMAL", "HIGH", "URGENT"]);
+
 export const action = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
   const subject = formData.get("subject")?.trim();
-  const category = formData.get("category")?.trim() || "General";
-  const priority = formData.get("priority")?.trim() || "NORMAL";
+  // Category is free text on the wire; clip it to its column rather than let
+  // the insert fail.
+  const category = Array.from(formData.get("category")?.trim() || "General").slice(0, 100).join("");
+  // The admin queue sorts by priority, so only the three levels the form
+  // offers may be stored — anything else would sort below NORMAL or above URGENT.
+  const rawPriority = String(formData.get("priority") || "NORMAL").trim().toUpperCase();
+  const priority = TICKET_PRIORITIES.has(rawPriority) ? rawPriority : "NORMAL";
   const message = formData.get("message")?.trim();
   const email = formData.get("email")?.trim();
 
   if (!subject) {
     return { success: false, error: "Please provide a subject for your inquiry." };
+  }
+
+  if (Array.from(subject).length > 500) {
+    return { success: false, error: "Please keep the subject to 500 characters or fewer." };
+  }
+
+  if (email && email.length > 255) {
+    return { success: false, error: "Please provide a valid reply-to email address." };
   }
 
   if (!message) {
@@ -166,7 +185,7 @@ export const action = async ({ request }) => {
   try {
     const settings = await prisma.appSettings.findUnique({
       where: { shop },
-      select: { planId: true },
+      select: PLAN_FIELDS,
     });
     planTier = await getEffectivePlanId(shop, settings);
   } catch {

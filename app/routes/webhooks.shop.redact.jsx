@@ -33,6 +33,8 @@ export const action = async ({ request }) => {
     ["marketingProfile", () => prisma.marketingProfile.deleteMany({ where: { shop } })],
     ["marketingFlow", () => prisma.marketingFlow.deleteMany({ where: { shop } })],
     ["marketingList", () => prisma.marketingList.deleteMany({ where: { shop } })],
+    // FreeGrowthClaim is kept on purpose: it holds only a one-way hash of the
+    // domain, and is what stops a store reinstalling to claim the promotion again.
     ["freeGrowthGrant", () => prisma.freeGrowthGrant.deleteMany({ where: { shop } })],
     ["storeDiscount", () => prisma.storeDiscount.deleteMany({ where: { shop } })],
     ["supportTicket", () => prisma.supportTicket.deleteMany({ where: { shop } })],

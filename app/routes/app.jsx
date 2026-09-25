@@ -8,6 +8,10 @@ import { isPlatformAdmin } from "../platformAdmin.server.js";
 import { getEffectivePlanId } from "../billing.server.js";
 import { GlobalSupportWidget } from "../components/GlobalSupportWidget.jsx";
 
+// The fields getEffectivePlanId reads. With planId alone, an external
+// Enterprise contract or a Partner development store resolved as its stored plan.
+const PLAN_FIELDS = { planId: true, customBillingMethod: true, customPriceStatus: true, isPartnerDevelopment: true };
+
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -18,7 +22,7 @@ export const loader = async ({ request }) => {
   try {
     const settings = await prisma.appSettings.findUnique({
       where: { shop },
-      select: { alertEmail: true, planId: true },
+      select: { alertEmail: true, ...PLAN_FIELDS },
     });
     if (settings?.alertEmail) defaultEmail = settings.alertEmail;
     planTier = await getEffectivePlanId(shop, settings);

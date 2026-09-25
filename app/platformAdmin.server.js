@@ -7,12 +7,10 @@
  * authenticated against the designated operator store.
  *
  * On top of that, when the session actually identifies a *person*, that person
- * must also be on the admin allow-list. Only online-token sessions carry a
- * user; this app requests offline tokens (no `useOnlineTokens`), so in practice
- * the store check is the operative gate today. It is not a weak one: passing it
- * requires a real authenticated admin session for the operator's own store.
- * The email check is kept so that turning on online tokens tightens the gate
- * automatically rather than silently doing nothing.
+ * must also be on the admin allow-list or be the store's account owner. The
+ * app uses online tokens (`useOnlineTokens` in shopify.server.js), so embedded
+ * requests always carry a staff identity and a staff member of the operator's
+ * store who is not on the list is refused.
  *
  * Configurable via env so this doesn't need a code change to rotate/extend
  * admin access; defaults match the operator's current identity.
@@ -56,5 +54,9 @@ export function isPlatformAdmin(shop, session) {
 
   const email = getSessionEmail(session);
   if (!email) return true;
-  return PLATFORM_ADMIN_EMAILS.has(email) || Boolean(session.accountOwner);
+  // Shopify's Session exposes the owner flag under associated_user; the
+  // top-level field only exists on raw session-storage rows.
+  const isAccountOwner =
+    session.onlineAccessInfo?.associated_user?.account_owner ?? session.accountOwner;
+  return PLATFORM_ADMIN_EMAILS.has(email) || Boolean(isAccountOwner);
 }

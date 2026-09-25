@@ -3,7 +3,7 @@ import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { checkRuleLimit } from "../billing.server.js";
+import { checkRuleLimit, withActiveRuleSlot } from "../billing.server.js";
 import {
   FilterIcon,
   Trash2Icon,
@@ -43,14 +43,6 @@ export const action = async ({ request }) => {
     const intent = formData.get("intent");
 
     if (intent === "create") {
-      const limitCheck = await checkRuleLimit(shop);
-      if (!limitCheck.allowed) {
-        return {
-          success: false,
-          message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate unused rules or upgrade your plan in Plans & Billing to create more active rules.`,
-        };
-      }
-
       const name = formData.get("name")?.trim();
       if (!name) {
         return { success: false, message: "Rule name is required." };
@@ -73,19 +65,29 @@ export const action = async ({ request }) => {
 
       const severity = formData.get("severity") || "HIGH";
 
-      await prisma.detectionRule.create({
-        data: {
-          shop,
-          name,
-          field,
-          condition,
-          threshold,
-          minProducts,
-          windowMinutes,
-          severity,
-          isActive: true,
-        },
-      });
+      // Counted and created under one per-store lock, so simultaneous
+      // requests cannot both take the last slot.
+      const limitCheck = await withActiveRuleSlot(shop, (tx) =>
+        tx.detectionRule.create({
+          data: {
+            shop,
+            name,
+            field,
+            condition,
+            threshold,
+            minProducts,
+            windowMinutes,
+            severity,
+            isActive: true,
+          },
+        }),
+      );
+      if (!limitCheck.allowed) {
+        return {
+          success: false,
+          message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate unused rules or upgrade your plan in Plans & Billing to create more active rules.`,
+        };
+      }
       return { success: true, message: `Detection rule "${name}" created successfully.` };
     }
 
@@ -104,19 +106,23 @@ export const action = async ({ request }) => {
       const willBeActive = !rule.isActive;
 
       if (willBeActive) {
-        const limitCheck = await checkRuleLimit(shop);
+        // Re-checked inside the lock: a concurrent toggle may have activated
+        // this rule already, and must not count it twice or push past the cap.
+        const limitCheck = await withActiveRuleSlot(shop, (tx) =>
+          tx.detectionRule.updateMany({ where: { id: ruleId, shop, isActive: false }, data: { isActive: true } }),
+        );
         if (!limitCheck.allowed) {
           return {
             success: false,
             message: `Active Detection Rule Limit Reached (${limitCheck.activeCount} / ${limitCheck.limit}) for your ${limitCheck.plan.toUpperCase()} plan. Deactivate another rule or upgrade your plan to activate this rule.`,
           };
         }
+      } else {
+        await prisma.detectionRule.update({
+          where: { id: ruleId },
+          data: { isActive: false },
+        });
       }
-
-      await prisma.detectionRule.update({
-        where: { id: ruleId },
-        data: { isActive: willBeActive },
-      });
       return { success: true, message: `Rule "${rule.name}" is now ${willBeActive ? "Active" : "Disabled"}.` };
     }
 
