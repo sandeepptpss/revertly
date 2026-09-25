@@ -427,14 +427,21 @@ async function ensureInitialBaseline(admin, shop) {
     });
 
     if (!existingRp) {
+      // Theme files are the Growth-and-above theme backup; a Free or Starter
+      // store's baseline covers everything else.
+      const { checkFeatureAccess } = await import("./billing.server.js");
+      const themeAccess = await checkFeatureAccess(shop, "themes");
       await createMultiResourceRestorePoint({
         admin,
         shop,
+        source: "BASELINE",
         name: "Initial Store Setup Baseline",
-        description: "Initial baseline snapshot capturing Products, Active Theme, and Collections.",
+        description: themeAccess.allowed
+          ? "Initial baseline snapshot capturing Products, Active Theme, and Collections."
+          : "Initial baseline snapshot capturing Products, Collections, Pages and Menus.",
         options: {
           includeProducts: true,
-          includeThemes: true,
+          includeThemes: themeAccess.allowed,
           includeCollections: true,
           includePages: true,
           includeMenus: true,

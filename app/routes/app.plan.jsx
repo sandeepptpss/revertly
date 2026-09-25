@@ -1,7 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLoaderData, useFetcher, useRouteError, Link } from "react-router";
+import { authenticate } from "../shopify.server.js";
+import { BillingInterval } from "@shopify/shopify-app-react-router/server";
+import prisma from "../db.server.js";
+import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
-  authenticate,
+  PLAN_TIERS,
+  INTERVAL_MONTHLY,
+  INTERVAL_ANNUAL,
   PLAN_STARTER,
   PLAN_GROWTH,
   PLAN_BUSINESS,
@@ -10,22 +16,29 @@ import {
   PLAN_GROWTH_ANNUAL,
   PLAN_BUSINESS_ANNUAL,
   PLAN_ENTERPRISE_ANNUAL,
-} from "../shopify.server.js";
-import { BillingInterval } from "@shopify/shopify-app-react-router/server";
-import prisma from "../db.server.js";
-import { boundary } from "@shopify/shopify-app-react-router/server";
-import { PLAN_TIERS, INTERVAL_MONTHLY, INTERVAL_ANNUAL } from "../billing.constants.js";
+  PLAN_ENTERPRISE_CUSTOM,
+  ALL_BILLING_PLAN_NAMES,
+} from "../billing.constants.js";
 import {
   getStorePlan,
   normalizePlanId,
+  planRank,
+  planInfoForSubscriptionName,
+  isSimulatedSubscriptionId,
   PLAN_LIMITS,
 } from "../billing.server.js";
 import { resolveBestDiscount, resolveDiscounts, getClaimableVipOffer, claimVipOffer } from "../storeDiscount.server.js";
-import { getFreeGrowthOffer, claimFreeGrowthSeat, getFreeGrowthStatus } from "../freeGrowth.server.js";
+import {
+  getFreeGrowthOffer,
+  claimFreeGrowthSeat,
+  getFreeGrowthStatus,
+  getActiveFreeGrowthGrant,
+  releaseFreeGrowthSeat,
+} from "../freeGrowth.server.js";
 import { DISCOUNT_DURATION_MONTHS } from "../discount.constants.js";
 import { Banner } from "../components/Banner.jsx";
 import { SparklesIcon, ShieldCheckIcon } from "../components/Icons.jsx";
-import { checkPermission, PERMISSIONS } from "../team.server.js";
+import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 
 /** Rounds to cents and drops a trailing ".00" for a cleaner price tag. */
 function formatPrice(amount) {
@@ -61,16 +74,28 @@ function formatNumber(n) {
 // The numeric allowances mirror PLAN_LIMITS in billing.server.js, and each
 // capability line maps to a boolean flag there:
 //
+//   uptimeMonitoring → Starter and above  (uptime.server.js, app.monitoring.jsx)
+//   qaSuites         → Starter and above  (qa.server.js, app.qa.jsx)
+//   teamRoles        → Starter and above  (app.team.jsx)
 //   cloudSync        → Starter and above  (cloudSync.server.js, auth.cloud.$provider)
+//   ga4Monitoring    → Starter and above  (ga4Monitor.server.js, app.monitoring.jsx)
 //   bulkRollback     → Growth and above   (app.incidents_.$id.jsx)
 //   vaultOrders>0    → Growth and above   (checkVaultAccess, app.vault.jsx)
 //   marketingBackup  → Growth and above   (checkMarketingBackupAccess)
 //   marketingProfiles→ Growth and above   (checkMarketingBackupAccess)
 //   metafieldBackup  → Growth and above   (restore-points, app.export, scheduler)
-//   themes           → Growth and above (1 active theme on Growth, unlimited on Business+)
+//   themes           → Growth and above   (1 active theme on Growth, every theme on Business+;
+//                                          live & draft rollback on Growth+)
 //   circuitBreaker   → Business and above (monitor.server.js)
-//   slack            → Business and above (app.settings.jsx)
+//   slack            → Business and above (app.settings.jsx, sendIncidentAlert)
 //   marketingFlows   → Business and above (checkMarketingBackupAccess)
+//
+// Available on every plan, so listed on Free and inherited upward: product
+// and restore-point rollback, selective field restore, the type-to-confirm
+// lock on large restores, and the Trust & Security Center with its DPA. A
+// line may not appear on a higher card as new ("plus:") when the tier below
+// already has it — Enterprise used to list unlimited themes and flows that
+// Business already included.
 //
 // A feature row is normally a plain string. An object of the shape
 // { label, badge } renders the same row with a badge after it, used to call
@@ -83,16 +108,6 @@ function formatNumber(n) {
 // { label, kind: "boundary" } renders a muted, unchecked row naming the tier a
 // capability starts at. Use it where a gap between adjacent cards would
 // otherwise look accidental.
-//
-// Free provides complete, accessible core protection: manual rollback &
-// recovery, scheduled backups, catalog coverage (products, collections,
-// pages, blogs, navigation menus), drift alerts, change history logs, and
-// offline export/import.
-//
-// Operational monitoring and multi-user governance capabilities (Uptime
-// Monitoring & Store Health Check, Team roles, permissions & audit log)
-// are positioned at Starter ($9/mo) and above, giving merchants a compelling,
-// distinct value ladder from Free to Starter.
 const PLANS = [
   {
     id: "free",
@@ -103,18 +118,29 @@ const PLANS = [
     subtext: "Free forever",
     footerText: "Basic protection for new stores",
     features: [
-      "Up to 100 products monitored",
+      "Up to 50 products monitored",
       "7 days change history retention",
-      "Up to 2 restore points",
+      // Automatic backups rotate oldest-first inside the allowance
+      // (backup.server.js, reserveRestorePointSlot); the merchant's own
+      // restore points are never deleted to make room.
+      "Up to 2 restore points — automatic backups rotate",
       "1 active detection rule",
-      "Manual single-product rollback & deleted product recovery",
+      "Manual single-product rollback & full restore from any restore point",
+      // restoreDeletedProduct recreates the product as a draft from its
+      // snapshot: details, tags and the first variant's price/SKU/barcode.
+      "Deleted product recovery — recreated as a draft (details & first variant)",
+      "Selective field-level restore — live stock is never overwritten",
+      "Type-to-confirm safety lock on large restores",
       "Scheduled backups — daily, twice-daily or weekly",
       "Products, Collections, Pages & Blog backup",
       "Navigation Menu backup & restore — full menu hierarchy",
       "Email drift & bulk-anomaly alerts",
       "Incidents, Activity & Rollback History logs",
       "Offline JSON & CSV export and import",
-      "Bank-Grade AES-256-GCM data encryption at rest",
+      "Trust & Security Center with GDPR / CCPA DPA download",
+      // Encryption covers the credentials the app holds for connected
+      // services (cloud OAuth tokens, ESP API keys) — not backup contents.
+      "AES-256-GCM encryption for connected-account credentials",
       "Security Headers & HSTS transport protection",
     ],
   },
@@ -134,12 +160,11 @@ const PLANS = [
       "3 active detection rules",
       "Store & App Monitoring (24/7 Downtime Alerts)",
       "Automated QA & Backup Health",
+      "GA4 & Google Tag Manager tag health alerts",
       "Team roles, permissions & audit log",
       "Offsite Cloud Backup — Google Drive & Dropbox",
-      "Auto-push every new snapshot to your cloud",
-      "Restore directly from a Drive or Dropbox archive",
-      "Critical Action Safety Lock on destructive rollbacks",
-      "Trust & Security Center live audit status",
+      "Auto-push every scheduled backup to your cloud",
+      "Bring back any Drive or Dropbox archive as a restore point",
       // Starter has no vault (PLAN_LIMITS.starter.vaultOrders === 0). Stating
       // the boundary here is what keeps the omission from reading as an
       // oversight — a merchant comparing cards should not have to infer it
@@ -161,22 +186,24 @@ const PLANS = [
       "90 days change history retention",
       "Up to 50 restore points",
       "10 active detection rules",
-      "Bulk multi-product incident rollback (CSV undo)",
-      "Orders & Customers Vault (2,500 orders)",
+      "Bulk multi-product incident rollback",
+      "Orders & Customers Vault (2,500 most recent orders)",
       "Metafield Backups — values & definitions",
       "Shop, product, collection, page, blog & article metafields",
-      "Safe restore that never overwrites live metafield values",
+      "Metafield restore that skips live values by default",
       "Klaviyo & Mailchimp Backup — 10,000 subscriber profiles",
       "Lists, audiences, segments & profile fields captured",
       "Restore a deleted list or re-import lost subscribers",
       // The scheduler captures the live theme for every tier that has theme
       // access at all (scheduler.server.js gates on `themes` and passes no
       // themeId, so fetchThemeBackup falls back to MAIN). That is Growth and
-      // above, which is why this says so here rather than on Business.
+      // above, which is why this says so here rather than on Business. Live
+      // and draft theme rollback share the same `themes` gate
+      // (app.restore-points_.$id.jsx, restore_theme).
       "1 Active Theme Backup (Templates, Sections & Settings)",
-      "Safe Restore to Draft Theme (Live Preview First)",
       "Live theme captured in every scheduled backup",
-      "Selective field-level restoration (preserve live price/stock)",
+      "Safe Restore to Draft Theme (Live Preview First)",
+      "1-Click Theme Code & Asset Rollback to the live theme",
       "Accountant-ready Tax Audit CSV export",
       "Chargeback Dispute Evidence Pack (JSON)",
     ],
@@ -195,16 +222,14 @@ const PLANS = [
       "180 days (6 months) retention",
       "Up to 100 restore points",
       "Unlimited detection rules",
-      // "Themes captured in every scheduled backup" used to sit here. Once
-      // theme access moved to Growth it stopped being a Business
-      // differentiator — the scheduled capture is identical on both tiers —
-      // so it now appears on Growth. What Business actually adds is drafts.
+      // What Business adds to theme protection is breadth: every theme on the
+      // store, not just the live one. Rollback itself is already on Growth.
       "Unlimited Themes & Liquid Code Backup — drafts included",
-      "1-Click Theme Code & Asset Rollback (Live & Draft Staging)",
-      "Safe Restore Sandbox — Preview draft themes before publishing",
-      "Orders & Customers Vault (15,000 orders)",
+      "Orders & Customers Vault (15,000 most recent orders)",
       "Klaviyo & Mailchimp Backup — 50,000 subscriber profiles",
-      "Klaviyo Flows & Mailchimp Journeys automation backup",
+      // Flow capture is an inventory (name, status, trigger), not the flow
+      // logic, and Mailchimp's API exposes classic automations only.
+      "Klaviyo flow & Mailchimp automation inventory (name, status, trigger)",
       "Emergency Circuit Breaker (Auto-Draft / Auto-Revert)",
       "Real-time Slack Webhook Alerts",
     ],
@@ -226,30 +251,66 @@ const PLANS = [
       "Up to and including 200,000 products monitored",
       "365 days (1 full year) retention",
       "Unlimited restore points",
-      "Unlimited Themes, Code & Assets",
-      "Orders & Customers Vault (100,000 orders)",
+      "Orders & Customers Vault (100,000 most recent orders)",
       "Klaviyo & Mailchimp Backup — 250,000 profiles",
-      "Unlimited Klaviyo flows & Mailchimp journeys",
-      "Enterprise Trust & Compliance Center",
-      "Dedicated Legal DPA Agreement (GDPR / CCPA Ready)",
+      // app.support.jsx raises Enterprise tickets to at least HIGH and the
+      // admin queue (app.admin.jsx) serves them ahead of other plans.
       "Priority support queue for your store",
     ],
   },
 ];
+
+// What each tier includes, in the words the downgrade warning uses. Built
+// from PLAN_LIMITS so the warning can only ever name capabilities the target
+// plan really lacks.
+const CAPABILITY_LABELS = [
+  ["uptimeMonitoring", "Store & App uptime monitoring"],
+  ["qaSuites", "Automated QA & backup health checks"],
+  ["teamRoles", "Team roles & audit log"],
+  ["cloudSync", "Offsite Cloud Backup to Google Drive & Dropbox"],
+  ["ga4Monitoring", "GA4 tag monitoring"],
+  ["bulkRollback", "Bulk incident rollback"],
+  ["vaultOrders", "Orders & Customers Vault"],
+  ["metafieldBackup", "Metafield backups"],
+  ["marketingBackup", "Klaviyo & Mailchimp backup"],
+  ["themes", "Liquid theme backups"],
+  ["unlimitedThemes", "Backups of every theme, drafts included"],
+  ["marketingFlows", "Klaviyo flow & Mailchimp automation backup"],
+  ["circuitBreaker", "Emergency Circuit Breaker"],
+  ["slack", "Slack alerts"],
+];
+
+function capabilitiesFor(planId) {
+  const limits = PLAN_LIMITS[planId] || PLAN_LIMITS.free;
+  return CAPABILITY_LABELS.filter(([key]) => {
+    if (key === "vaultOrders") return limits.vaultOrders > 0;
+    if (key === "unlimitedThemes") return limits.themes && limits.themeLimit === Infinity;
+    return Boolean(limits[key]);
+  }).map(([, label]) => label);
+}
+
+/**
+ * How many billing cycles a discount may run on a new charge: the grant's own
+ * remaining term, never more than the standard 12 months. A 1-year grant taken
+ * up in month 11 must not become 12 more discounted months on Shopify.
+ */
+function discountIntervalsFor(discount, isAnnual) {
+  if (isAnnual) return 1;
+  if (!discount?.expiresAt) return DISCOUNT_DURATION_MONTHS;
+  const msLeft = new Date(discount.expiresAt).getTime() - Date.now();
+  const months = Math.ceil(msLeft / (30 * 24 * 60 * 60 * 1000));
+  return Math.min(DISCOUNT_DURATION_MONTHS, Math.max(1, months));
+}
 
 export const loader = async ({ request }) => {
   const { session, billing, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const isTest = process.env.NODE_ENV !== "production";
 
-  const url = new URL(request.url);
-  if (url.searchParams.get("custom_activated") === "1") {
-    await prisma.appSettings.update({
-      where: { shop },
-      data: { customPriceStatus: "ACTIVE", planId: "enterprise", productLimitReachedAt: null },
-    }).catch(() => {});
-  }
-
+  // Returning from Shopify's approval screen is not proof of payment — anyone
+  // can type a query string onto this URL. A custom offer is accepted only by
+  // getStorePlan, once Shopify reports the dedicated custom subscription as
+  // active, so no query parameter is read here.
   const {
     currentPlan,
     paidPlan,
@@ -259,6 +320,9 @@ export const loader = async ({ request }) => {
     isPartnerDev,
     partnerDevPlanName,
     billingInterval,
+    trialEndsAt,
+    isCustomSubscription,
+    isSimulated,
   } = await getStorePlan(
     shop,
     billing,
@@ -266,11 +330,13 @@ export const loader = async ({ request }) => {
     admin,
   );
 
-  const [productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount, settings, allDiscounts, vipOffer, freeGrowthOffer, freeGrowthStatus] = await Promise.all([
+  const [productCount, restorePointCount, ruleCount, vaultOrderCount, settings, allDiscounts, vipOffer, freeGrowthOffer, freeGrowthStatus, heldSeat] = await Promise.all([
     prisma.productSnapshot.count({ where: { shop } }),
-    prisma.changeEvent.count({ where: { shop } }),
     prisma.restorePoint.count({ where: { shop } }),
-    prisma.detectionRule.count({ where: { shop } }),
+    // The rule allowance is a cap on *active* rules (checkRuleLimit), so the
+    // usage shown beside it must count the same thing — counting disabled
+    // rules made a store within its limit read "3 / 1".
+    prisma.detectionRule.count({ where: { shop, isActive: true } }),
     prisma.orderArchive.count({ where: { shop } }),
     prisma.appSettings.findUnique({ where: { shop } }),
     // Both store-specific grant and global yearly promotion, read fresh
@@ -281,6 +347,8 @@ export const loader = async ({ request }) => {
     // A free Growth seat is likewise claimed, not handed out at install.
     getFreeGrowthOffer(shop),
     getFreeGrowthStatus(),
+    // Any seat this store ever held, expired or not.
+    prisma.freeGrowthGrant.findUnique({ where: { shop }, select: { id: true } }),
   ]);
 
   if (settings?.productLimitReachedAt && (limits.products === Infinity || productCount < limits.products)) {
@@ -291,13 +359,40 @@ export const loader = async ({ request }) => {
     settings.productLimitReachedAt = null;
   }
 
+  // Which discount the store's current subscription should carry: the store
+  // grant on a monthly plan, the larger of store and global on a yearly one.
+  // Only that discount can be "waiting to be applied" — the other is not
+  // missing from the charge, it is simply not the one that applies.
+  const isBilled = paidPlan !== "free" && !isSimulated;
+  const currentIntervalDiscount =
+    billingInterval === INTERVAL_ANNUAL ? allDiscounts.yearlyDiscount : allDiscounts.monthlyDiscount;
+  const describeDiscount = (candidate) =>
+    candidate
+      ? {
+        percent: candidate.percent,
+        source: candidate.source,
+        label: candidate.label,
+        note: candidate.note,
+        expiresAt: candidate.expiresAt,
+        appliesToCurrentPlan: isBilled && currentIntervalDiscount === candidate,
+        needsApply:
+          isBilled &&
+          currentIntervalDiscount === candidate &&
+          subscriptionDiscountPercent !== candidate.percent,
+      }
+      : null;
+
+  const hasActiveSeat = Boolean(freeGrowth?.isActive);
+  const isCustomPlanActive =
+    Boolean(limits.isCustomLimit) && (limits.customBillingMethod === "EXTERNAL" || isCustomSubscription || isSimulated);
+
   return {
     currentPlan,
     // What the store is actually billed for. `currentPlan` can be higher than
-    // this when a promotional Growth seat is in play, and the two must not be
-    // conflated: entitlements follow `currentPlan`, but which plans are an
-    // upgrade or a downgrade — and which one Shopify would cancel — follows
-    // what is really being paid for.
+    // this when a promotional Growth seat or Partner access is in play, and
+    // the two must not be conflated: entitlements follow `currentPlan`, but
+    // which plans are an upgrade or a downgrade — and which one Shopify would
+    // cancel — follows what is really being paid for.
     paidPlan,
     billingInterval: billingInterval || INTERVAL_MONTHLY,
     limits,
@@ -305,10 +400,12 @@ export const loader = async ({ request }) => {
     // so the cards, the limit-reached banner and the Enterprise Plus upsell
     // can never drift apart from PLAN_LIMITS or from each other.
     enterpriseProductCap: PLAN_LIMITS.enterprise.products,
-    usage: { productCount, changeCount, restorePointCount, ruleCount, vaultOrderCount },
+    usage: { productCount, restorePointCount, ruleCount, vaultOrderCount },
     shop,
     hasUsedTrial: Boolean(settings?.hasUsedTrial),
-    trialEndsAt: settings?.trialEndsAt || null,
+    // From Shopify's own subscription record (see getStorePlan), not the
+    // estimate stored at first activation.
+    trialEndsAt,
     productLimitReachedAt: settings?.productLimitReachedAt || null,
     customPlanOffer: settings?.customProductLimit
       ? {
@@ -319,11 +416,20 @@ export const loader = async ({ request }) => {
           note: settings.customPlanNote || null,
         }
       : null,
+    // A custom Enterprise Plus plan the store is actually on.
+    customPlan: isCustomPlanActive
+      ? { price: limits.customPriceAmount || settings?.customPriceAmount || 249, billingMethod: limits.customBillingMethod }
+      : null,
     // A promotional Growth seat: full Growth features, no subscription, no charge.
-    freeGrowth: freeGrowth?.isActive ? { expiresAt: freeGrowth.expiresAt } : null,
+    freeGrowth: hasActiveSeat ? { expiresAt: freeGrowth.expiresAt } : null,
+    // An unexpired seat that a higher paid plan currently outranks. Starter
+    // and Growth are still covered by it, so they are not for sale.
+    supersededFreeGrowth: freeGrowth && !hasActiveSeat ? { expiresAt: freeGrowth.expiresAt } : null,
+    heldFreeGrowthSeat: Boolean(heldSeat),
     // Overall status of the Free Growth promotion (limit, duration, whether sold out)
     freeGrowthStatus: freeGrowthStatus
       ? {
+        enabled: freeGrowthStatus.enabled,
         limit: freeGrowthStatus.limit,
         durationMonths: freeGrowthStatus.durationMonths,
         remaining: freeGrowthStatus.remaining,
@@ -333,58 +439,47 @@ export const loader = async ({ request }) => {
     // An unclaimed VIP offer. Nothing is discounted while this is showing.
     vipOffer: vipOffer ? { percent: vipOffer.discountPercent, note: vipOffer.note } : null,
     // An unclaimed free Growth seat. Only worth offering if Growth would
-    // actually be an upgrade on what they already pay for.
+    // actually be an upgrade on what they already have. A Starter subscriber
+    // may claim, but claiming cancels that subscription, so the card says so.
     freeGrowthOffer:
-      freeGrowthOffer && PLAN_TIERS[paidPlan]?.order < PLAN_TIERS.growth.order ? freeGrowthOffer : null,
-    storeDiscount: allDiscounts.storeDiscount
-      ? {
-        percent: allDiscounts.storeDiscount.percent,
-        source: allDiscounts.storeDiscount.source,
-        label: allDiscounts.storeDiscount.label,
-        note: allDiscounts.storeDiscount.note,
-        expiresAt: allDiscounts.storeDiscount.expiresAt,
-        needsApply:
-          paidPlan !== "free" &&
-          subscriptionDiscountPercent !== allDiscounts.storeDiscount.percent &&
-          !isSimulatedSubscription(settings?.subscriptionId),
-      }
-      : null,
-    globalDiscount: allDiscounts.globalDiscount
-      ? {
-        percent: allDiscounts.globalDiscount.percent,
-        source: allDiscounts.globalDiscount.source,
-        label: allDiscounts.globalDiscount.label,
-        note: allDiscounts.globalDiscount.note,
-        expiresAt: allDiscounts.globalDiscount.expiresAt,
-        needsApply:
-          paidPlan !== "free" &&
-          billingInterval === INTERVAL_ANNUAL &&
-          subscriptionDiscountPercent !== allDiscounts.globalDiscount.percent &&
-          !isSimulatedSubscription(settings?.subscriptionId),
-      }
-      : null,
-    discount: allDiscounts.bestDiscount
-      ? {
-        percent: allDiscounts.bestDiscount.percent,
-        source: allDiscounts.bestDiscount.source,
-        label: allDiscounts.bestDiscount.label,
-        note: allDiscounts.bestDiscount.note,
-        expiresAt: allDiscounts.bestDiscount.expiresAt,
-        needsApply:
-          paidPlan !== "free" &&
-          subscriptionDiscountPercent !== allDiscounts.bestDiscount.percent &&
-          !isSimulatedSubscription(settings?.subscriptionId) &&
-          (billingInterval === INTERVAL_ANNUAL || allDiscounts.bestDiscount.source !== "GLOBAL"),
-      }
-      : null,
+      freeGrowthOffer && !isPartnerDev && planRank(currentPlan) < planRank("growth") && planRank(paidPlan) < planRank("growth")
+        ? { ...freeGrowthOffer, cancelsPlanName: isBilled ? PLAN_TIERS[paidPlan]?.name : null }
+        : null,
+    storeDiscount: describeDiscount(allDiscounts.storeDiscount),
+    globalDiscount: describeDiscount(allDiscounts.globalDiscount),
+    // Set when a yearly subscription carries the larger global discount in
+    // place of the store's own — discounts never stack.
+    storeDiscountSupersededBy:
+      allDiscounts.storeDiscount && isBilled && currentIntervalDiscount === allDiscounts.globalDiscount
+        ? allDiscounts.globalDiscount.percent
+        : null,
+    isBilled,
     isPartnerDev: Boolean(isPartnerDev),
     partnerDevPlanName: partnerDevPlanName || null,
+    planCapabilities: Object.fromEntries(Object.keys(PLAN_TIERS).map((id) => [id, capabilitiesFor(id)])),
+    planAllowances: Object.fromEntries(
+      Object.keys(PLAN_TIERS).map((id) => [
+        id,
+        { retentionDays: PLAN_LIMITS[id].retentionDays, restorePoints: PLAN_LIMITS[id].restorePoints },
+      ]),
+    ),
   };
 };
 
-/** Plans activated in test/simulation mode never created a real Shopify charge. */
-function isSimulatedSubscription(subscriptionId) {
-  return Boolean(subscriptionId?.startsWith("sim_") || subscriptionId?.startsWith("test_"));
+/**
+ * Every live subscription Shopify reports for this store, each tagged with
+ * the plan it stands for. `ok: false` means Shopify could not be asked, which
+ * must never be mistaken for "nothing to cancel".
+ */
+async function readBilledSubscriptions(billing, isTest) {
+  try {
+    const check = await billing.check({ plans: ALL_BILLING_PLAN_NAMES, isTest });
+    const subs = check?.hasActivePayment ? check.appSubscriptions || [] : [];
+    return { ok: true, subs: subs.map((sub) => ({ ...sub, info: planInfoForSubscriptionName(sub.name) })) };
+  } catch (err) {
+    console.warn("[Revertly Billing] Shopify billing check failed:", err?.message || err);
+    return { ok: false, subs: [] };
+  }
 }
 
 export const action = async ({ request }) => {
@@ -395,12 +490,55 @@ export const action = async ({ request }) => {
   if (!billingPerm.allowed) {
     return { success: false, message: billingPerm.message };
   }
+  // Billing changes are the most consequential thing a team member can do,
+  // so each one is recorded against the person who made it.
+  const audit = (action, details, resourceType = "Subscription") =>
+    logAudit(shop, billingPerm.actor, action, { resourceType, details, request });
 
   const formData = await request.formData();
   const isTest = process.env.NODE_ENV !== "production";
+  const intent = formData.get("intent");
+  const settings = await prisma.appSettings.findUnique({ where: { shop } });
+  const isExternalContract =
+    settings?.customBillingMethod === "EXTERNAL" && settings?.customPriceStatus === "ACTIVE";
+  const isShopifyCustomPlan =
+    Boolean(settings?.customProductLimit) &&
+    settings?.customBillingMethod !== "EXTERNAL" &&
+    settings?.customPriceStatus === "ACTIVE";
 
   // ── Claiming a free Growth seat ──────────────────────────────────────────
-  if (formData.get("intent") === "claimFreeGrowth") {
+  if (intent === "claimFreeGrowth") {
+    if (settings?.isPartnerDevelopment) {
+      return {
+        success: false,
+        message: "Partner development stores already have every Growth feature at no charge, so there is no seat to claim.",
+      };
+    }
+
+    // Eligibility is decided from what Shopify is really billing — the page
+    // only hides the offer, and a stale tab or a hand-built request would
+    // otherwise let a Business store spend a seat and reset its own plan.
+    const billed = await readBilledSubscriptions(billing, isTest);
+    if (!billed.ok && !isTest) {
+      return {
+        success: false,
+        message: "We couldn't confirm your current subscription with Shopify, so nothing was changed. Please try again.",
+      };
+    }
+    const paidRanks = billed.subs.map((sub) => (sub.info ? planRank(sub.info.planId) : planRank("enterprise")));
+    if (isSimulatedSubscriptionId(settings?.subscriptionId)) paidRanks.push(planRank(settings.planId));
+    if (isExternalContract) paidRanks.push(planRank("enterprise"));
+    const highestPaid = Math.max(0, ...paidRanks);
+    if (highestPaid >= planRank("growth")) {
+      return {
+        success: false,
+        message: "Your current plan already includes every Growth feature, so the free Growth seat isn't available to your store.",
+      };
+    }
+
+    // Secure the seat before touching the subscription: cancelling first and
+    // then losing the race for the last seat would leave the store with
+    // neither.
     const grant = await claimFreeGrowthSeat(shop);
     if (!grant) {
       return {
@@ -410,28 +548,38 @@ export const action = async ({ request }) => {
       };
     }
 
-    await prisma.auditLog
-      .create({
-        data: {
-          shop,
-          userEmail: null,
-          userName: "Merchant",
-          action: "FREE_GROWTH_CLAIMED",
-          resourceType: "FreeGrowthGrant",
-          details: {
-            expiresAt: grant.expiresAt,
-            durationMonths: Math.max(1, Math.round((new Date(grant.expiresAt).getTime() - new Date(grant.grantedAt).getTime()) / (30 * 24 * 60 * 60 * 1000))),
-          },
-        },
-      })
-      .catch(() => { });
+    // Anything still billing below Growth (Starter) is now redundant, and the
+    // offer promised there would be nothing to pay.
+    const cancelled = [];
+    for (const sub of billed.subs.filter((s) => s.id)) {
+      try {
+        await billing.cancel({ subscriptionId: sub.id, isTest, prorate: true });
+        cancelled.push(sub.name);
+      } catch (cancelErr) {
+        console.error("[Revertly Billing] Could not cancel", sub.id, "while claiming Free Growth:", cancelErr?.message || cancelErr);
+        await releaseFreeGrowthSeat(shop);
+        return {
+          success: false,
+          message: `We couldn't cancel your ${sub.name} subscription with Shopify, so the free Growth seat was not claimed and nothing has changed. Please try again, or contact support.`,
+        };
+      }
+    }
 
-    // When claiming Free Growth, clean up any simulated or stale subscription on the store.
     await prisma.appSettings.upsert({
       where: { shop },
-      create: { shop, planId: "free", subscriptionId: null },
-      update: { planId: "free", subscriptionId: null },
+      create: { shop, planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY },
+      update: { planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY },
     }).catch(() => { });
+
+    await audit(
+      "FREE_GROWTH_CLAIMED",
+      {
+        expiresAt: grant.expiresAt,
+        durationMonths: Math.max(1, Math.round((new Date(grant.expiresAt).getTime() - new Date(grant.grantedAt).getTime()) / (30 * 24 * 60 * 60 * 1000))),
+        cancelledSubscriptions: cancelled,
+      },
+      "FreeGrowthGrant",
+    );
 
     return {
       success: true,
@@ -440,12 +588,14 @@ export const action = async ({ request }) => {
       // a change to what the store is billed for.
       promotional: true,
       freeGrowth: { expiresAt: grant.expiresAt },
-      message: `Free Growth promotion activated! Full Growth features are unlocked free of charge through ${formatDate(grant.expiresAt)}. There is no subscription and nothing to pay.`,
+      message:
+        `Free Growth promotion activated! Full Growth features are unlocked free of charge through ${formatDate(grant.expiresAt)}. There is no subscription and nothing to pay.` +
+        (cancelled.length ? ` Your ${cancelled.join(", ")} subscription was cancelled, with a prorated credit from Shopify.` : ""),
     };
   }
 
   // ── Accepting a VIP offer ────────────────────────────────────────────────
-  if (formData.get("intent") === "claimVip") {
+  if (intent === "claimVip") {
     const claimed = await claimVipOffer(shop);
     if (!claimed) {
       return {
@@ -454,23 +604,16 @@ export const action = async ({ request }) => {
       };
     }
 
-    await prisma.auditLog
-      .create({
-        data: {
-          shop,
-          userEmail: null,
-          userName: "Merchant",
-          action: "VIP_DISCOUNT_CLAIMED",
-          resourceType: "StoreDiscount",
-          details: {
-            discountPercent: claimed.discountPercent,
-            claimedAt: claimed.claimedAt,
-            expiresAt: claimed.expiresAt,
-            durationMonths: DISCOUNT_DURATION_MONTHS,
-          },
-        },
-      })
-      .catch(() => { });
+    await audit(
+      "VIP_DISCOUNT_CLAIMED",
+      {
+        discountPercent: claimed.discountPercent,
+        claimedAt: claimed.claimedAt,
+        expiresAt: claimed.expiresAt,
+        durationMonths: DISCOUNT_DURATION_MONTHS,
+      },
+      "StoreDiscount",
+    );
 
     return {
       success: true,
@@ -479,10 +622,12 @@ export const action = async ({ request }) => {
   }
 
   // ── Activating a Custom Enterprise Plus Offer ─────────────────────────────
-  if (formData.get("intent") === "activateCustomPlus") {
-    const settings = await prisma.appSettings.findUnique({ where: { shop } });
+  if (intent === "activateCustomPlus") {
     if (!settings?.customProductLimit) {
       return { success: false, message: "No custom plan offer is currently configured for this store." };
+    }
+    if (settings.customPriceStatus === "ACTIVE") {
+      return { success: false, message: "Your Custom Enterprise Plus plan is already active." };
     }
 
     const customPrice = settings.customPriceAmount || 249;
@@ -498,6 +643,7 @@ export const action = async ({ request }) => {
           productLimitReachedAt: null,
         },
       });
+      await audit("CUSTOM_PLAN_ACTIVATED", { billingMethod: "EXTERNAL", products: customQuota, price: customPrice });
       return {
         success: true,
         planId: "enterprise",
@@ -505,13 +651,16 @@ export const action = async ({ request }) => {
       };
     }
 
-    // In-app Shopify billing request
+    // In-app Shopify billing request, under the dedicated custom plan name so
+    // that only this charge — never a standard Enterprise one — can accept
+    // the offer (billing.server.js, customStatusForActiveSubscription).
     const url = new URL(request.url);
-    const returnUrl = `${url.origin}/app/plan?custom_activated=1`;
+    const returnUrl = `${url.origin}/app/plan`;
 
     try {
+      await audit("CUSTOM_PLAN_REQUESTED", { billingMethod: "SHOPIFY", products: customQuota, price: customPrice });
       return await billing.request({
-        plan: PLAN_ENTERPRISE,
+        plan: PLAN_ENTERPRISE_CUSTOM,
         isTest,
         returnUrl,
         trialDays: 0,
@@ -527,7 +676,17 @@ export const action = async ({ request }) => {
       if (err instanceof Response) {
         throw err;
       }
-      console.warn("[Revertly Billing] Custom Plus billing.request fallback:", err?.message || err);
+      console.warn("[Revertly Billing] Custom Plus billing.request failed:", err?.message || err);
+
+      // A failed charge request is never a reason to hand out the plan. Only
+      // a development/test build — which has no real charge to create — may
+      // simulate the activation.
+      if (!isTest) {
+        return {
+          success: false,
+          message: "We couldn't start the Shopify approval for your Custom Enterprise Plus plan. Nothing has been changed — please try again, or contact support.",
+        };
+      }
 
       const simSubId = `sim_custom_plus_${Date.now()}`;
       await prisma.appSettings.update({
@@ -540,11 +699,12 @@ export const action = async ({ request }) => {
           productLimitReachedAt: null,
         },
       });
+      await audit("CUSTOM_PLAN_ACTIVATED", { billingMethod: "SHOPIFY", simulated: true, products: customQuota, price: customPrice });
 
       return {
         success: true,
         planId: "enterprise",
-        message: `Custom Enterprise Plus plan ($${customPrice}/mo for ${formatNumber(customQuota)} products) activated successfully!`,
+        message: `Custom Enterprise Plus plan ($${customPrice}/mo for ${formatNumber(customQuota)} products) activated in test mode — no charge was created.`,
       };
     }
   }
@@ -566,9 +726,45 @@ export const action = async ({ request }) => {
   const isAnnual = rawInterval === "annual" || rawInterval === "yearly";
   const targetInterval = isAnnual ? INTERVAL_ANNUAL : INTERVAL_MONTHLY;
 
-  const settings = await prisma.appSettings.findUnique({ where: { shop } });
   const currentPlan = normalizePlanId(settings?.planId);
   const currentInterval = settings?.billingInterval || (settings?.subscriptionId?.includes("annual") ? INTERVAL_ANNUAL : INTERVAL_MONTHLY);
+  const targetTier = PLAN_TIERS[targetPlanId];
+
+  // Plans priced outside the standard list cannot be changed from here. An
+  // external contract is not billed through Shopify at all, so "downgrading"
+  // it here reported success and changed nothing.
+  if (isExternalContract) {
+    return {
+      success: false,
+      message: "Your store is on a Custom Enterprise Plus contract billed outside Shopify. To change or cancel it, contact our team — nothing has been changed.",
+    };
+  }
+  // Re-requesting Enterprise would swap the negotiated charge for the
+  // standard price list while the custom quota stayed on.
+  if (isShopifyCustomPlan && targetPlanId === "enterprise") {
+    return {
+      success: false,
+      message: `Your store is on a Custom Enterprise Plus plan ($${settings.customPriceAmount || 249}/month). To change its billing, contact our team — nothing has been changed.`,
+    };
+  }
+
+  // Growth that the store already has for nothing is not for sale. Buying
+  // Starter or Growth beside it charged the merchant for no extra access.
+  const seat = await getActiveFreeGrowthGrant(shop);
+  if (targetPlanId !== "free" && planRank(targetPlanId) <= planRank("growth")) {
+    if (seat) {
+      return {
+        success: false,
+        message: `Growth is already included free on your store until ${formatDate(seat.expiresAt)}, so there is nothing to buy on ${targetTier.name}.${planRank(currentPlan) > planRank("growth") ? " Choose Free to stop paying and keep Growth until then." : ""}`,
+      };
+    }
+    if (settings?.isPartnerDevelopment) {
+      return {
+        success: false,
+        message: `Your Partner development store already has Growth at no charge, so there is nothing to buy on ${targetTier.name}.`,
+      };
+    }
+  }
 
   // The single best discount this store qualifies for on the requested interval,
   // applied to the real Shopify charge — not just the price shown on this page.
@@ -576,8 +772,9 @@ export const action = async ({ request }) => {
 
   const isSamePlan = targetPlanId === currentPlan;
   const isSameInterval = targetInterval === currentInterval;
+  const isDiscountReissue = isSamePlan && isSameInterval;
 
-  if (isSamePlan && isSameInterval) {
+  if (isDiscountReissue) {
     // Re-requesting the current plan is normally a no-op, but it is the only
     // way to move an existing subscriber onto a discounted subscription.
     const canReissueForDiscount = Boolean(activeDiscount) && targetPlanId !== "free";
@@ -591,45 +788,27 @@ export const action = async ({ request }) => {
 
   if (targetPlanId === "free") {
     let allCancelled = true;
-    const isSimulated = isSimulatedSubscription(settings?.subscriptionId);
+    const cancelledIds = [];
+    const isSimulated = isSimulatedSubscriptionId(settings?.subscriptionId);
 
     if (!isSimulated) {
-      try {
-        const billingCheck = await billing.check({
-          plans: [
-            PLAN_STARTER,
-            PLAN_GROWTH,
-            PLAN_BUSINESS,
-            PLAN_ENTERPRISE,
-            PLAN_STARTER_ANNUAL,
-            PLAN_GROWTH_ANNUAL,
-            PLAN_BUSINESS_ANNUAL,
-            PLAN_ENTERPRISE_ANNUAL,
-          ],
-          isTest,
-        });
-
-        if (billingCheck?.hasActivePayment && billingCheck?.appSubscriptions?.length > 0) {
-          for (const sub of billingCheck.appSubscriptions) {
-            if (sub.id) {
-              try {
-                await billing.cancel({
-                  subscriptionId: sub.id,
-                  isTest,
-                  prorate: true,
-                });
-              } catch (cancelErr) {
-                allCancelled = false;
-                console.error("[Revertly Billing] Failed to cancel subscription", sub.id, cancelErr?.message || cancelErr);
-              }
-            }
-          }
-        }
-      } catch (err) {
-        if (!isTest) {
+      const billed = await readBilledSubscriptions(billing, isTest);
+      if (!billed.ok && !isTest) {
+        allCancelled = false;
+      }
+      for (const sub of billed.subs) {
+        if (!sub.id) continue;
+        try {
+          await billing.cancel({
+            subscriptionId: sub.id,
+            isTest,
+            prorate: true,
+          });
+          cancelledIds.push(sub.id);
+        } catch (cancelErr) {
           allCancelled = false;
+          console.error("[Revertly Billing] Failed to cancel subscription", sub.id, cancelErr?.message || cancelErr);
         }
-        console.warn("[Revertly Billing] Shopify billing cancel warning:", err?.message || err);
       }
 
       if (!allCancelled) {
@@ -647,8 +826,22 @@ export const action = async ({ request }) => {
       // app_subscriptions/update webhook does for a Shopify-side cancellation.
       // Without this, a downgrade made here (and every simulated one, which
       // fires no webhook at all) leaves Settings reporting the Circuit Breaker
-      // as "Armed" for a plan that no longer includes it.
-      update: { planId: "free", subscriptionId: null, billingInterval: INTERVAL_MONTHLY, circuitBreakerEnabled: false },
+      // as "Armed" for a plan that no longer includes it. A Shopify-billed
+      // custom plan ends with its subscription, so its quota ends too.
+      update: {
+        planId: "free",
+        subscriptionId: null,
+        billingInterval: INTERVAL_MONTHLY,
+        circuitBreakerEnabled: false,
+        ...(isShopifyCustomPlan ? { customPriceStatus: "CANCELLED" } : {}),
+      },
+    });
+
+    await audit("PLAN_DOWNGRADED", {
+      from: currentPlan,
+      to: "free",
+      cancelledSubscriptionIds: cancelledIds,
+      simulated: isSimulated,
     });
 
     return {
@@ -667,7 +860,6 @@ export const action = async ({ request }) => {
   const url = new URL(request.url);
   const returnUrl = `${url.origin}/app/plan`;
 
-  const targetTier = PLAN_TIERS[targetPlanId];
   const targetPrice = isAnnual ? targetTier?.yearlyPrice : targetTier?.price;
 
   // Active discount resolved for the selected billing interval.
@@ -681,7 +873,7 @@ export const action = async ({ request }) => {
           currencyCode: "USD",
           interval: isAnnual ? BillingInterval.Annual : BillingInterval.Every30Days,
           discount: {
-            durationLimitInIntervals: isAnnual ? 1 : DISCOUNT_DURATION_MONTHS,
+            durationLimitInIntervals: discountIntervalsFor(activeDiscount, isAnnual),
             value: { percentage: activeDiscount.percent / 100 },
           },
         },
@@ -696,7 +888,17 @@ export const action = async ({ request }) => {
   // is the point where it is finally honoured.
   const trialOverride = settings?.hasUsedTrial ? { trialDays: 0 } : {};
 
+  const currentOrder = PLAN_TIERS[currentPlan]?.order ?? 0;
+  const targetOrder = PLAN_TIERS[targetPlanId]?.order ?? 0;
+  const cycleLabel = isAnnual ? "Yearly" : "Monthly";
+
   try {
+    await audit("PLAN_CHANGE_REQUESTED", {
+      from: currentPlan,
+      to: targetPlanId,
+      interval: targetInterval,
+      discountPercent: isDiscountEligible ? activeDiscount.percent : null,
+    });
     return await billing.request({
       plan: targetShopifyPlan,
       isTest,
@@ -719,10 +921,15 @@ export const action = async ({ request }) => {
       detailedMessage.toLowerCase().includes("public distribution") ||
       (err?.message && err.message.toLowerCase().includes("public distribution"));
 
-    if (isDistributionError || isTest) {
+    // Only a development/test build may stand in for Shopify. In production a
+    // failed charge request — including an app that is not yet publicly
+    // distributed — must leave the plan exactly as it was: simulating it
+    // there handed out paid plans for free, under a `sim_` subscription the
+    // billing sync then never re-checked.
+    if (isTest) {
       const simSubId = `sim_${targetPlanId}_${isAnnual ? "annual_" : ""}${Date.now()}`;
-      const now = new Date();
-      const trialEndsAt = settings?.trialEndsAt || new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+      const startsTrial = !settings?.hasUsedTrial;
+      const trialEndsAt = startsTrial ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) : null;
 
       await prisma.appSettings.upsert({
         where: { shop },
@@ -739,22 +946,33 @@ export const action = async ({ request }) => {
           subscriptionId: simSubId,
           billingInterval: targetInterval,
           hasUsedTrial: true,
-          trialEndsAt,
+          // A store that already had its trial gets no new one, and must
+          // not be shown one either.
+          ...(startsTrial ? { trialEndsAt } : {}),
         },
       });
 
-      const currentOrder = PLAN_TIERS[currentPlan]?.order ?? 0;
-      const targetOrder = PLAN_TIERS[targetPlanId]?.order ?? 0;
-      const isDowngrade = targetOrder < currentOrder;
-      const cycleLabel = isAnnual ? "Yearly" : "Monthly";
+      await audit("PLAN_CHANGED", {
+        from: currentPlan,
+        to: targetPlanId,
+        interval: targetInterval,
+        discountPercent: isDiscountEligible ? activeDiscount.percent : null,
+        simulated: true,
+      });
 
-      let successMessage = isDistributionError
-        ? `Switched to ${targetTier?.name} plan (${cycleLabel}) in Test Mode. (Partner Note: To test live Shopify billing screens, select 'Public distribution' in Partner Dashboard > Apps > Distribution).`
-        : isDowngrade
-          ? `Successfully switched to ${targetTier?.name} plan (${cycleLabel}).`
-          : isSamePlan
-            ? `Successfully updated billing cycle to ${cycleLabel} for ${targetTier?.name} plan.`
-            : `Successfully upgraded to ${targetTier?.name} (${cycleLabel}, 14-day trial active).`;
+      let successMessage;
+      if (isDiscountReissue) {
+        successMessage = `Applied your ${activeDiscount.percent}% discount to the ${targetTier?.name} plan (${cycleLabel}).`;
+      } else if (isSamePlan) {
+        successMessage = `Successfully updated billing cycle to ${cycleLabel} for ${targetTier?.name} plan.`;
+      } else if (targetOrder < currentOrder) {
+        successMessage = `Successfully switched to ${targetTier?.name} plan (${cycleLabel}).`;
+      } else {
+        successMessage = `Successfully upgraded to ${targetTier?.name} (${cycleLabel}${startsTrial ? ", 14-day trial active" : ", billed from day one"}).`;
+      }
+      successMessage += isDistributionError
+        ? " Test mode — no charge was created. (Partner Note: To test live Shopify billing screens, select 'Public distribution' in Partner Dashboard > Apps > Distribution.)"
+        : " Test mode — no charge was created.";
 
       return {
         success: true,
@@ -766,7 +984,9 @@ export const action = async ({ request }) => {
 
     return {
       success: false,
-      message: `Unable to initiate Shopify billing for ${targetShopifyPlan}: ${detailedMessage || err?.message || "Please try again or contact support."}`,
+      message: isDistributionError
+        ? "Shopify billing isn't available for this app yet (it needs public distribution), so no charge was created and your plan has not been changed. Please contact support."
+        : `Unable to initiate Shopify billing for ${targetShopifyPlan}: ${detailedMessage || err?.message || "Please try again or contact support."} Your plan has not been changed.`,
     };
   }
 };
@@ -782,9 +1002,14 @@ export default function Plan() {
     trialEndsAt,
     productLimitReachedAt,
     customPlanOffer,
+    customPlan,
     storeDiscount,
     globalDiscount,
+    storeDiscountSupersededBy,
+    isBilled,
     freeGrowth,
+    supersededFreeGrowth,
+    heldFreeGrowthSeat,
     freeGrowthStatus,
     vipOffer,
     freeGrowthOffer,
@@ -792,6 +1017,8 @@ export default function Plan() {
     enterpriseProductCap,
     isPartnerDev,
     partnerDevPlanName,
+    planCapabilities,
+    planAllowances,
   } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
@@ -812,6 +1039,7 @@ export default function Plan() {
     activeInterval === "ANNUAL" ? "annual" : "monthly"
   );
   const [confirmModal, setConfirmModal] = useState(null);
+  const cancelButtonRef = useRef(null);
 
   // Auto-close confirmation modal once an action result returns
   useEffect(() => {
@@ -819,6 +1047,19 @@ export default function Plan() {
       setConfirmModal(null);
     }
   }, [result]);
+
+  // While the modal is open, Escape closes it wherever focus is, and focus
+  // starts on the safe choice. The overlay's own onKeyDown only ever fired
+  // once focus was already inside it, which it never was on open.
+  useEffect(() => {
+    if (!confirmModal) return undefined;
+    cancelButtonRef.current?.focus();
+    const onKey = (e) => {
+      if (e.key === "Escape" && !isSubmitting) setConfirmModal(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [confirmModal, isSubmitting]);
 
   // Upgrade/downgrade is a statement about *money*, so it is measured against
   // the plan being billed, not against an entitlement handed out by the
@@ -830,6 +1071,25 @@ export default function Plan() {
   const billedOrder = PLAN_TIERS[billedPlan]?.order ?? 0;
   const trialStillActive = trialEndsAt && new Date(trialEndsAt) > new Date();
 
+  // Growth the store holds without paying for it: a promotional seat, or the
+  // access every Partner development store gets. Either way the Growth card
+  // is the current plan on both billing toggles — there is no interval to
+  // switch — and the tiers it already covers are not for sale.
+  const isPartnerGrowth = Boolean(isPartnerDev) && billedOrder < PLAN_TIERS.growth.order;
+  const complimentaryGrowth = activeFreeGrowth
+    ? { kind: "promotion", until: activeFreeGrowth.expiresAt }
+    : isPartnerGrowth
+      ? { kind: "partner" }
+      : null;
+  // A seat outranked by a paid Business/Enterprise plan still covers Starter
+  // and Growth, which the action therefore refuses to sell.
+  const seatCoverage = activeFreeGrowth || supersededFreeGrowth;
+  const coveredLabel = complimentaryGrowth?.kind === "partner"
+    ? "Included with Partner access"
+    : seatCoverage
+      ? `Included free until ${formatDate(seatCoverage.expiresAt)}`
+      : null;
+
   function trialSubtext(plan) {
     if (plan.id === "free") return plan.subtext;
     if (activePlan === plan.id && trialStillActive) {
@@ -839,6 +1099,16 @@ export default function Plan() {
     // still on offer — see the trialDays override in the action.
     if (hasUsedTrial) return "Billed from day one";
     return plan.subtext;
+  }
+
+  // What a downgrade really takes away: capabilities of the plan the store is
+  // entitled to now that the target plan lacks. A store keeping Growth
+  // through a seat or Partner access keeps Growth's capabilities too.
+  function capabilitiesLostTo(targetPlanId) {
+    const keepsGrowth = (seatCoverage || isPartnerDev) && PLAN_TIERS[targetPlanId].order < PLAN_TIERS.growth.order;
+    const targetEntitlement = keepsGrowth ? "growth" : targetPlanId;
+    const kept = new Set(planCapabilities?.[targetEntitlement] || []);
+    return (planCapabilities?.[activePlan] || []).filter((c) => !kept.has(c));
   }
 
   return (
@@ -862,7 +1132,7 @@ export default function Plan() {
           action={
             currentPlan === "enterprise" ? (
               <Link
-                to={`/app/support?category=Billing&priority=HIGH&subject=${encodeURIComponent("Custom Enterprise Plus Plan Quote (> 200k products)")}&products=${usage.productCount}`}
+                to={`/app/support?category=Billing&priority=HIGH&subject=${encodeURIComponent(`Custom Enterprise Plus Plan Quote (> ${formatNumber(limits.products)} products)`)}&products=${usage.productCount}`}
                 className="rv-btn rv-btn-critical rv-btn-sm"
               >
                 Request Custom Plus Tier
@@ -975,6 +1245,13 @@ export default function Plan() {
                 pay. Places are first come, first served — your {freeGrowthOffer.durationMonths} months start
                 the day you claim.
               </p>
+              {freeGrowthOffer.cancelsPlanName && (
+                <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--rv-text)", lineHeight: 1.5 }}>
+                  <strong>Claiming cancels your {freeGrowthOffer.cancelsPlanName} subscription</strong>, with a
+                  prorated credit from Shopify, so you are not charged for both. When the promotion ends your store
+                  returns to the Free plan, and you can subscribe to any plan again at that point.
+                </p>
+              )}
             </div>
             <fetcher.Form method="POST">
               <input type="hidden" name="intent" value="claimFreeGrowth" />
@@ -1051,14 +1328,24 @@ export default function Plan() {
           A promotional seat: Growth features at no charge, no subscription. */}
       {activeFreeGrowth && (
         <Banner tone="success" title="Free Growth Promotion Active" className="rv-fade-in">
-          You claimed the Free Growth promotion from the first {freeGrowthStatus?.limit || 20} stores offer. Every Growth feature is unlocked on your
+          You claimed the Free Growth promotion{freeGrowthStatus?.limit ? ` from the first ${freeGrowthStatus.limit} stores offer` : ""}. Every Growth feature is unlocked on your
           account at no charge until {formatDate(activeFreeGrowth.expiresAt)}. There is no
           subscription and nothing to pay. You can still upgrade to Business or Enterprise at any time.
         </Banner>
       )}
 
-      {/* ── Free Growth Sold Out Notice (if merchant did not claim and seats are full) ── */}
-      {!activeFreeGrowth && !freeGrowthOffer && freeGrowthStatus?.isSoldOut && (
+      {/* ── Free Growth Sold Out Notice ──
+          Only news to a store that could have wanted a seat: never to one that
+          holds (or held) a seat, already has Growth or better, or when the
+          operator simply switched the promotion off or closed it at 0 seats. */}
+      {!activeFreeGrowth &&
+        !freeGrowthOffer &&
+        !heldFreeGrowthSeat &&
+        !isPartnerDev &&
+        billedOrder < PLAN_TIERS.growth.order &&
+        freeGrowthStatus?.enabled &&
+        freeGrowthStatus.limit > 0 &&
+        freeGrowthStatus.isSoldOut && (
         <Banner tone="info" title="Free Growth Promotion Concluded" className="rv-fade-in">
           The Free Growth offer for the first {freeGrowthStatus.limit} merchants has reached capacity and been fully claimed. Standard store protection plans are available below.
         </Banner>
@@ -1080,14 +1367,25 @@ export default function Plan() {
             <>
               Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount
               {storeDiscount.expiresAt && <> is valid through {formatDate(storeDiscount.expiresAt)}</>},
-              but your current subscription is still being charged at full price. Use{" "}
+              but it is not applied to your current subscription yet. Use{" "}
               <strong>Apply my {storeDiscount.percent}% discount</strong> on your active plan below to switch to
               the discounted price.
             </>
+          ) : storeDiscountSupersededBy ? (
+            // Discounts never stack: a yearly plan takes the larger of the
+            // store grant and the global yearly discount.
+            <>
+              Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount is on file
+              {storeDiscount.expiresAt && <>, valid through {formatDate(storeDiscount.expiresAt)}</>}. Your yearly
+              subscription already carries the larger {storeDiscountSupersededBy}% Global Yearly Discount instead —
+              discounts don&apos;t stack, so you always get the bigger one.
+            </>
           ) : (
             <>
-              Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount is active and
-              applied to your store subscriptions
+              Your {storeDiscount.percent}% {storeDiscount.source === "VIP" ? "VIP " : ""}account discount is active
+              {storeDiscount.appliesToCurrentPlan || isBilled
+                ? " and applied to your subscription"
+                : " and will be applied when you choose a paid plan below"}
               {storeDiscount.expiresAt && <>, valid through {formatDate(storeDiscount.expiresAt)}</>}.
               {storeDiscount.note && <div style={{ marginTop: "4px", fontStyle: "italic" }}>{storeDiscount.note}</div>}
             </>
@@ -1116,20 +1414,28 @@ export default function Plan() {
             <span style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "var(--rv-text-subdued)", letterSpacing: "0.5px" }}>
               CURRENT SUBSCRIPTION
             </span>
-            {activeFreeGrowth ? (
+            {activeFreeGrowth && (
               <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
                 Free Growth · to {formatDate(activeFreeGrowth.expiresAt)}
               </span>
-            ) : billedPlan !== "free" ? (
-              <span className="rv-badge rv-badge-success">
-                Active · {activeInterval === "ANNUAL" ? "Billed Annually" : "Billed Monthly"}
-              </span>
-            ) : (
-              <span className="rv-badge rv-badge-neutral">No subscription</span>
             )}
+            {/* A charge is shown whenever one exists, even beside a free
+                entitlement — hiding it is how a merchant ended up paying for
+                Starter under a page that said "nothing to pay". */}
+            {billedPlan !== "free" ? (
+              <span className="rv-badge rv-badge-success">
+                {customPlan?.billingMethod === "EXTERNAL"
+                  ? "Active · Direct contract"
+                  : `${activeFreeGrowth ? `${PLAN_TIERS[billedPlan]?.name} billed` : "Active"} · ${activeInterval === "ANNUAL" ? "Billed Annually" : "Billed Monthly"}`}
+              </span>
+            ) : isPartnerGrowth ? (
+              <span className="rv-badge rv-badge-success">Partner access · no charge</span>
+            ) : !activeFreeGrowth ? (
+              <span className="rv-badge rv-badge-neutral">No subscription</span>
+            ) : null}
           </div>
           <h2 style={{ margin: "0 0 6px", fontSize: "22px", fontWeight: 800, color: "var(--rv-text)" }}>
-            {activeFreeGrowth ? "Free Growth" : `${PLAN_TIERS[activePlan]?.name || activePlan} Plan`}
+            {activeFreeGrowth ? "Free Growth" : customPlan ? "Custom Enterprise Plus" : `${PLAN_TIERS[activePlan]?.name || activePlan} Plan`}
           </h2>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--rv-text-subdued)" }}>
             {activeFreeGrowth ? (
@@ -1159,7 +1465,7 @@ export default function Plan() {
             </strong>
           </div>
           <div>
-            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Detection Rules</div>
+            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginBottom: "2px" }}>Active Detection Rules</div>
             <strong style={{ fontSize: "15px", color: "var(--rv-text)" }}>
               {usage.ruleCount} / {limits.rules === Infinity ? "Unlimited" : limits.rules}
             </strong>
@@ -1217,6 +1523,8 @@ export default function Plan() {
         return (
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", marginBottom: "28px" }}>
             <div
+              role="group"
+              aria-label="Billing cycle"
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -1229,6 +1537,7 @@ export default function Plan() {
             >
               <button
                 type="button"
+                aria-pressed={billingCycle === "monthly"}
                 onClick={() => setBillingCycle("monthly")}
                 style={{
                   border: "none",
@@ -1266,6 +1575,7 @@ export default function Plan() {
               </button>
               <button
                 type="button"
+                aria-pressed={billingCycle === "annual"}
                 onClick={() => setBillingCycle("annual")}
                 style={{
                   border: "none",
@@ -1317,19 +1627,27 @@ export default function Plan() {
           const isGrowth = plan.id === "growth";
           const isBusiness = plan.id === "business";
           const isEnterprise = plan.id === "enterprise";
-          const isFreeGrowthCard = Boolean(activeFreeGrowth) && isGrowth;
+          const isComplimentaryCard = Boolean(complimentaryGrowth) && isGrowth;
+          const isFreeGrowthCard = isComplimentaryCard && complimentaryGrowth.kind === "promotion";
+          const isPartnerCard = isComplimentaryCard && complimentaryGrowth.kind === "partner";
+          const isCustomCard = Boolean(customPlan) && isEnterprise;
 
-          // A promotional Growth seat has no billing interval to switch — it is
-          // an entitlement, not a subscription. Treating the Yearly toggle as a
-          // "different cycle" on this card offered "Switch to Yearly" beside a
-          // $0 / FREE PROMOTION price, and submitting it opened a real annual
-          // Growth charge for the plan the merchant already holds free. The
-          // card therefore stays current on both toggles; Business and
+          // Growth held free (a promotional seat or Partner access) has no
+          // billing interval to switch — it is an entitlement, not a
+          // subscription. Treating the Yearly toggle as a "different cycle" on
+          // this card offered "Switch to Yearly" beside a $0 price, and
+          // submitting it opened a real annual Growth charge for the plan the
+          // merchant already holds free. A custom Enterprise Plus plan is
+          // likewise priced off the list, with no yearly counterpart. These
+          // cards therefore stay current on both toggles; Business and
           // Enterprise remain genuine paid upgrades.
           const isExactCurrent =
-            isCurrentPlanId && (plan.id === "free" || isCurrentInterval || isFreeGrowthCard);
+            isCurrentPlanId && (plan.id === "free" || isCurrentInterval || isComplimentaryCard || isCustomCard);
           const isSameTierDifferentCycle =
-            isCurrentPlanId && !isCurrentInterval && plan.id !== "free" && !isFreeGrowthCard;
+            isCurrentPlanId && !isCurrentInterval && plan.id !== "free" && !isComplimentaryCard && !isCustomCard;
+          // Starter and Growth are not for sale while Growth is already held
+          // for nothing — the action refuses them, so the card says why.
+          const isCoveredTier = Boolean(coveredLabel) && !isExactCurrent && (plan.id === "starter" || isGrowth);
 
           // True only for the plan the store is actually billed for. For a
           // promotional Growth store that is the Free card, which must not
@@ -1390,13 +1708,21 @@ export default function Plan() {
 
           let buttonLabel = `Choose ${plan.name}`;
           if (isExactCurrent) {
-            buttonLabel = isFreeGrowthCard ? "✓ Free Growth Active" : "✓ Active Plan";
+            buttonLabel = isFreeGrowthCard
+              ? "✓ Free Growth Active"
+              : isPartnerCard
+                ? "✓ Partner Access Active"
+                : isCustomCard
+                  ? "✓ Custom Plan Active"
+                  : "✓ Active Plan";
           } else if (isSameTierDifferentCycle) {
             buttonLabel = isAnnualSelected
               ? (hasApplicableDiscount ? `Switch to Yearly (${applicableDiscount.percent}% Off)` : "Switch to Yearly")
               : "Switch to Monthly";
+          } else if (isCoveredTier) {
+            buttonLabel = coveredLabel;
           } else if (isBilledPlan) {
-            buttonLabel = activeFreeGrowth ? "Standard Free (Included)" : "✓ Your billed plan";
+            buttonLabel = complimentaryGrowth ? "Standard Free (Included)" : "✓ Your billed plan";
           } else if (plan.id === "free") {
             buttonLabel = "Downgrade to Free";
           } else if (isUpgrade) {
@@ -1424,12 +1750,12 @@ export default function Plan() {
                 <div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
                     <span style={{ fontSize: "17px", fontWeight: 700, color: "var(--rv-text)" }}>
-                      {isFreeGrowthCard ? "Free Growth" : plan.name}
+                      {isFreeGrowthCard ? "Free Growth" : isCustomCard ? "Enterprise Plus" : plan.name}
                     </span>
                     <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                       {isExactCurrent && (
                         <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                          {isFreeGrowthCard ? "Free Growth Active" : "Current"}
+                          {isFreeGrowthCard ? "Free Growth Active" : isPartnerCard ? "Partner Access" : "Current"}
                         </span>
                       )}
                       {tierBadge}
@@ -1455,7 +1781,23 @@ export default function Plan() {
                       );
                     }
 
-                    if (isFreeGrowthCard) {
+                    if (isCustomCard) {
+                      return (
+                        <div style={{ marginBottom: "4px" }}>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
+                            <span style={{ fontSize: "28px", fontWeight: 800, color: "var(--rv-text)" }}>
+                              {formatPrice(customPlan.price)}
+                            </span>
+                            <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>/ month</span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--rv-primary)", fontWeight: 600, marginTop: "2px" }}>
+                            Custom Enterprise Plus · {formatNumber(limits.products)} products
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (isComplimentaryCard) {
                       return (
                         <div style={{ marginBottom: "4px" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
@@ -1463,7 +1805,7 @@ export default function Plan() {
                               {isAnnualSelected ? `$${tier?.yearlyPrice}/yr` : `$${tier?.monthlyPrice}/mo`}
                             </span>
                             <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                              <SparklesIcon size={10} /> FREE PROMOTION
+                              <SparklesIcon size={10} /> {isPartnerCard ? "PARTNER ACCESS" : "FREE PROMOTION"}
                             </span>
                           </div>
                           <div style={{ display: "flex", alignItems: "baseline", gap: "4px" }}>
@@ -1473,7 +1815,7 @@ export default function Plan() {
                             </span>
                           </div>
                           <div style={{ fontSize: "11px", color: "var(--rv-primary)", fontWeight: 600, marginTop: "2px" }}>
-                            Free Growth promotion active
+                            {isPartnerCard ? "Partner development store · no charge" : "Free Growth promotion active"}
                           </div>
                         </div>
                       );
@@ -1493,8 +1835,13 @@ export default function Plan() {
                         <div style={{ marginBottom: "4px" }}>
                           {hasApplicableDiscount && (
                             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", flexWrap: "wrap" }}>
+                              {/* The struck-out figure must be the undiscounted
+                                  version of the price beside it — the yearly
+                                  monthly equivalent. Striking out the monthly
+                                  list price made Enterprise ($99 → $66) read as
+                                  33% off under a "20% OFF" badge. */}
                               <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)", textDecoration: "line-through" }}>
-                                ${baseMonthly}/mo
+                                {formatPrice(yearlyMonthlyEq)}/mo
                               </span>
                               <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
                                 {applicableDiscount.percent}% OFF
@@ -1628,7 +1975,7 @@ export default function Plan() {
 
                 {/* Bottom Action Button */}
                 <div style={{ borderTop: "1px solid var(--rv-border-subtle)", paddingTop: "14px", marginTop: "auto" }}>
-                  {isExactCurrent && applicableDiscount?.needsApply && plan.id !== "free" ? (
+                  {isExactCurrent && applicableDiscount?.needsApply && plan.id !== "free" && !isComplimentaryCard && !isCustomCard ? (
                     <fetcher.Form method="POST" style={{ width: "100%" }}>
                       <input type="hidden" name="planId" value={plan.id} />
                       <input type="hidden" name="interval" value={billingCycle} />
@@ -1650,7 +1997,7 @@ export default function Plan() {
                     >
                       {buttonLabel}
                     </button>
-                  ) : isBilledPlan ? (
+                  ) : isBilledPlan || isCoveredTier ? (
                     <button
                       type="button"
                       disabled
@@ -1694,12 +2041,20 @@ export default function Plan() {
                     {isExactCurrent
                       ? (isFreeGrowthCard
                         ? `Free Growth active until ${formatDate(activeFreeGrowth.expiresAt)}`
-                        : trialStillActive
-                          ? trialSubtext(plan)
-                          : `Active Plan • ${activeInterval === "ANNUAL" ? "Billed Annually" : "Billed Monthly"}`)
+                        : isPartnerCard
+                          ? "Partner access • No charge"
+                          : isCustomCard
+                            ? `Active Plan • ${customPlan.billingMethod === "EXTERNAL" ? "Direct contract" : "Billed Monthly"}`
+                            : plan.id === "free"
+                              ? "Active Plan • No charge"
+                              : trialStillActive
+                                ? trialSubtext(plan)
+                                : `Active Plan • ${activeInterval === "ANNUAL" ? "Billed Annually" : "Billed Monthly"}`)
                       : isSameTierDifferentCycle
                         ? (isAnnualSelected ? (hasApplicableDiscount ? `${applicableDiscount.percent}% discount applied` : "Billed annually") : "Billed monthly")
-                        : trialSubtext(plan)}
+                        : isCoveredTier
+                          ? "Nothing to buy — already on your store"
+                          : trialSubtext(plan)}
                   </div>
                 </div>
               </div>
@@ -1822,11 +2177,6 @@ export default function Plan() {
               setConfirmModal(null);
             }
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" && !isSubmitting) {
-              setConfirmModal(null);
-            }
-          }}
           style={{
             position: "fixed",
             inset: 0,
@@ -1851,7 +2201,7 @@ export default function Plan() {
               boxShadow: "var(--rv-shadow-lg)",
             }}
           >
-            <h3 style={{ margin: "0 0 10px", fontSize: "18px", fontWeight: 700, color: "var(--rv-text)" }}>
+            <h3 id="downgrade-modal-title" style={{ margin: "0 0 10px", fontSize: "18px", fontWeight: 700, color: "var(--rv-text)" }}>
               Confirm Plan Downgrade
             </h3>
             <p style={{ fontSize: "14px", color: "var(--rv-text)", lineHeight: 1.5, margin: "0 0 16px" }}>
@@ -1869,12 +2219,40 @@ export default function Plan() {
                 lineHeight: 1.4,
               }}
             >
-              <strong>Note:</strong> Downgrading will lower your monitored product and restore point allowances, and shorten how long change history is kept. Premium capabilities — Liquid Theme Backups, Orders &amp; Customers Vault, Klaviyo &amp; Mailchimp backup, Circuit Breaker, Slack alerts, bulk incident rollback, and Offsite Cloud Backup to Google Drive &amp; Dropbox — will be restricted to the new plan&apos;s limits. Backups already stored in Revertly are kept.
+              {(() => {
+                const lost = capabilitiesLostTo(confirmModal.planId);
+                return (
+                  <>
+                    <strong>Note:</strong> Downgrading will lower your monitored product and restore point allowances, and shorten how long change history is kept.
+                    {lost.length > 0 ? (
+                      <> The {confirmModal.planName} plan does not include: {lost.join(", ")}.</>
+                    ) : (
+                      <> Every capability you use today is still included on {confirmModal.planName}.</>
+                    )}{" "}
+                    {(() => {
+                      // Stated plainly because it is what the retention policy
+                      // and the restore-point allowance really do — "backups
+                      // already stored are kept" was not true.
+                      const target = planAllowances?.[confirmModal.planId];
+                      if (!target) return null;
+                      return (
+                        <>
+                          Restore points older than {confirmModal.planName}&apos;s {target.retentionDays}-day history
+                          window are removed, and automatic backups rotate to fit its allowance of{" "}
+                          {target.restorePoints === Infinity ? "unlimited" : target.restorePoints} restore points.
+                          Restore points you created yourself are never rotated out.
+                        </>
+                      );
+                    })()}
+                  </>
+                );
+              })()}
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
               <button
                 type="button"
+                ref={cancelButtonRef}
                 onClick={() => setConfirmModal(null)}
                 className="rv-btn rv-btn-secondary"
                 disabled={isSubmitting}

@@ -2,7 +2,7 @@
  * Product snapshot and comparison utilities for Revertly
  */
 import prisma from "./db.server.js";
-import { checkFeatureAccess } from "./billing.server.js";
+import { checkFeatureAccess, checkRuleLimit, getEffectivePlanId, getPlanLimits } from "./billing.server.js";
 
 // Fields we monitor on products
 export const MONITORED_PRODUCT_FIELDS = [
@@ -444,9 +444,16 @@ export async function seedDefaultDetectionRules(shop) {
     },
   ];
 
+  // All three recommended rules are added, but only as many as the plan's
+  // active-rule allowance are switched on; the rest arrive paused so the
+  // merchant can choose which to run. Seeding used to activate all three on
+  // a Free store whose allowance is one.
+  const { limit } = await checkRuleLimit(shop);
   const created = [];
-  for (const rule of defaults) {
-    const r = await prisma.detectionRule.create({ data: rule });
+  for (const [index, rule] of defaults.entries()) {
+    const r = await prisma.detectionRule.create({
+      data: { ...rule, isActive: limit === Infinity || index < limit },
+    });
     created.push(r);
   }
   return created;
@@ -456,8 +463,15 @@ export async function seedDefaultDetectionRules(shop) {
  * Check detection rules and create an incident if needed
  */
 export async function checkDetectionRules(shop, changes) {
+  // Only the plan's allowance of active rules is evaluated, oldest first.
+  // Rules switched on under a bigger plan stay on after a downgrade (nothing
+  // deactivates them), so the cap has to hold here, where rules take effect.
+  const plan = await getEffectivePlanId(shop);
+  const { rules: ruleLimit } = getPlanLimits(plan);
   const rules = await prisma.detectionRule.findMany({
     where: { shop, isActive: true },
+    orderBy: { id: "asc" },
+    ...(ruleLimit === Infinity ? {} : { take: ruleLimit }),
   });
 
   if (rules.length === 0) return null;
@@ -795,7 +809,14 @@ export async function sendIncidentAlert(shop, incident, settings) {
   if (!isSeverityAlertEnabled(incident.severity, settings)) return;
 
   const appUrl = process.env.SHOPIFY_APP_URL;
-  const incidentLink = appUrl ? `${appUrl}/app/incidents/${incident.id}` : null;
+  // Pseudo-incidents (e.g. GA4 tag health) are not Incident rows, so they
+  // pass an in-app `linkPath` instead of pointing at /app/incidents/<id>.
+  // Real Incident rows never carry one, which keeps their link unchanged.
+  const linkPath =
+    typeof incident.linkPath === "string" && /^\/(?!\/)/.test(incident.linkPath)
+      ? incident.linkPath
+      : `/app/incidents/${incident.id}`;
+  const incidentLink = appUrl ? `${appUrl}${linkPath}` : null;
 
   // 1. Slack notification. Re-validated at send time so a URL stored before
   // the allowlist existed can never be dialled.
@@ -803,7 +824,13 @@ export async function sendIncidentAlert(shop, incident, settings) {
   if (settings?.slackWebhookUrl && !slackTarget.ok) {
     console.warn(`[Revertly] Refusing to POST to non-Slack webhook for ${shop}: ${slackTarget.message}`);
   }
-  if (slackTarget.ok) {
+  // Slack alerts are a Business-and-above feature. A store that downgrades
+  // keeps its saved webhook URL, so the entitlement is checked at send time —
+  // the downgrade warning says Slack alerts stop, and now they do.
+  const slackAccess = slackTarget.ok
+    ? await checkFeatureAccess(shop, "slack").catch(() => ({ allowed: false }))
+    : { allowed: false };
+  if (slackTarget.ok && slackAccess.allowed) {
     try {
       const color =
         incident.severity === "CRITICAL"

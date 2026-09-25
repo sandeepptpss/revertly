@@ -65,6 +65,9 @@ export const loader = async ({ request }) => {
   return {
     restorePoints,
     hasMetafieldAccess: metafieldAccess.allowed,
+    // A live theme export is a theme backup (Growth+); a theme already saved
+    // in a restore point stays exportable on any plan.
+    hasThemeAccess: (await checkFeatureAccess(shop, "themes")).allowed,
   };
 };
 
@@ -262,9 +265,13 @@ export const action = async ({ request }) => {
 
       return {
         success: true,
-        message: metafieldsSkippedForPlan
-          ? `${res.message} Metafields in this archive were skipped — metafield import requires a Growth plan or higher.`
-          : res.message,
+        message:
+          (metafieldsSkippedForPlan
+            ? `${res.message} Metafields in this archive were skipped — metafield import requires a Growth plan or higher.`
+            : res.message) +
+          (res.summary?.themeSkippedForPlan
+            ? " The archive's theme was saved in the restore point but not deployed — theme restore requires a Growth plan or higher."
+            : ""),
         summary: res.summary,
         // Only the fields the banner links with. The full record carries the
         // entire archive, and echoing a multi-megabyte backup back to the
@@ -303,7 +310,7 @@ function describeContents(rp) {
 }
 
 export default function ImportExportHub() {
-  const { restorePoints, hasMetafieldAccess = false } = useLoaderData();
+  const { restorePoints, hasMetafieldAccess = false, hasThemeAccess = false } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const isImporting = fetcher.state !== "idle";
@@ -860,9 +867,15 @@ export default function ImportExportHub() {
                 <p style={{ margin: "0 0 16px", fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
                   Export all theme layouts, Liquid template files, settings_data.json, and sections. Perfect for sharing with developers or auditing template modifications.
                 </p>
+                {!hasThemeAccess && !selectedRp && (
+                  <p style={{ margin: "0 0 10px", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                    Live theme backups are included from the Growth plan. Themes already saved in a restore point can
+                    still be exported — pick one above.
+                  </p>
+                )}
                 <button
                   type="button"
-                  disabled={downloadingType === "themes_json"}
+                  disabled={downloadingType === "themes_json" || (!hasThemeAccess && !selectedRp)}
                   onClick={() => handleDownload("themes_json", "revertly-themes.json")}
                   className="rv-btn rv-btn-secondary"
                   style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}

@@ -18,6 +18,7 @@ export const PLAN_STARTER_ANNUAL = "Starter (Annual)";
 export const PLAN_GROWTH_ANNUAL = "Growth (Annual)";
 export const PLAN_BUSINESS_ANNUAL = "Business (Annual)";
 export const PLAN_ENTERPRISE_ANNUAL = "Enterprise (Annual)";
+export const PLAN_ENTERPRISE_CUSTOM = "Enterprise Plus (Custom)";
 
 // Aliases for backwards compatibility
 export const PLAN_PRO = PLAN_GROWTH;
@@ -150,6 +151,32 @@ const shopify = shopifyApp({
           interval: BillingInterval.Annual,
         },
       ],
+    },
+    // The amount is a placeholder: every request for this plan overrides it
+    // with the store's negotiated price (app.plan.jsx, activateCustomPlus).
+    [PLAN_ENTERPRISE_CUSTOM]: {
+      trialDays: 0,
+      replacementBehavior: BillingReplacementBehavior.ApplyImmediately,
+      lineItems: [
+        {
+          amount: 249,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days,
+        },
+      ],
+    },
+  },
+  hooks: {
+    // Runs on every token exchange, which online tokens make at least daily
+    // per staff member. Keeps the stored Partner-development flag current so
+    // the entitlement gates (which have no admin client) can honour it.
+    afterAuth: async ({ session, admin }) => {
+      try {
+        const { refreshPartnerDevelopmentFlag } = await import("./billing.server.js");
+        await refreshPartnerDevelopmentFlag(session.shop, admin);
+      } catch (err) {
+        console.warn("[Revertly Billing] Partner-development check skipped:", err?.message || err);
+      }
     },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN

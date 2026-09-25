@@ -503,6 +503,11 @@ async function main() {
   });
 
   await check("2.5 A live capture is bounded by the plan's product allowance and says so", async () => {
+    // Free also allows only 2 restore points, and the manual points the
+    // earlier sections made already fill that (reserveRestorePointSlot).
+    // Park them under another shop so this check measures the *product*
+    // allowance alone; they are put back, ids intact, for section 3.
+    await prisma.restorePoint.updateMany({ where: { shop: TEST_SHOP }, data: { shop: `${TEST_SHOP}.parked` } });
     await prisma.appSettings.update({ where: { shop: TEST_SHOP }, data: { planId: "free" } });
     const big = freshStore();
     big.products = Array.from({ length: 260 }, (_, i) => ({
@@ -522,6 +527,8 @@ async function main() {
       STORE = prev;
       await prisma.appSettings.update({ where: { shop: TEST_SHOP }, data: { planId: "business" } });
       await prisma.productSnapshot.deleteMany({ where: { shop: TEST_SHOP } });
+      await prisma.restorePoint.deleteMany({ where: { shop: TEST_SHOP } });
+      await prisma.restorePoint.updateMany({ where: { shop: `${TEST_SHOP}.parked` }, data: { shop: TEST_SHOP } });
     }
   });
 

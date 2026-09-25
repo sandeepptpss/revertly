@@ -66,9 +66,9 @@ it("normalizePlanId normalizes aliases and invalid IDs", () => {
 
 // ── Test 2: Plan Limits Configuration ───────────────────────────────────────
 console.log("\n2. Plan Limits Validation:");
-it("Free plan has strict basic limits (100 products, 2 restore points, 1 rule)", () => {
+it("Free plan has strict basic limits (50 products, 2 restore points, 1 rule)", () => {
   const limits = getPlanLimits("free");
-  assert.strictEqual(limits.products, 100);
+  assert.strictEqual(limits.products, 50);
   assert.strictEqual(limits.restorePoints, 2);
   assert.strictEqual(limits.rules, 1);
   assert.strictEqual(limits.retentionDays, 7);

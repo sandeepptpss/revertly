@@ -295,11 +295,11 @@ export default function DataVault() {
             <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <CheckCircleIcon size={16} style={{ color: "var(--rv-primary)" }} />
-                <span><strong>Growth ($24/mo):</strong> Up to 2,500 orders &amp; tax export</span>
+                <span><strong>Growth ($24/mo):</strong> Up to 2,500 orders, tax export &amp; dispute evidence</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <CheckCircleIcon size={16} style={{ color: "var(--rv-primary)" }} />
-                <span><strong>Business ($49/mo):</strong> Up to 15,000 orders &amp; dispute evidence</span>
+                <span><strong>Business ($49/mo):</strong> Up to 15,000 orders</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <CheckCircleIcon size={16} style={{ color: "var(--rv-primary)" }} />

@@ -126,14 +126,14 @@ for (const [key, human] of LADDER) {
 }
 
 check("Boolean capabilities are never revoked by upgrading", () => {
-  for (const flag of ["themes", "circuitBreaker", "slack", "bulkRollback", "cloudSync", "marketingBackup", "marketingFlows", "metafieldBackup"]) {
+  for (const flag of ["themes", "circuitBreaker", "slack", "bulkRollback", "cloudSync", "marketingBackup", "marketingFlows", "metafieldBackup", "ga4Monitoring"]) {
     for (let i = 1; i < ORDER.length; i++) {
       const prev = PLAN_LIMITS[ORDER[i - 1]][flag];
       const cur = PLAN_LIMITS[ORDER[i]][flag];
       assert(!(prev && !cur), `${flag} is on for ${ORDER[i - 1]} but off for ${ORDER[i]}`);
     }
   }
-  return "8 flags checked";
+  return "9 flags checked";
 });
 
 console.log("\n▶ Feature boundaries match the gates");
@@ -180,9 +180,9 @@ check("Free tier retains core backups while operational/governance features star
   assert(freeFeatures.some((f) => /offline json & csv/i.test(f)), "Free missing offline export/import");
 
   // Operational/governance features moved to Starter
-  assert(!freeFeatures.some((f) => /uptime monitoring/i.test(f)), "Free still advertises Uptime Monitoring");
+  assert(!freeFeatures.some((f) => /(?:uptime|store & app) monitoring/i.test(f)), "Free still advertises Uptime Monitoring");
   assert(!freeFeatures.some((f) => /team roles/i.test(f)), "Free still advertises Team roles & audit log");
-  assert(starterFeatures.some((f) => /uptime monitoring/i.test(f)), "Starter missing Uptime Monitoring");
+  assert(starterFeatures.some((f) => /(?:uptime|store & app) monitoring/i.test(f)), "Starter missing Uptime Monitoring");
   assert(starterFeatures.some((f) => /team roles/i.test(f)), "Starter missing Team roles & audit log");
 
   return "Free retains core backups; Uptime & Team roles unlock at Starter";
@@ -240,6 +240,11 @@ check("A capability the gates grant is advertised on the tier that unlocks it", 
     cloudSync: /cloud|drive|dropbox/i,
     marketingBackup: /klaviyo|mailchimp/i,
     metafieldBackup: /metafield/i,
+    ga4Monitoring: /ga4|tag manager/i,
+    uptimeMonitoring: /store & app monitoring|uptime/i,
+    qaSuites: /automated qa/i,
+    teamRoles: /team roles/i,
+    marketingFlows: /flow/i,
   };
   const missing = [];
   for (const [flag, pattern] of Object.entries(COPY)) {

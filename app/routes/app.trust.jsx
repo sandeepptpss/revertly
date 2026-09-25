@@ -71,7 +71,7 @@ export default function TrustCenterPage() {
       standard: "AES-256-GCM Authenticated",
       status: "ACTIVE",
       description:
-        "All API credentials, OAuth refresh tokens, and customer vault archives are encrypted with 256-bit Galois/Counter Mode before being stored in the database.",
+        "All API credentials and OAuth refresh tokens for connected services are encrypted with 256-bit Galois/Counter Mode before being stored in the database.",
       icon: <LockIcon size={20} color="#16a34a" />,
     },
     {
@@ -111,7 +111,7 @@ export default function TrustCenterPage() {
       standard: "Merchant-Owned Cloud Sync",
       status: cloudSyncConnected ? `CONNECTED (${cloudSyncProvider})` : "READY TO CONNECT",
       description:
-        "Zero vendor lock-in: Automatically exports encrypted snapshot archives directly to your personal Google Drive or Dropbox storage.",
+        "Zero vendor lock-in: Automatically exports snapshot archives directly to your personal Google Drive or Dropbox storage.",
       icon: <DatabaseIcon size={20} color={cloudSyncConnected ? "#16a34a" : "#2563eb"} />,
     },
   ];
@@ -168,7 +168,7 @@ export default function TrustCenterPage() {
       </div>
 
       <Banner status="info" style={{ marginBottom: "24px" }}>
-        <strong>Enterprise Protection Guarantee:</strong> Restorely enforces bank-grade AES-256-GCM encryption at rest and TLS 1.3 transport security. Your backup data and customer archives are completely isolated and accessible only to authorized accounts.
+        <strong>Protection Guarantee:</strong> Revertly encrypts the credentials it holds for your connected services with AES-256-GCM and serves every page over HTTPS with HSTS. Your backup data and customer archives are isolated to your store and accessible only to authorized accounts.
       </Banner>
 
       {/* Security Controls Grid */}
@@ -231,7 +231,7 @@ export default function TrustCenterPage() {
           Authorized Sub-Processors &amp; Infrastructure
         </h2>
         <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 16px 0" }}>
-          Under GDPR Article 28, Restorely maintains complete transparency regarding third-party hosting and data transmission partners.
+          Under GDPR Article 28, Revertly maintains complete transparency regarding third-party hosting and data transmission partners.
         </p>
 
         <div style={{ overflowX: "auto" }}>
@@ -313,7 +313,7 @@ export default function TrustCenterPage() {
 
             <div style={{ fontSize: "13px", color: "#334155", lineHeight: "1.6" }}>
               <p>
-                <strong>This Data Processing Addendum (&ldquo;DPA&rdquo;)</strong> is entered into by and between <strong>Restorely Data Protection Office</strong> (&ldquo;Data Processor&rdquo;) and <strong>{shop}</strong> (&ldquo;Data Controller&rdquo;), effective as of <strong>{installedDate}</strong>.
+                <strong>This Data Processing Addendum (&ldquo;DPA&rdquo;)</strong> is entered into by and between <strong>Revertly Data Protection Office</strong> (&ldquo;Data Processor&rdquo;) and <strong>{shop}</strong> (&ldquo;Data Controller&rdquo;), effective as of <strong>{installedDate}</strong>.
               </p>
 
               <h4 style={{ fontSize: "14px", fontWeight: 700, margin: "14px 0 6px 0", color: "#0f172a" }}>
@@ -327,7 +327,7 @@ export default function TrustCenterPage() {
                 2. Technical &amp; Organizational Measures (TOMs)
               </h4>
               <ul style={{ paddingLeft: "20px", margin: "6px 0" }}>
-                <li><strong>Encryption at Rest:</strong> All stored access tokens, API credentials, and archived customer fields are encrypted using AES-256-GCM.</li>
+                <li><strong>Encryption at Rest:</strong> All stored access tokens and API credentials are encrypted using AES-256-GCM.</li>
                 <li><strong>Encryption in Transit:</strong> All HTTP data transmissions are strictly protected using TLS 1.3 with 2-year HSTS preload directives.</li>
                 <li><strong>Role-Based Access Control:</strong> Strict least-privilege model restricting employee access to production databases.</li>
                 <li><strong>Audit Logging:</strong> All backup, restore, and configuration operations are recorded in an immutable audit trail.</li>
@@ -343,7 +343,7 @@ export default function TrustCenterPage() {
               <div style={{ marginTop: "20px", padding: "12px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
                 <div style={{ fontWeight: 600, color: "#0f172a", marginBottom: "4px" }}>Execution &amp; Certification:</div>
                 <div><strong>Data Controller:</strong> {shop}</div>
-                <div><strong>Data Processor:</strong> Restorely Security &amp; Compliance Office</div>
+                <div><strong>Data Processor:</strong> Revertly Security &amp; Compliance Office</div>
                 <div><strong>Verification ID:</strong> DPA-{shop.replace(".myshopify.com", "").toUpperCase()}-{installedDate.replace(/-/g, "")}</div>
               </div>
             </div>

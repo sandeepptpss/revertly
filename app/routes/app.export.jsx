@@ -126,8 +126,18 @@ export const loader = async ({ request }) => {
   if (type === "themes_json") {
     let themeData = null;
     if (isSnapshot) {
+      // A theme backup the store already holds is its own data and stays
+      // exportable on any plan ("backups already stored are kept").
       themeData = targetRp.themeData || null;
     } else {
+      // Capturing the live theme is the theme-backup feature itself (Growth+).
+      const themeAccess = await checkFeatureAccess(shop, "themes");
+      if (!themeAccess.allowed) {
+        return new Response(
+          JSON.stringify({ error: "Live theme backups are included from the Growth plan." }),
+          { status: 403, headers: { "Content-Type": "application/json; charset=utf-8" } },
+        );
+      }
       themeData = await fetchThemeBackup(admin);
     }
 
@@ -403,9 +413,11 @@ export const loader = async ({ request }) => {
   // them only for entitled stores. An unentitled store still gets every other
   // asset rather than a failed export.
   const metafieldAccess = await checkFeatureAccess(shop, "metafieldBackup");
+  // Theme files likewise ride along only for stores with theme backup (Growth+).
+  const themeAccess = await checkFeatureAccess(shop, "themes");
 
   const [theme, collections, pages, menus, blogData, metafieldDoc] = await Promise.all([
-    fetchThemeBackup(admin),
+    themeAccess.allowed ? fetchThemeBackup(admin) : Promise.resolve(null),
     fetchCollectionsBackup(admin),
     fetchPagesBackup(admin),
     fetchMenusBackup(admin),

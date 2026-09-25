@@ -1260,10 +1260,10 @@ export default function Settings() {
                         >
                           <div>
                             <strong style={{ fontSize: "14px", color: "var(--rv-text)", display: "block" }}>
-                              Auto-Push New Snapshots
+                              Auto-Push Scheduled Backups
                             </strong>
                             <span style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                              Automatically push every new restore point to cloud storage.
+                              Automatically push every scheduled backup to cloud storage. Push any other restore point with Sync Cloud.
                             </span>
                           </div>
                           <div className={`rv-switch ${!hasCloudSyncAccess ? "disabled" : ""}`}>

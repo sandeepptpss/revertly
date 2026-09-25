@@ -11,6 +11,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import prisma from "./db.server.js";
 import { getOrCreateSettings, sendIncidentAlert } from "./monitor.server.js";
+import { checkFeatureAccess } from "./billing.server.js";
 import { SERVICE_TYPES } from "./monitoring.constants.js";
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -266,11 +267,28 @@ export async function runDueServiceChecks() {
   const now = new Date();
   const services = await prisma.monitoredService.findMany();
 
-  const due = services.filter((s) => {
-    if (!s.lastCheckAt) return true;
-    const nextDue = new Date(s.lastCheckAt.getTime() + (s.checkIntervalMinutes || 5) * 60 * 1000);
-    return nextDue <= now;
-  });
+  // Uptime monitoring is a Starter-and-above capability. Services a store set
+  // up before downgrading stay on file, but are neither probed nor alerted on
+  // until the store is back on a plan that includes monitoring.
+  const entitlement = new Map();
+  const isEntitled = async (shop) => {
+    if (!entitlement.has(shop)) {
+      const allowed = await checkFeatureAccess(shop, "uptimeMonitoring")
+        .then((r) => r.allowed)
+        .catch(() => false);
+      entitlement.set(shop, allowed);
+    }
+    return entitlement.get(shop);
+  };
+
+  const due = [];
+  for (const s of services) {
+    if (s.lastCheckAt) {
+      const nextDue = new Date(s.lastCheckAt.getTime() + (s.checkIntervalMinutes || 5) * 60 * 1000);
+      if (nextDue > now) continue;
+    }
+    if (await isEntitled(s.shop)) due.push(s);
+  }
 
   const results = [];
   for (const service of due) {

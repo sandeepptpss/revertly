@@ -1,5 +1,5 @@
 /**
- * Enterprise Cryptography Layer for Restorely / Revertly
+ * Enterprise Cryptography Layer for Revertly
  * 
  * Provides AES-256-GCM encryption at rest for sensitive credentials
  * (Shopify access tokens, ESP keys, Cloud OAuth tokens, and Customer PII).

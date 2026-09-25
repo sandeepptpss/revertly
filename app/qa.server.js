@@ -6,7 +6,7 @@
  * suite that always passes would be worse than none at all.
  */
 import prisma from "./db.server.js";
-import { getEffectiveLimits } from "./billing.server.js";
+import { getEffectiveLimits, checkFeatureAccess } from "./billing.server.js";
 import { listCloudBackups, isProviderConfigured } from "./cloudSync.server.js";
 
 const PASS = "PASS";
@@ -637,6 +637,10 @@ export async function runDueQaSuites() {
 
   for (const { shop } of shops) {
     try {
+      // Automated QA is a Starter-and-above capability.
+      const access = await checkFeatureAccess(shop, "qaSuites");
+      if (!access.allowed) continue;
+
       const recent = await prisma.qaTestRun.findFirst({
         where: { shop, testedAt: { gte: dayAgo } },
         select: { id: true },

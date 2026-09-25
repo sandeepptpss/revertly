@@ -11,6 +11,7 @@ import { runDueServiceChecks } from "./uptime.server.js";
 import { runDueQaSuites } from "./qa.server.js";
 import { checkFeatureAccess } from "./billing.server.js";
 import { sweepStalledSyncJobs } from "./sync.server.js";
+import { runDueTagChecks } from "./ga4Monitor.server.js";
 
 /**
  * Computes the next scheduled backup timestamp based on cadence and UTC preferred time
@@ -62,7 +63,12 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
   }
 
   const timestampStr = now.toISOString().slice(0, 16).replace("T", " ");
-  const backupName = `Automated Daily Backup - ${timestampStr} UTC`;
+  // Named for the schedule that actually ran — every backup used to be called
+  // "Daily", including twice-daily and weekly ones. The "Automated … Backup -"
+  // shape is kept because the restore-point source migration keys on it.
+  const scheduleLabel =
+    { TWICE_DAILY: "Twice-Daily", WEEKLY: "Weekly" }[settings.autoBackupSchedule] || "Daily";
+  const backupName = `Automated ${scheduleLabel} Backup - ${timestampStr} UTC`;
 
   const themeCheck = await checkFeatureAccess(shop, "themes");
   const metafieldCheck = await checkFeatureAccess(shop, "metafieldBackup");
@@ -70,6 +76,7 @@ export async function runScheduledBackupForShop(shop, { force = false, source = 
   const backupRes = await createMultiResourceRestorePoint({
     admin,
     shop,
+    source: "SCHEDULED",
     name: backupName,
     description: `Automated ${settings.autoBackupSchedule.toLowerCase()} snapshot executed automatically by Revertly Guardian (${source}).`,
     options: {
@@ -250,7 +257,7 @@ let schedulerTimer = null;
  * Exported so the secured cron endpoints can drive the same code path.
  */
 export async function runAllDueJobs() {
-  const [backups, uptime, qa, stalledSyncJobs] = await Promise.all([
+  const [backups, uptime, qa, stalledSyncJobs, ga4] = await Promise.all([
     withJobLock("backups:sweep", 30 * 60 * 1000, () => runDueAutomatedBackups()).catch((err) => ({
       error: err?.message || String(err),
     })),
@@ -263,9 +270,12 @@ export async function runAllDueJobs() {
     withJobLock("sync:sweep-stalled", 10 * 60 * 1000, () => sweepStalledSyncJobs()).catch((err) => ({
       error: err?.message || String(err),
     })),
+    withJobLock("ga4:sweep", 15 * 60 * 1000, () => runDueTagChecks()).catch((err) => ({
+      error: err?.message || String(err),
+    })),
   ]);
 
-  return { backups, uptime, qa, stalledSyncJobs };
+  return { backups, uptime, qa, stalledSyncJobs, ga4 };
 }
 
 /**

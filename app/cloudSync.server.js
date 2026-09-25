@@ -565,6 +565,12 @@ export async function importBackupFromCloud(shop, fileId) {
   // Create a new restore point from the imported data. It is immediately
   // usable, so it must land as READY — leaving it at the CREATING default
   // would make it look like a stuck backup in the UI.
+  // A cloud import is the merchant's own backup: it counts toward the plan's
+  // restore-point allowance and is never rotated out.
+  const { reserveRestorePointSlot, restorePointLimitMessage } = await import("./backup.server.js");
+  const slot = await reserveRestorePointSlot(shop, { source: "MANUAL" });
+  if (!slot.allowed) throw new Error(restorePointLimitMessage(slot.limit));
+
   const newRp = await prisma.restorePoint.create({
     data: {
       shop,

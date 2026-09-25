@@ -45,6 +45,18 @@ import {
  * checked in BOTH the loader (page access) and the action (write access),
  * because a route guard on the page alone would not stop a direct POST.
  */
+const TICKET_PRIORITY_WEIGHT = { URGENT: 3, HIGH: 2, NORMAL: 1 };
+const OPEN_TICKET_STATUSES = new Set(["OPEN", "IN_PROGRESS"]);
+function compareSupportTickets(a, b) {
+  const open = Number(OPEN_TICKET_STATUSES.has(b.status)) - Number(OPEN_TICKET_STATUSES.has(a.status));
+  if (open) return open;
+  const priority = (TICKET_PRIORITY_WEIGHT[b.priority] || 0) - (TICKET_PRIORITY_WEIGHT[a.priority] || 0);
+  if (priority) return priority;
+  const enterprise = Number(b.planTier === "enterprise") - Number(a.planTier === "enterprise");
+  if (enterprise) return enterprise;
+  return new Date(b.createdAt) - new Date(a.createdAt);
+}
+
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -176,7 +188,9 @@ export const loader = async ({ request }) => {
 
   return {
     merchants: rows,
-    tickets: supportTickets.map((t) => ({
+    // The support queue: open work first, then by priority, then Enterprise
+    // (whose plan includes a priority queue) ahead of other plans, then newest.
+    tickets: [...supportTickets].sort(compareSupportTickets).map((t) => ({
       id: t.id,
       shop: t.shop,
       subject: t.subject,

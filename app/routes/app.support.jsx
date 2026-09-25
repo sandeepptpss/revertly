@@ -175,13 +175,17 @@ export const action = async ({ request }) => {
 
   try {
     const isEmergency = priority === "URGENT";
+    // Enterprise includes a priority support queue: its tickets are raised to
+    // at least HIGH, and the admin queue (app.admin.jsx) serves them ahead of
+    // other plans at the same priority.
+    const effectivePriority = planTier === "enterprise" && priority === "NORMAL" ? "HIGH" : priority;
 
     const ticket = await prisma.supportTicket.create({
       data: {
         shop,
         subject,
         category,
-        priority,
+        priority: effectivePriority,
         isEmergency,
         planTier,
         message,
@@ -211,7 +215,7 @@ export const action = async ({ request }) => {
         status: ticket.status,
       },
       emailSent: emailResult.success,
-      message: `Support ticket #${ticket.id} created successfully! Our priority engineering support team has been notified at sandeepptpss@gmail.com and will respond shortly.`,
+      message: `Support ticket #${ticket.id} created successfully! Our support team has been notified and will respond shortly.${planTier === "enterprise" ? " As an Enterprise store, your ticket is in the priority queue." : ""}`,
     };
   } catch (err) {
     console.error("[Support] Failed to create support ticket:", err);
@@ -331,6 +335,7 @@ export default function Support() {
               Merchant Help &amp; Technical Support
             </strong>
             <span className="rv-badge rv-badge-success">Response SLA: Under 24h</span>
+            {planTier === "enterprise" && <span className="rv-badge rv-badge-info">Priority support queue</span>}
             <span className="rv-badge rv-badge-neutral" style={{ textTransform: "capitalize" }}>
               Store Plan: {planTier}
             </span>
@@ -507,7 +512,7 @@ export default function Support() {
                   </h4>
 
                   <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#374151", lineHeight: 1.5 }}>
-                    Your request has been logged and an email notification has been dispatched to our support engineering team at <strong>sandeepptpss@gmail.com</strong>.
+                    Your request has been logged and our support team has been notified by email.
                   </p>
 
                   <div

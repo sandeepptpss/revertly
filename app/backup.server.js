@@ -431,6 +431,53 @@ export async function calculateStoreStorageUsage(shop) {
 }
 
 /**
+ * Makes room for one more restore point inside the plan's allowance, and says
+ * whether it may be created.
+ *
+ * Every restore point counts toward the allowance. The oldest automatic ones
+ * (scheduled, theme-publish, baseline, pre-restore) are deleted to make room;
+ * the merchant's own are never deleted here. Before this, only manual creation
+ * checked the allowance, so the automatic paths filled a Free store's
+ * "2 restore points" with a week of daily backups.
+ *
+ * A pre-restore safety point is always allowed: it is the undo for a restore
+ * that is about to run, and it rotates out like any automatic point later.
+ */
+export async function reserveRestorePointSlot(shop, { source = "MANUAL" } = {}) {
+  const { getEffectiveLimits, AUTOMATIC_RESTORE_POINT_SOURCES } = await import("./billing.server.js");
+  const { restorePoints: limit } = await getEffectiveLimits(shop);
+  if (limit === Infinity) return { allowed: true, limit, rotated: 0 };
+
+  let count = await prisma.restorePoint.count({ where: { shop } });
+  let rotated = 0;
+  while (count >= limit) {
+    const oldest = await prisma.restorePoint.findFirst({
+      where: {
+        shop,
+        source: { in: AUTOMATIC_RESTORE_POINT_SOURCES },
+        status: { notIn: ["CREATING", "RESTORING"] },
+      },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    if (!oldest) break;
+    // Decouple related rollback jobs first so the audit trail is preserved,
+    // exactly as the retention policy below does.
+    await prisma.rollbackJob.updateMany({ where: { restorePointId: oldest.id }, data: { restorePointId: null } });
+    await prisma.restorePoint.delete({ where: { id: oldest.id } });
+    count -= 1;
+    rotated += 1;
+  }
+
+  return { allowed: count < limit || source === "PRE_RESTORE", limit, count, rotated };
+}
+
+/** The message shown when a store's own restore points fill its allowance. */
+export function restorePointLimitMessage(limit) {
+  return `Your plan's allowance of ${limit} restore point${limit === 1 ? "" : "s"} is full of your own backups. Delete one, or upgrade on Plans & Billing, to create another.`;
+}
+
+/**
  * Enforces backup retention policy based on plan limits.
  * Prunes RestorePoints and ChangeEvents older than the plan's retention window.
  * Enterprise = 365 days, Business = 180 days, Growth = 90 days, etc.
@@ -922,9 +969,11 @@ export async function restoreThemeFilesWithSafety({
     const currentThemeData = await fetchThemeBackup(admin);
     if (currentThemeData?.activeTheme) {
       const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      await reserveRestorePointSlot(shop, { source: "PRE_RESTORE" });
       const safetyPoint = await prisma.restorePoint.create({
         data: {
           shop,
+          source: "PRE_RESTORE",
           name: `Pre-Rollback Safety Snapshot (${timeStr})`,
           description: `Auto-saved before restoring ${targetFiles.length} files to ${themeName || "Live Theme"}. Click Restore on this snapshot to undo if needed.`,
           status: "READY",
@@ -3475,6 +3524,7 @@ export async function createMultiResourceRestorePoint({
   description = "",
   backupType: explicitBackupType = null,
   themeId = null,
+  source = "MANUAL",
   options = {
     includeProducts: true,
     includeThemes: true,
@@ -3492,6 +3542,12 @@ export async function createMultiResourceRestorePoint({
   // Determine primary backup type
   const backupType = explicitBackupType || inferBackupType(options);
 
+  // 0. Stay inside the plan's restore-point allowance.
+  const slot = await reserveRestorePointSlot(shop, { source });
+  if (!slot.allowed) {
+    return { success: false, limitReached: true, message: restorePointLimitMessage(slot.limit) };
+  }
+
   // 1. Create the pending restore point
   const rp = await prisma.restorePoint.create({
     data: {
@@ -3500,6 +3556,7 @@ export async function createMultiResourceRestorePoint({
       description,
       status: "CREATING",
       backupType,
+      source,
     },
   });
 
@@ -3957,6 +4014,22 @@ export async function backupMetafields({ admin, shop, name = null, description =
 // ============================================================================
 
 /**
+ * Keeps a vault table within the plan's allowance: the newest `cap` rows stay
+ * and the rest are removed. The vault is a rolling window of recent records —
+ * without this, each sync added the newest orders on top of every older one
+ * and "2,500 orders" grew without limit. Only called from a sync, which only
+ * runs while the plan includes the vault, so a downgraded store's archive is
+ * never trimmed here.
+ */
+async function pruneArchiveToCap(model, shop, cap, orderBy) {
+  if (!Number.isFinite(cap) || cap <= 0) return 0;
+  const overflow = await prisma[model].findMany({ where: { shop }, orderBy, skip: cap, select: { id: true } });
+  if (overflow.length === 0) return 0;
+  await prisma[model].deleteMany({ where: { id: { in: overflow.map((r) => r.id) } } });
+  return overflow.length;
+}
+
+/**
  * Synchronizes orders from Shopify Admin GraphQL into the encrypted OrderArchive vault
  */
 export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
@@ -3985,6 +4058,18 @@ export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
                   currencyCode
                 }
               }
+              # The tax audit export needs the figures a return is built from,
+              # not just the order total.
+              subtotalPriceSet { shopMoney { amount } }
+              totalDiscountsSet { shopMoney { amount } }
+              totalShippingPriceSet { shopMoney { amount } }
+              totalTaxSet { shopMoney { amount } }
+              taxesIncluded
+              taxLines {
+                title
+                ratePercentage
+                priceSet { shopMoney { amount } }
+              }
               customer {
                 id
                 displayName
@@ -3996,7 +4081,9 @@ export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
                 address1
                 city
                 province
+                provinceCode
                 country
+                countryCodeV2
                 zip
               }
               lineItems(first: 30) {
@@ -4035,6 +4122,14 @@ export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
         const totalPrice = ord.totalPriceSet?.shopMoney?.amount || "0.00";
         const currency = ord.totalPriceSet?.shopMoney?.currencyCode || "USD";
         const processedAt = ord.processedAt ? new Date(ord.processedAt) : ord.createdAt ? new Date(ord.createdAt) : new Date();
+
+        // Every sync re-reads the newest orders, so most are already archived.
+        // Only an order seen for the first time may add to its customer's
+        // order count — incrementing on every sync inflated it without end.
+        const alreadyArchived = await prisma.orderArchive.findUnique({
+          where: { shop_orderId: { shop, orderId } },
+          select: { id: true },
+        });
 
         await prisma.orderArchive.upsert({
           where: { shop_orderId: { shop, orderId } },
@@ -4088,7 +4183,7 @@ export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
             },
             update: {
               email: customerEmail || undefined,
-              ordersCount: { increment: 1 },
+              ...(alreadyArchived ? {} : { ordersCount: { increment: 1 } }),
               customerData: {
                 ...ord.customer,
                 defaultAddress: ord.shippingAddress || null,
@@ -4104,7 +4199,8 @@ export async function syncOrdersVault(admin, shop, { maxOrders = 100 } = {}) {
       cursor = json.data?.orders?.pageInfo?.endCursor || null;
     }
 
-    return { success: true, count: savedCount };
+    const pruned = await pruneArchiveToCap("orderArchive", shop, maxOrders, [{ processedAt: "desc" }, { id: "desc" }]);
+    return { success: true, count: savedCount, pruned };
   } catch (err) {
     console.error("syncOrdersVault error:", err?.message || err);
     return { success: false, message: err?.message || "Failed to sync orders." };
@@ -4192,6 +4288,8 @@ export async function syncCustomersVault(admin, shop, { maxCustomers = 100 } = {
       cursor = json.data?.customers?.pageInfo?.endCursor || null;
     }
 
+    await pruneArchiveToCap("customerArchive", shop, maxCustomers, [{ updatedAt: "desc" }, { id: "desc" }]);
+
     return { success: true, count: savedCount };
   } catch (err) {
     console.error("syncCustomersVault error:", err?.message || err);
@@ -4203,6 +4301,9 @@ export async function syncCustomersVault(admin, shop, { maxCustomers = 100 } = {
  * Converts order archives into a clean, accountant-ready CSV string with Excel UTF-8 BOM
  */
 export function generateOrdersCsv(orders = []) {
+  // The tax columns come from each order's own Shopify figures. Orders
+  // archived before these fields were captured have them blank until the
+  // vault is synced again.
   const headers = [
     "Order Number",
     "Processed At",
@@ -4210,18 +4311,29 @@ export function generateOrdersCsv(orders = []) {
     "Customer Email",
     "Financial Status",
     "Fulfillment Status",
+    "Subtotal",
+    "Discounts",
+    "Shipping",
+    "Total Tax",
+    "Taxes Included In Prices",
+    "Tax Breakdown",
     "Total Price",
     "Currency",
     "Line Items Count",
     "Shipping City",
+    "Shipping Province",
+    "Shipping Postal Code",
     "Shipping Country",
   ];
 
+  const money = (set) => set?.shopMoney?.amount ?? "";
   const rows = orders.map((o) => {
     const raw = o.orderData || {};
     const itemsCount = raw.lineItems?.nodes?.length || 0;
-    const city = raw.shippingAddress?.city || "";
-    const country = raw.shippingAddress?.country || "";
+    const address = raw.shippingAddress || {};
+    const taxBreakdown = (raw.taxLines || [])
+      .map((t) => `${t.title || "Tax"}${t.ratePercentage != null ? ` ${t.ratePercentage}%` : ""}: ${money(t.priceSet)}`)
+      .join("; ");
 
     return [
       o.orderNumber,
@@ -4230,11 +4342,19 @@ export function generateOrdersCsv(orders = []) {
       o.customerEmail || "",
       o.financialStatus || "",
       o.fulfillmentStatus || "",
+      money(raw.subtotalPriceSet),
+      money(raw.totalDiscountsSet),
+      money(raw.totalShippingPriceSet),
+      money(raw.totalTaxSet),
+      raw.taxesIncluded == null ? "" : raw.taxesIncluded ? "Yes" : "No",
+      taxBreakdown,
       o.totalPrice,
       o.currency,
       itemsCount,
-      city,
-      country,
+      address.city || "",
+      address.provinceCode || address.province || "",
+      address.zip || "",
+      address.countryCodeV2 || address.country || "",
     ].map((val) => `"${String(val).replace(/"/g, '""')}"`);
   });
 
@@ -4478,7 +4598,12 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
       ? `(Imported Archive) ${data.description}`
       : `Imported from external backup file. Original date: ${data.createdAt || data.exportedAt || "Unknown"}. Source shop: ${data.shop || "External"}.`;
 
-    // 1. Create the restore point record in DB
+    // 1. Create the restore point record in DB — an import is the
+    // merchant's own backup, so it counts toward the allowance like one.
+    const slot = await reserveRestorePointSlot(shop, { source: "MANUAL" });
+    if (!slot.allowed) {
+      return { success: false, limitReached: true, message: restorePointLimitMessage(slot.limit) };
+    }
     const restorePoint = await prisma.restorePoint.create({
       data: {
         shop,
@@ -4570,8 +4695,14 @@ export async function importBackupPayload({ admin, shop, payload, mode = "SAVE_A
         liveMetafields = metafieldRestore.summary?.metafieldsWritten || 0;
       }
 
-      // Restore theme staging if theme files present
-      if (theme && Array.isArray(theme.files) && theme.files.length > 0) {
+      // Restore theme staging if theme files present. Restoring a theme is
+      // the Growth-and-above theme feature, exactly as it is from a restore
+      // point (app.restore-points_.$id.jsx, restore_theme); without it the
+      // archive's theme stays saved in the restore point, just not deployed.
+      const { checkFeatureAccess } = await import("./billing.server.js");
+      const themeRestoreAccess = await checkFeatureAccess(shop, "themes");
+      summary.themeSkippedForPlan = Boolean(theme?.files?.length) && !themeRestoreAccess.allowed;
+      if (themeRestoreAccess.allowed && theme && Array.isArray(theme.files) && theme.files.length > 0) {
         // Must be "draft": an import may carry another store's theme, so the
         // files go to a new unpublished theme for review. `mode` defaults to
         // "live", which would overwrite the merchant's published storefront.

@@ -1,31 +1,11 @@
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import {
-  PLAN_STARTER,
-  PLAN_GROWTH,
-  PLAN_BUSINESS,
-  PLAN_ENTERPRISE,
-  PLAN_STARTER_ANNUAL,
-  PLAN_GROWTH_ANNUAL,
-  PLAN_BUSINESS_ANNUAL,
-  PLAN_ENTERPRISE_ANNUAL,
   INTERVAL_MONTHLY,
   INTERVAL_ANNUAL,
-  PLAN_PRO,
+  planInfoForSubscriptionName,
+  customStatusForActiveSubscription,
 } from "../billing.server.js";
-
-// Exact (case-insensitive) map from a Shopify subscription's name to our internal plan id and interval.
-const NAME_TO_PLAN_INFO = new Map([
-  [PLAN_STARTER.toLowerCase(), { planId: "starter", interval: INTERVAL_MONTHLY }],
-  [PLAN_STARTER_ANNUAL.toLowerCase(), { planId: "starter", interval: INTERVAL_ANNUAL }],
-  [PLAN_GROWTH.toLowerCase(), { planId: "growth", interval: INTERVAL_MONTHLY }],
-  [PLAN_GROWTH_ANNUAL.toLowerCase(), { planId: "growth", interval: INTERVAL_ANNUAL }],
-  [PLAN_PRO.toLowerCase(), { planId: "growth", interval: INTERVAL_MONTHLY }],
-  [PLAN_BUSINESS.toLowerCase(), { planId: "business", interval: INTERVAL_MONTHLY }],
-  [PLAN_BUSINESS_ANNUAL.toLowerCase(), { planId: "business", interval: INTERVAL_ANNUAL }],
-  [PLAN_ENTERPRISE.toLowerCase(), { planId: "enterprise", interval: INTERVAL_MONTHLY }],
-  [PLAN_ENTERPRISE_ANNUAL.toLowerCase(), { planId: "enterprise", interval: INTERVAL_ANNUAL }],
-]);
 
 // Statuses that mean the subscription is permanently gone and the shop should
 // fall back to Free. Transient states (PENDING approval, a temporary FROZEN
@@ -52,16 +32,12 @@ export const action = async ({ request }) => {
     console.log(`[Revertly Webhook] Subscription "${name}" status changed to ${status} for ${shop}`);
 
     if (status === "ACTIVE") {
-      let planInfo = NAME_TO_PLAN_INFO.get(name.toLowerCase());
-      if (!planInfo && (name.toLowerCase().includes("enterprise plus") || name.toLowerCase().includes("custom enterprise"))) {
-        planInfo = { planId: "enterprise", interval: INTERVAL_MONTHLY };
-      }
-
+      // An ACTIVE subscription means the merchant is being charged. If the
+      // name matches no known plan (renamed or legacy tier), downgrading
+      // them to free would strip entitlements they are paying for, so leave
+      // the stored plan untouched and surface it for follow-up instead.
+      const planInfo = planInfoForSubscriptionName(name);
       if (!planInfo) {
-        // An ACTIVE subscription means the merchant is being charged. If the
-        // name matches no known plan (renamed or legacy tier), downgrading
-        // them to free would strip entitlements they are paying for, so leave
-        // the stored plan untouched and surface it for follow-up instead.
         console.error(
           `[Revertly Webhook] ACTIVE subscription "${name}" for ${shop} matches no known plan — leaving stored plan unchanged.`,
         );
@@ -69,7 +45,7 @@ export const action = async ({ request }) => {
       }
       const targetPlan = planInfo.planId;
 
-      let targetInterval = planInfo?.interval || INTERVAL_MONTHLY;
+      let targetInterval = planInfo.interval || INTERVAL_MONTHLY;
       const lineItemInterval = subscription?.line_items?.[0]?.plan?.pricing_details?.interval;
       if (lineItemInterval === "ANNUAL" || name.toLowerCase().includes("annual")) {
         targetInterval = INTERVAL_ANNUAL;
@@ -77,6 +53,12 @@ export const action = async ({ request }) => {
 
       const existing = await prisma.appSettings.findUnique({ where: { shop } });
       const alreadyUsedTrial = Boolean(existing?.hasUsedTrial);
+
+      // Only the dedicated custom plan accepts a custom offer; any other
+      // charge becoming active means a Shopify-billed custom plan was replaced.
+      const customStatus = customStatusForActiveSubscription(existing, planInfo.isCustom);
+      const customStatusChange =
+        existing && customStatus !== (existing.customPriceStatus || null) ? { customPriceStatus: customStatus } : {};
 
       await prisma.appSettings.upsert({
         where: { shop },
@@ -87,7 +69,6 @@ export const action = async ({ request }) => {
           billingInterval: targetInterval,
           hasUsedTrial: true,
           trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-          ...(existing?.customPriceStatus === "OFFERED" ? { customPriceStatus: "ACTIVE" } : {}),
         },
         update: {
           planId: targetPlan,
@@ -97,7 +78,7 @@ export const action = async ({ request }) => {
           // Only (re)start the trial-end estimate the first time this shop
           // ever activates a paid plan; later activations aren't a new trial.
           ...(alreadyUsedTrial ? {} : { trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }),
-          ...(existing?.customPriceStatus === "OFFERED" ? { customPriceStatus: "ACTIVE" } : {}),
+          ...customStatusChange,
         },
       });
 
@@ -106,6 +87,18 @@ export const action = async ({ request }) => {
       const existing = await prisma.appSettings.findUnique({ where: { shop } });
       if (existing?.customBillingMethod === "EXTERNAL" && existing?.customPriceStatus === "ACTIVE") {
         console.log(`[Revertly Webhook] Shop ${shop} is on an external contract — preserving Enterprise plan.`);
+        return new Response("OK", { status: 200 });
+      }
+
+      // Every plan change replaces the old subscription, and Shopify then
+      // reports the *old* one as CANCELLED — with no ordering guarantee
+      // against the new one's ACTIVE event. Only the subscription the store is
+      // actually on may downgrade it; a stale cancellation must not wipe out
+      // the plan that replaced it.
+      if (existing?.subscriptionId && subscriptionId && existing.subscriptionId !== subscriptionId) {
+        console.log(
+          `[Revertly Webhook] ${status} for replaced subscription ${subscriptionId} (current ${existing.subscriptionId}) on ${shop} — no plan change`,
+        );
         return new Response("OK", { status: 200 });
       }
 
@@ -118,7 +111,9 @@ export const action = async ({ request }) => {
           subscriptionId: null,
           billingInterval: INTERVAL_MONTHLY,
           circuitBreakerEnabled: false,
-          ...(existing?.customPriceStatus === "ACTIVE" ? { customPriceStatus: "CANCELLED" } : {}),
+          ...(existing?.customPriceStatus === "ACTIVE" && existing?.customBillingMethod !== "EXTERNAL"
+            ? { customPriceStatus: "CANCELLED" }
+            : {}),
         },
       });
 

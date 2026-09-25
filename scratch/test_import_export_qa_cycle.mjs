@@ -270,6 +270,14 @@ async function importFile(admin, fileContent, mode = "SAVE_AS_RESTORE_POINT") {
 
 async function run() {
   const admin = makeAdmin();
+  // Imports now count toward the plan's restore-point allowance, and this
+  // suite imports many archives in a row. Run the store on an unlimited plan
+  // (a sim_ subscription, so nothing reconciles it with Shopify).
+  await prisma.appSettings.upsert({
+    where: { shop: SHOP },
+    create: { shop: SHOP, planId: "enterprise", subscriptionId: "sim_enterprise_impexp_qa" },
+    update: { planId: "enterprise", subscriptionId: "sim_enterprise_impexp_qa" },
+  });
   console.log("=".repeat(78));
   console.log("  IMPORT & EXPORT HUB — END-TO-END QA CYCLE");
   console.log("=".repeat(78));
@@ -476,6 +484,7 @@ async function run() {
   await prisma.rollbackJob.deleteMany({ where: { shop: SHOP } }).catch(() => {});
   await prisma.restorePoint.deleteMany({ where: { shop: SHOP } });
   await prisma.productSnapshot.deleteMany({ where: { shop: SHOP } }).catch(() => {});
+  await prisma.appSettings.deleteMany({ where: { shop: SHOP } }).catch(() => {});
 
   console.log("\n" + "=".repeat(78));
   console.log(`  RESULT: ${pass} passed, ${fail} failed`);

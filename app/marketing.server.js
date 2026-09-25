@@ -306,15 +306,24 @@ async function fetchKlaviyo(apiKey, maxProfiles, includeFlows) {
 
   const flows = [];
   if (includeFlows) {
-    const flowJson = await klaviyoRequest(apiKey, "/flows/");
-    for (const node of flowJson?.data || []) {
-      flows.push({
-        id: node.id,
-        name: node.attributes?.name || "Untitled flow",
-        status: node.attributes?.status || null,
-        triggerType: node.attributes?.trigger_type || null,
-        raw: node,
-      });
+    // Flows are cursor-paginated like profiles. Reading only the first page
+    // silently dropped every flow after it from the backup.
+    let nextFlows = "/flows/";
+    let pages = 0;
+    while (nextFlows && pages < 100) {
+      const flowJson = await klaviyoRequest(apiKey, nextFlows);
+      for (const node of flowJson?.data || []) {
+        flows.push({
+          id: node.id,
+          name: node.attributes?.name || "Untitled flow",
+          status: node.attributes?.status || null,
+          triggerType: node.attributes?.trigger_type || null,
+          raw: node,
+        });
+      }
+      const nextUrl = flowJson?.links?.next;
+      nextFlows = nextUrl ? nextUrl.replace(KLAVIYO_API, "") : null;
+      pages += 1;
     }
   }
 
@@ -427,7 +436,15 @@ export async function backupMarketingProvider(shop, providerId) {
 
   // Infinity has no meaning to a fetch loop or a page size, so the unlimited
   // Enterprise cap becomes a large finite ceiling.
-  const maxProfiles = access.maxProfiles === Infinity ? 1_000_000 : access.maxProfiles;
+  // The allowance is per store, not per provider: a store connected to both
+  // Klaviyo and Mailchimp shares one cap between them, so what the other
+  // provider already holds comes off this capture's share.
+  const heldElsewhere =
+    access.maxProfiles === Infinity
+      ? 0
+      : await prisma.marketingProfile.count({ where: { shop, provider: { not: provider.id } } });
+  const maxProfiles =
+    access.maxProfiles === Infinity ? 1_000_000 : Math.max(0, access.maxProfiles - heldElsewhere);
   const includeFlows = access.flowsIncluded;
 
   let payload;
@@ -501,6 +518,21 @@ export async function backupMarketingProvider(shop, providerId) {
         capturedAt,
       },
     });
+  }
+
+  // Captures are upserts, so profiles that dropped out of the account (or
+  // past the cap) would otherwise pile up across runs. Keep this provider's
+  // newest captures within its share of the store's allowance.
+  if (Number.isFinite(maxProfiles)) {
+    const overflow = await prisma.marketingProfile.findMany({
+      where: { shop, provider: provider.id },
+      orderBy: [{ capturedAt: "desc" }, { id: "desc" }],
+      skip: maxProfiles,
+      select: { id: true },
+    });
+    if (overflow.length > 0) {
+      await prisma.marketingProfile.deleteMany({ where: { id: { in: overflow.map((r) => r.id) } } });
+    }
   }
 
   for (const flow of payload.flows) {
@@ -712,7 +744,7 @@ export async function restoreMarketingList(shop, listRowId) {
  * unsubscribed or cleaned contact would resubscribe someone who opted out,
  * which is both a compliance problem and not what "lost subscribers" means.
  */
-export async function reimportMarketingSubscribers(shop, listRowId, { limit = 500 } = {}) {
+export async function reimportMarketingSubscribers(shop, listRowId) {
   const access = await checkMarketingAccess(shop);
   if (!access.allowed) return { success: false, message: MARKETING_UPGRADE_MESSAGE };
 
@@ -725,11 +757,24 @@ export async function reimportMarketingSubscribers(shop, listRowId, { limit = 50
   const apiKey = decrypt(rawKey);
   if (!apiKey) return { success: false, message: `${provider.label} is not connected.` };
 
-  const candidates = await prisma.marketingProfile.findMany({
+  // Every captured profile, not the first 500: the old `take: 500` sent the
+  // same 500 people back on every run and never reached the rest. Only the
+  // columns the push needs are read.
+  const allCaptured = await prisma.marketingProfile.findMany({
     where: { shop, provider: row.provider, email: { not: null } },
-    take: limit,
     orderBy: { id: "asc" },
+    select: { email: true, firstName: true, lastName: true, phone: true, status: true, listIds: true },
   });
+
+  // Where the provider recorded membership (Mailchimp stores each profile's
+  // audience), only this list's former members go back into it. Klaviyo
+  // captures record none, so every captured subscriber is sent — the result
+  // message says so rather than implying a list-exact restore.
+  const memberKey = row.listType === "SEGMENT" ? String(row.listId).split(":")[0] : String(row.listId);
+  const membershipKnown = allCaptured.some((p) => Array.isArray(p.listIds) && p.listIds.length > 0);
+  const candidates = membershipKnown
+    ? allCaptured.filter((p) => Array.isArray(p.listIds) && p.listIds.map(String).includes(memberKey))
+    : allCaptured;
 
   const subscribed = candidates.filter((p) =>
     ["subscribed", "SUBSCRIBED", "opted_in"].includes(String(p.status || "")),
@@ -839,7 +884,7 @@ export async function reimportMarketingSubscribers(shop, listRowId, { limit = 50
     success: true,
     imported,
     skipped,
-    message: `Re-imported ${imported.toLocaleString()} subscriber(s) into "${row.name}". ${skipped} unsubscribed/cleaned profile(s) were skipped.${failures.length ? ` ${failures.length} address(es) were rejected by ${provider.label}.` : ""}`,
+    message: `Re-imported ${imported.toLocaleString()} subscriber(s) into "${row.name}". ${skipped} unsubscribed/cleaned profile(s) were skipped.${failures.length ? ` ${failures.length} address(es) were rejected by ${provider.label}.` : ""}${membershipKnown ? "" : ` ${provider.label} backups don't record which list each subscriber was on, so every captured subscriber was added to this list.`}`,
   };
 }
 

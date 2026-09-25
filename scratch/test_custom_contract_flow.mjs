@@ -88,9 +88,16 @@ async function runTests() {
       },
     });
 
+    // An OFFERED quota is a quote, not a paid entitlement, so it is not on
+    // the effective limits (billing.server.js, isCustomQuotaInForce) — read
+    // the status from the settings row itself.
+    const offeredRow = await prisma.appSettings.findUnique({ where: { shop: testShop } });
+    if (offeredRow.customPriceStatus !== "OFFERED") {
+      throw new Error(`Status in DB expected OFFERED, got ${offeredRow.customPriceStatus}`);
+    }
     limits = await getEffectiveLimits(testShop);
-    if (limits.customPriceStatus !== "OFFERED") {
-      throw new Error(`Status in DB expected OFFERED, got ${limits.customPriceStatus}`);
+    if (limits.isCustomLimit) {
+      throw new Error(`An OFFERED quota must not be in force, got products=${limits.products}`);
     }
     console.log("✓ Transition to SHOPIFY set status to OFFERED (merchant will see in-app approval card)\n");
 

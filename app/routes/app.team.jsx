@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { Link, useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { resolveActor, checkPermission, logAudit, assertNotLastOwner } from "../team.server.js";
 import { ROLES, PERMISSIONS, permissionsForRole, roleCan } from "../team.constants.js";
+import { checkFeatureAccess } from "../billing.server.js";
 import {
   ShieldCheckIcon,
   Trash2Icon,
@@ -31,17 +32,24 @@ export const loader = async ({ request }) => {
   const shop = session.shop;
 
   const actor = await resolveActor(shop, session);
+  // Team roles & the audit-log view start at Starter. Actions keep being
+  // recorded on every plan, so the history is all there after an upgrade.
+  const access = await checkFeatureAccess(shop, "teamRoles");
+  const teamLocked = !access.allowed;
 
   const [members, auditLogs] = await Promise.all([
     prisma.teamMember.findMany({ where: { shop }, orderBy: [{ role: "asc" }, { createdAt: "asc" }] }),
-    prisma.auditLog.findMany({ where: { shop }, orderBy: { createdAt: "desc" }, take: 50 }),
+    teamLocked
+      ? []
+      : prisma.auditLog.findMany({ where: { shop }, orderBy: { createdAt: "desc" }, take: 50 }),
   ]);
 
   return {
     members,
     auditLogs,
+    teamLocked,
     actor: { email: actor.email, role: actor.role, unlisted: Boolean(actor.unlisted) },
-    canManage: roleCan(actor.role, PERMISSIONS.TEAM_MANAGE),
+    canManage: roleCan(actor.role, PERMISSIONS.TEAM_MANAGE) && !teamLocked,
     rolePermissions: Object.fromEntries(ROLES.map((r) => [r, permissionsForRole(r)])),
   };
 };
@@ -55,6 +63,18 @@ export const action = async ({ request }) => {
 
     const perm = await checkPermission(shop, session, PERMISSIONS.TEAM_MANAGE);
     if (!perm.allowed) return { success: false, message: perm.message };
+
+    // Removing someone is always allowed — a store that downgraded must be
+    // able to take access away. Adding or re-roling people needs the plan.
+    if (intent !== "remove") {
+      const access = await checkFeatureAccess(shop, "teamRoles");
+      if (!access.allowed) {
+        return {
+          success: false,
+          message: "Team roles, permissions & audit log are included from the Starter plan. Upgrade on Plans & Billing to manage your team.",
+        };
+      }
+    }
 
     if (intent === "invite") {
       const email = formData.get("email")?.trim().toLowerCase();
@@ -182,7 +202,7 @@ const ROLE_TONE = {
 };
 
 export default function Team() {
-  const { members, auditLogs, actor, canManage, rolePermissions } = useLoaderData();
+  const { members, auditLogs, teamLocked, actor, canManage, rolePermissions } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const busy = fetcher.state !== "idle";
@@ -253,7 +273,20 @@ export default function Team() {
         )}
       </div>
 
-      {!canManage && (
+      {teamLocked ? (
+        <Banner
+          tone="info"
+          title="Team roles & audit log start at Starter"
+          action={
+            <Link to="/app/plan" className="rv-btn rv-btn-primary rv-btn-sm">
+              View Plans &amp; Billing →
+            </Link>
+          }
+        >
+          Inviting teammates, assigning roles and viewing the audit trail are included from the Starter plan.
+          Your store&apos;s activity is still being recorded, so the full trail is here when you upgrade.
+        </Banner>
+      ) : !canManage && (
         <Banner tone="info" title="Read-only view">
           Your role ({actor.role}) can view the team and audit trail but cannot change membership.
         </Banner>
@@ -432,7 +465,11 @@ export default function Team() {
           </span>
         </div>
         <div className="rv-card-body">
-          {auditLogs.length === 0 ? (
+          {teamLocked ? (
+            <EmptyState title="Audit trail is included from the Starter plan">
+              Every restore, backup and billing change is recorded. Upgrade to see who did what, and when.
+            </EmptyState>
+          ) : auditLogs.length === 0 ? (
             <EmptyState title="No recorded activity yet">
               Restores, backups, and team changes will appear here.
             </EmptyState>

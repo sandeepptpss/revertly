@@ -144,11 +144,14 @@ export const action = async ({ request }) => {
     if (intent === "seed_defaults") {
       const { seedDefaultDetectionRules } = await import("../monitor.server.js");
       const created = await seedDefaultDetectionRules(shop);
+      const activeCount = created.filter((r) => r.isActive).length;
       return {
         success: true,
-        message: created.length > 0
-          ? `Created ${created.length} recommended detection rules.`
-          : "Recommended rules are already configured.",
+        message: created.length === 0
+          ? "Recommended rules are already configured."
+          : activeCount < created.length
+            ? `Created ${created.length} recommended detection rules. ${activeCount} ${activeCount === 1 ? "is" : "are"} active — your plan's allowance — and the rest are paused until you switch one off or upgrade.`
+            : `Created ${created.length} recommended detection rules.`,
       };
     }
 

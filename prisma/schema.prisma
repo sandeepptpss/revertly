@@ -168,6 +168,10 @@ model RestorePoint {
   customerCount   Int       @default(0)
   status          String    @db.VarChar(50)  @default("CREATING") // CREATING, READY, RESTORING
   backupType      String    @default("FULL") @db.VarChar(50)      // FULL, PRODUCTS, THEMES, COLLECTIONS, PAGES, BLOGS, MENUS, METAFIELDS, VAULT
+  // Who created it. MANUAL (including imports) is never deleted to make room;
+  // the automatic sources rotate out oldest-first to keep a store within its
+  // plan's restore-point allowance (backup.server.js, reserveRestorePointSlot).
+  source          String    @default("MANUAL") @db.VarChar(20)    // MANUAL, SCHEDULED, THEME_PUBLISH, BASELINE, PRE_RESTORE
   snapshotData    Json?     // array of product snapshots
   themeData       Json?     // active theme metadata & critical file contents
   collectionData  Json?     // array of collections & ruleSets
@@ -249,6 +253,11 @@ model AppSettings {
   hasUsedTrial        Boolean  @default(false)
   trialEndsAt         DateTime?
   productLimitReachedAt DateTime?
+  // Shopify Partner development store. Refreshed on every token exchange
+  // (shopify.server.js afterAuth) and on each Plans & Billing load, so the
+  // entitlement gates — which run without an admin client — can grant the
+  // free Growth access the Plans page promises these stores.
+  isPartnerDevelopment  Boolean  @default(false)
   slackWebhookUrl       String?  @db.VarChar(500)
   circuitBreakerEnabled Boolean  @default(false)
   circuitBreakerThreshold Int    @default(50)   // percentage drop (e.g. 50%)
@@ -282,6 +291,20 @@ model AppSettings {
   customPriceAmount     Int?     // Custom monthly price in USD (e.g. 199, 249, 299)
   customBillingMethod   String?  @default("SHOPIFY") @db.VarChar(50) // SHOPIFY or EXTERNAL
   customPriceStatus     String?  @db.VarChar(50) // OFFERED, ACTIVE, CANCELLED
+  // GA4 / Google Tag Manager tag health (ga4Monitor.server.js). All optional:
+  // a null status means the store has never been checked. IDs keep the last
+  // detected value through MISSING/UNKNOWN checks so an alert can name the tag
+  // that disappeared. ga4AlertedAt vs ga4LastDetectedAt is what limits alerts
+  // to one per loss.
+  ga4Status             String?  @db.VarChar(20)  // DETECTED, MISSING, UNKNOWN
+  ga4MeasurementId      String?  @db.VarChar(255) // last detected G- IDs, comma-separated
+  gtmContainerId        String?  @db.VarChar(255) // last detected GTM- IDs, comma-separated
+  ga4DetectedIn         String?  @db.VarChar(20)  // STOREFRONT, THEME, BOTH
+  ga4StatusDetail       String?  @db.VarChar(500)
+  ga4LastCheckedAt      DateTime?
+  ga4LastDetectedAt     DateTime? // last time a tag was seen on the LIVE storefront
+  ga4AlertedAt          DateTime?
+  ga4NextCheckAt        DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

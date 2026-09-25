@@ -15,6 +15,7 @@ import {
 } from "../backup.server.js";
 import { checkRestorePointLimit, checkFeatureAccess, checkThemeAccess } from "../billing.server.js";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
+import { CloudArchiveBrowser } from "../components/CloudArchiveBrowser.jsx";
 import { syncRestorePointToCloud } from "../cloudSync.server.js";
 import {
   SaveIcon,
@@ -45,7 +46,7 @@ export const loader = async ({ request }) => {
   const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const [restorePoints, limitInfo, themeAccess, metafieldAccess, settings] = await Promise.all([
+  const [restorePoints, limitInfo, themeAccess, metafieldAccess, cloudAccess, settings] = await Promise.all([
     prisma.restorePoint.findMany({
       where: { shop },
       orderBy: { createdAt: "desc" },
@@ -70,6 +71,7 @@ export const loader = async ({ request }) => {
     checkRestorePointLimit(shop),
     checkThemeAccess(shop),
     checkFeatureAccess(shop, "metafieldBackup"),
+    checkFeatureAccess(shop, "cloudSync"),
     prisma.appSettings.findUnique({ where: { shop } }),
   ]);
 
@@ -105,6 +107,8 @@ export const loader = async ({ request }) => {
     metafieldPlan: metafieldAccess.plan,
     themes,
     cloudSyncConfig: {
+      // Restoring from Drive/Dropbox is part of Offsite Cloud Backup (Starter+).
+      allowed: cloudAccess.allowed,
       connected: Boolean(settings?.cloudSyncConnected),
       provider: settings?.cloudSyncProvider || "NONE",
       email: settings?.cloudSyncEmail || null,
@@ -571,7 +575,7 @@ function formatTime(date) {
 }
 
 export default function RestorePoints() {
-  const { restorePoints, limitInfo, hasThemeAccess, unlimitedThemes, hasMetafieldAccess, themes = [] } = useLoaderData();
+  const { restorePoints, limitInfo, hasThemeAccess, unlimitedThemes, hasMetafieldAccess, themes = [], cloudSyncConfig } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const activeIntent = fetcher.state !== "idle" ? fetcher.formData?.get("intent") : null;
@@ -1487,6 +1491,10 @@ export default function RestorePoints() {
           <span>Go to Import &amp; Export Hub</span>
         </Link>
       </div>
+
+      {cloudSyncConfig?.allowed && cloudSyncConfig.connected && (
+        <CloudArchiveBrowser provider={cloudSyncConfig.provider} folder={cloudSyncConfig.folder} />
+      )}
 
       {/* ── Restore Points List / Empty State ── */}
       {filteredRestorePoints.length === 0 ? (

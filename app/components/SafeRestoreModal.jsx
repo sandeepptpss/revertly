@@ -20,7 +20,11 @@ export default function SafeRestoreModal({
   const [restorePrices, setRestorePrices] = useState(true);
   const [restoreTags, setRestoreTags] = useState(true);
   const [restoreStatus, setRestoreStatus] = useState(true);
-  const [preserveInventory, setPreserveInventory] = useState(true);
+  // Product restores never write inventory (rollbackProductFields has no
+  // inventory path), so live stock is always preserved. This used to be a
+  // checkbox whose unticked state warned it "may overwrite" stock — a choice
+  // that did nothing. It is kept as a constant for the submitted options.
+  const preserveInventory = true;
   const [safetyConfirmText, setSafetyConfirmText] = useState("");
 
   // Reset confirmation input when modal opens or closes
@@ -216,8 +220,8 @@ export default function SafeRestoreModal({
         {/* Live Inventory Safety Guarantee Card */}
         <div
           style={{
-            background: preserveInventory ? "#f0fdf4" : "#fef2f2",
-            border: `1px solid ${preserveInventory ? "#bbf7d0" : "#fecaca"}`,
+            background: "#f0fdf4",
+            border: "1px solid #bbf7d0",
             borderRadius: "8px",
             padding: "12px 14px",
             marginBottom: "18px",
@@ -227,36 +231,13 @@ export default function SafeRestoreModal({
           }}
         >
           <div style={{ marginTop: "1px" }}>
-            {preserveInventory ? (
-              <CheckCircleIcon size={18} style={{ color: "#16a34a" }} />
-            ) : (
-              <AlertTriangleIcon size={18} style={{ color: "#dc2626" }} />
-            )}
+            <CheckCircleIcon size={18} style={{ color: "#16a34a" }} />
           </div>
           <div style={{ flex: 1 }}>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                cursor: "pointer",
-                fontWeight: 600,
-                fontSize: "13.5px",
-                color: preserveInventory ? "#166534" : "#991b1b",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={preserveInventory}
-                onChange={(e) => setPreserveInventory(e.target.checked)}
-                style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "#16a34a" }}
-              />
-              <span>Preserve Live Inventory Quantities (Recommended)</span>
-            </label>
-            <p style={{ margin: "4px 0 0", fontSize: "12px", color: preserveInventory ? "#15803d" : "#b91c1c", lineHeight: 1.4 }}>
-              {preserveInventory
-                ? "Your live in-stock counts will remain untouched so recent customer sales are never overwritten with older inventory levels."
-                : "Warning: Unchecking this may overwrite recent customer stock reductions with older inventory values."}
+            <div style={{ fontWeight: 600, fontSize: "13.5px", color: "#166534" }}>Live inventory is never changed</div>
+            <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#15803d", lineHeight: 1.4 }}>
+              Restores don&apos;t touch stock levels, so recent customer sales are never overwritten with older
+              inventory counts.
             </p>
           </div>
         </div>

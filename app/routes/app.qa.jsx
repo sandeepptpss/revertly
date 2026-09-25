@@ -1,8 +1,9 @@
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { Link, useLoaderData, useFetcher, useRouteError } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { runQaSuite } from "../qa.server.js";
+import { checkFeatureAccess } from "../billing.server.js";
 import { checkPermission, logAudit, PERMISSIONS } from "../team.server.js";
 import {
   ShieldCheckIcon,
@@ -21,12 +22,14 @@ export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const [latest, history] = await Promise.all([
+  const [latest, history, access] = await Promise.all([
     prisma.qaTestRun.findFirst({ where: { shop }, orderBy: { testedAt: "desc" } }),
     prisma.qaTestRun.findMany({ where: { shop }, orderBy: { testedAt: "desc" }, take: 20 }),
+    checkFeatureAccess(shop, "qaSuites"),
   ]);
 
-  return { latest, history };
+  // Past runs stay visible after a downgrade; only new runs need the plan.
+  return { latest, history, locked: !access.allowed };
 };
 
 export const action = async ({ request }) => {
@@ -38,6 +41,14 @@ export const action = async ({ request }) => {
     // require at least backup-create level access.
     const perm = await checkPermission(shop, session, PERMISSIONS.BACKUP_CREATE);
     if (!perm.allowed) return { success: false, message: perm.message };
+
+    const access = await checkFeatureAccess(shop, "qaSuites");
+    if (!access.allowed) {
+      return {
+        success: false,
+        message: "Automated QA & Backup Health is included from the Starter plan. Upgrade on Plans & Billing to run health checks.",
+      };
+    }
 
     const res = await runQaSuite(shop);
 
@@ -68,7 +79,7 @@ function scoreColor(score) {
 }
 
 export default function QaDiagnostics() {
-  const { latest, history } = useLoaderData();
+  const { latest, history, locked } = useLoaderData();
   const fetcher = useFetcher();
   const result = fetcher.data;
   const busy = fetcher.state !== "idle";
@@ -97,6 +108,7 @@ export default function QaDiagnostics() {
             <strong style={{ fontSize: "17px", color: "var(--rv-text)", fontWeight: 700 }}>
               Automated QA &amp; Backup Health
             </strong>
+            {locked && <span className="rv-badge rv-badge-neutral">Starter plan</span>}
             {latest && (
               <span
                 className="rv-badge"
@@ -110,6 +122,7 @@ export default function QaDiagnostics() {
             These checks read live data and can genuinely fail. They verify your baseline exists,
             your newest backup is actually readable and restorable, the scheduler is running, and
             your offsite sync credentials still work. The suite runs nightly and on demand.
+            {locked && " Included from the Starter plan."}
           </p>
           {latest && (
             <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
@@ -119,12 +132,18 @@ export default function QaDiagnostics() {
         </div>
 
         <div>
-          <fetcher.Form method="POST">
-            <button type="submit" disabled={busy} className="rv-btn rv-btn-lg rv-btn-primary">
-              <RefreshCwIcon size={16} />
-              <span>{busy ? "Running…" : "Run Health Check"}</span>
-            </button>
-          </fetcher.Form>
+          {locked ? (
+            <Link to="/app/plan" className="rv-btn rv-btn-lg rv-btn-primary">
+              View Plans &amp; Billing →
+            </Link>
+          ) : (
+            <fetcher.Form method="POST">
+              <button type="submit" disabled={busy} className="rv-btn rv-btn-lg rv-btn-primary">
+                <RefreshCwIcon size={16} />
+                <span>{busy ? "Running…" : "Run Health Check"}</span>
+              </button>
+            </fetcher.Form>
+          )}
         </div>
       </div>
 
