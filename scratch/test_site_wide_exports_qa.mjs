@@ -17,15 +17,19 @@ async function runSiteWideExportQATests() {
     where: { shop: TEST_SHOP, status: "READY" },
     orderBy: { createdAt: "desc" },
   });
-  console.log(`Using reference Restore Point #${rp?.id || "None"} (${rp?.name || "N/A"})\n`);
+  const themeRp = await prisma.restorePoint.findFirst({
+    where: { shop: TEST_SHOP, status: "READY", themeCount: { gt: 0 } },
+    orderBy: { createdAt: "desc" },
+  });
+  console.log(`Using reference Restore Point #${rp?.id || "None"} (${rp?.name || "N/A"}), Theme RP #${themeRp?.id}\n`);
 
   const checks = [
     // 1. Restore Point Detail & Archive Exports
     {
       name: "Restore Point Theme ZIP Export",
       loader: rpExportLoader,
-      url: `http://localhost:3000/app/restore-points/${rp.id}/export?format=zip`,
-      params: { id: String(rp.id) },
+      url: `http://localhost:3000/app/restore-points/${(themeRp || rp).id}/export?format=zip`,
+      params: { id: String((themeRp || rp).id) },
       expectedContentType: "application/zip",
       expectedDisposition: ".zip",
     },

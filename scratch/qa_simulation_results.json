@@ -11,7 +11,7 @@
     "scenario": "Limits verification for tier: free",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.free",
-    "actual": "All limits matched ({\"products\":100,\"restorePoints\":2,\"rules\":1,\"retentionDays\":7,\"vaultOrders\":0,\"themes\":false,\"themeLimit\":0,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":false,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
+    "actual": "All limits matched ({\"products\":50,\"restorePoints\":2,\"rules\":1,\"retentionDays\":7,\"vaultOrders\":0,\"themes\":false,\"themeLimit\":0,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":false,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false,\"ga4Monitoring\":false,\"uptimeMonitoring\":false,\"qaSuites\":false,\"teamRoles\":false,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null,\"customPriceAmount\":null,\"customBillingMethod\":null,\"customPriceStatus\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -27,7 +27,7 @@
     "scenario": "Limits verification for tier: starter",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.starter",
-    "actual": "All limits matched ({\"products\":1000,\"restorePoints\":10,\"rules\":3,\"retentionDays\":30,\"vaultOrders\":0,\"themes\":false,\"themeLimit\":0,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":true,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
+    "actual": "All limits matched ({\"products\":1000,\"restorePoints\":10,\"rules\":3,\"retentionDays\":30,\"vaultOrders\":0,\"themes\":false,\"themeLimit\":0,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":false,\"cloudSync\":true,\"marketingBackup\":false,\"marketingProfiles\":0,\"marketingFlows\":false,\"metafieldBackup\":false,\"ga4Monitoring\":true,\"uptimeMonitoring\":true,\"qaSuites\":true,\"teamRoles\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null,\"customPriceAmount\":null,\"customBillingMethod\":null,\"customPriceStatus\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -43,7 +43,7 @@
     "scenario": "Limits verification for tier: growth",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.growth",
-    "actual": "All limits matched ({\"products\":5000,\"restorePoints\":50,\"rules\":10,\"retentionDays\":90,\"vaultOrders\":2500,\"themes\":true,\"themeLimit\":1,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":10000,\"marketingFlows\":false,\"metafieldBackup\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
+    "actual": "All limits matched ({\"products\":5000,\"restorePoints\":50,\"rules\":10,\"retentionDays\":90,\"vaultOrders\":2500,\"themes\":true,\"themeLimit\":1,\"circuitBreaker\":false,\"slack\":false,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":10000,\"marketingFlows\":false,\"metafieldBackup\":true,\"ga4Monitoring\":true,\"uptimeMonitoring\":true,\"qaSuites\":true,\"teamRoles\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null,\"customPriceAmount\":null,\"customBillingMethod\":null,\"customPriceStatus\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -59,7 +59,7 @@
     "scenario": "Limits verification for tier: business",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.business",
-    "actual": "All limits matched ({\"products\":30000,\"restorePoints\":100,\"rules\":null,\"retentionDays\":180,\"vaultOrders\":15000,\"themes\":true,\"themeLimit\":null,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":50000,\"marketingFlows\":true,\"metafieldBackup\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
+    "actual": "All limits matched ({\"products\":30000,\"restorePoints\":100,\"rules\":null,\"retentionDays\":180,\"vaultOrders\":15000,\"themes\":true,\"themeLimit\":null,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":50000,\"marketingFlows\":true,\"metafieldBackup\":true,\"ga4Monitoring\":true,\"uptimeMonitoring\":true,\"qaSuites\":true,\"teamRoles\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null,\"customPriceAmount\":null,\"customBillingMethod\":null,\"customPriceStatus\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -75,7 +75,7 @@
     "scenario": "Limits verification for tier: enterprise",
     "group": "Current Plan",
     "expected": "Limits exactly match PLAN_LIMITS.enterprise",
-    "actual": "All limits matched ({\"products\":200000,\"restorePoints\":null,\"rules\":null,\"retentionDays\":365,\"vaultOrders\":100000,\"themes\":true,\"themeLimit\":null,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":250000,\"marketingFlows\":true,\"metafieldBackup\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null})",
+    "actual": "All limits matched ({\"products\":200000,\"restorePoints\":null,\"rules\":null,\"retentionDays\":365,\"vaultOrders\":100000,\"themes\":true,\"themeLimit\":null,\"circuitBreaker\":true,\"slack\":true,\"bulkRollback\":true,\"cloudSync\":true,\"marketingBackup\":true,\"marketingProfiles\":250000,\"marketingFlows\":true,\"metafieldBackup\":true,\"ga4Monitoring\":true,\"uptimeMonitoring\":true,\"qaSuites\":true,\"teamRoles\":true,\"isCustomLimit\":false,\"customProductLimit\":null,\"customPlanNote\":null,\"customPriceAmount\":null,\"customBillingMethod\":null,\"customPriceStatus\":null})",
     "status": "PASS",
     "notes": ""
   },
@@ -283,7 +283,7 @@
     "scenario": "Starting 14-day trial initializes trialEndsAt and hasUsedTrial",
     "group": "Trial",
     "expected": "trialEndsAt is set 14 days in future, hasUsedTrial is true",
-    "actual": "trialEndsAt: 2026-10-07T08:47:56.100Z, hasUsedTrial: true",
+    "actual": "trialEndsAt: 2026-10-09T10:03:01.421Z, hasUsedTrial: true",
     "status": "PASS",
     "notes": ""
   },
@@ -331,7 +331,7 @@
     "scenario": "productLimitReachedAt banner triggers when limit exceeded",
     "group": "Feature Limits",
     "expected": "productLimitReachedAt is stored and triggers alert banner in UI",
-    "actual": "productLimitReachedAt set to 2026-09-23T08:47:56.120Z",
+    "actual": "productLimitReachedAt set to 2026-09-25T10:03:01.488Z",
     "status": "PASS",
     "notes": ""
   },

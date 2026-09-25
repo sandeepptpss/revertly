@@ -237,7 +237,7 @@ function drainFallbackQueue() {
         // Yield to event loop and GC breathing room before draining next task
         setTimeout(() => {
           if (typeof global.gc === "function") {
-            try { global.gc(); } catch {}
+            try { global.gc(); } catch { /* ignore if gc is not exposed */ }
           }
           drainFallbackQueue();
         }, 100);

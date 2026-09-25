@@ -397,8 +397,11 @@ export async function scanActiveThemeFiles(admin, { maxAttempts = 5 } = {}) {
         { cursor, filenames: THEME_FILE_PATTERNS },
         { maxAttempts, label: "ga4 tag scan" },
       );
-      if (json?.errors?.length) {
-        return { ok: false, error: json.errors.map((e) => e.message).join("; ") };
+      if (json?.errors) {
+        const gqlErrors = Array.isArray(json.errors) ? json.errors : [{ message: String(json.errors) }];
+        if (gqlErrors.length) {
+          return { ok: false, error: gqlErrors.map((e) => e.message || String(e)).join("; ") };
+        }
       }
 
       const theme = json?.data?.themes?.nodes?.[0];

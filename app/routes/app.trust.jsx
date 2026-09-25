@@ -11,7 +11,6 @@ import {
   EyeIcon,
   DatabaseIcon,
   ServerIcon,
-  ExternalLinkIcon,
   SparklesIcon,
 } from "../components/Icons.jsx";
 import { Banner } from "../components/Banner.jsx";
@@ -20,7 +19,7 @@ export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const [settings, auditCount, restorePointCount] = await Promise.all([
+  const [settings, auditCount] = await Promise.all([
     prisma.appSettings.findUnique({
       where: { shop },
       select: {
@@ -35,18 +34,15 @@ export const loader = async ({ request }) => {
       },
     }),
     prisma.auditLog.count({ where: { shop } }),
-    prisma.restorePoint.count({ where: { shop } }),
   ]);
 
   return {
     shop,
-    planId: settings?.planId || "free",
     circuitBreakerEnabled: Boolean(settings?.circuitBreakerEnabled),
     monitoringEnabled: Boolean(settings?.monitoringEnabled),
     cloudSyncConnected: Boolean(settings?.cloudSyncConnected),
     cloudSyncProvider: settings?.cloudSyncProvider || "NONE",
     auditCount,
-    restorePointCount,
     installedDate: settings?.createdAt ? new Date(settings.createdAt).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
   };
 };
@@ -54,12 +50,10 @@ export const loader = async ({ request }) => {
 export default function TrustCenterPage() {
   const {
     shop,
-    planId,
     circuitBreakerEnabled,
     cloudSyncConnected,
     cloudSyncProvider,
     auditCount,
-    restorePointCount,
     installedDate,
   } = useLoaderData();
 
@@ -266,7 +260,9 @@ export default function TrustCenterPage() {
       {showDpaModal && (
         <div
           role="presentation"
-          onClick={() => setShowDpaModal(false)}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowDpaModal(false);
+          }}
           style={{
             position: "fixed",
             inset: 0,
@@ -282,7 +278,6 @@ export default function TrustCenterPage() {
           <div
             role="dialog"
             aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
             style={{
               background: "#ffffff",
               borderRadius: "12px",

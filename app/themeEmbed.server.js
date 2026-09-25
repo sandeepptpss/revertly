@@ -80,12 +80,15 @@ async function probeThemeEmbed(admin) {
 
     const json = await res.json();
 
-    if (json.errors?.length) {
-      return {
-        status: EMBED_UNKNOWN,
-        themeName: null,
-        error: json.errors.map((e) => e.message).join("; "),
-      };
+    if (json.errors) {
+      const gqlErrors = Array.isArray(json.errors) ? json.errors : [{ message: String(json.errors) }];
+      if (gqlErrors.length) {
+        return {
+          status: EMBED_UNKNOWN,
+          themeName: null,
+          error: gqlErrors.map((e) => e.message || String(e)).join("; "),
+        };
+      }
     }
 
     const theme = json.data?.themes?.nodes?.[0];

@@ -1515,7 +1515,6 @@ export default function AdminPanel() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="ticket-modal-title"
-            onClick={(e) => e.stopPropagation()}
             style={{
               background: "#ffffff",
               borderRadius: "var(--rv-radius-md, 10px)",
@@ -1746,7 +1745,6 @@ export default function AdminPanel() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="quota-modal-title"
-            onClick={(e) => e.stopPropagation()}
             style={{
               background: "#ffffff",
               borderRadius: "var(--rv-radius-md, 10px)",

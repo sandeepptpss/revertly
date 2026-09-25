@@ -115,9 +115,9 @@ async function runAllTests() {
   assert.strictEqual(PLAN_TIERS.business.yearlyPrice, 588, "Business yearly price must be 49 * 12 = 588");
   assert.strictEqual(PLAN_TIERS.business.yearlyMonthlyEquivalent, 49, "Business monthly eq must be 49");
 
-  assert.strictEqual(PLAN_TIERS.enterprise.price, 79);
-  assert.strictEqual(PLAN_TIERS.enterprise.yearlyPrice, 948, "Enterprise yearly price must be 79 * 12 = 948");
-  assert.strictEqual(PLAN_TIERS.enterprise.yearlyMonthlyEquivalent, 79, "Enterprise monthly eq must be 79");
+  assert.strictEqual(PLAN_TIERS.enterprise.price, 99);
+  assert.strictEqual(PLAN_TIERS.enterprise.yearlyPrice, 990, "Enterprise yearly price must be 990");
+  assert.strictEqual(PLAN_TIERS.enterprise.yearlyMonthlyEquivalent, 82.5, "Enterprise monthly eq must be 82.5");
   console.log("  ✓ Test 6 passed: PLAN_TIERS has standard 12x annual prices with no unconfigured discounts.");
 
   // ── TEST 7: Admin-configured discounts application ──

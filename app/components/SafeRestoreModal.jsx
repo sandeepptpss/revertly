@@ -50,14 +50,12 @@ export default function SafeRestoreModal({
   let totalTitleDiffs = 0;
   let totalPriceDiffs = 0;
   let totalStatusDiffs = 0;
-  let totalOtherDiffs = 0;
 
   for (const item of differences) {
     for (const d of item.diffs || []) {
       if (d.field === "title") totalTitleDiffs++;
       else if (d.field?.includes("price")) totalPriceDiffs++;
       else if (d.field === "status") totalStatusDiffs++;
-      else totalOtherDiffs++;
     }
   }
 
@@ -100,7 +98,6 @@ export default function SafeRestoreModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="safe-restore-modal-title"
-        onClick={(e) => e.stopPropagation()}
         style={{
           background: "#ffffff",
           borderRadius: "12px",

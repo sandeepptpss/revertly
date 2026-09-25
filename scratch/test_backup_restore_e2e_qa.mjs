@@ -17,6 +17,7 @@ import assert from "node:assert";
 import fs from "node:fs";
 import prisma from "../app/db.server.js";
 import { formatMetafieldError } from "../app/routes/app.restore-points_.$id.jsx";
+import { PLAN_LIMITS } from "../app/billing.server.js";
 import {
   fetchThemeBackup,
   fetchCollectionsBackup,
@@ -520,7 +521,7 @@ async function main() {
     STORE = big;
     try {
       const res = await backupProducts({ admin, shop: TEST_SHOP });
-      assert.equal(res.summary.products, 100, "free plan allowance of 100 products was not applied");
+      assert.equal(res.summary.products, PLAN_LIMITS.free.products, "free plan allowance of products was not applied");
       assert.equal(res.summary.productsTruncated, true, "a capped capture must report itself as partial");
       assert.match(res.restorePoint.description, /Partial capture/i);
     } finally {

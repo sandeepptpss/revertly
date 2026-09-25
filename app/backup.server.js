@@ -16,6 +16,17 @@ import { pruneExpiredThemeZips } from "./themeZipStore.server.js";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Safely normalizes Shopify GraphQL errors into an array of error objects.
+ * Shopify GraphQL can return errors as an array (standard GraphQL), but HTTP-level
+ * or auth failures (401/403/500) return a string: `{ errors: "[API] Invalid API key..." }`.
+ */
+export function normalizeGraphQLErrors(errors) {
+  if (!errors) return [];
+  if (Array.isArray(errors)) return errors.map((e) => (typeof e === "string" ? { message: e } : e));
+  return [{ message: String(errors) }];
+}
+
+/**
  * Runs an Admin GraphQL call, backing off and retrying when Shopify throttles.
  *
  * Metafield capture is by far the heaviest query workload in the app — six
@@ -44,7 +55,7 @@ export async function graphqlWithRetry(admin, query, variables = {}, { maxAttemp
       continue;
     }
 
-    const throttled = (json?.errors || []).some((e) => e?.extensions?.code === "THROTTLED");
+    const throttled = normalizeGraphQLErrors(json?.errors).some((e) => e?.extensions?.code === "THROTTLED");
     if (!throttled || attempt >= maxAttempts) return json;
 
     const throttleStatus = json?.extensions?.cost?.throttleStatus;
@@ -598,9 +609,9 @@ export async function restoreThemeFiles(admin, themeId, files) {
         if (userErrors.length > 0) {
           allErrors.push(...userErrors.map((e) => `${e.field || "file"}: ${e.message}`));
         }
-        const gqlErrors = json.errors || [];
+        const gqlErrors = normalizeGraphQLErrors(json.errors);
         if (gqlErrors.length > 0) {
-          allErrors.push(...gqlErrors.map((e) => e.message));
+          allErrors.push(...gqlErrors.map((e) => e.message || String(e)));
         }
 
         const upserted = json.data?.themeFilesUpsert?.upsertedThemeFiles || [];
@@ -1071,8 +1082,9 @@ export async function collectLiveProductsForBackup(admin, shop = null, { maxProd
     for (;;) {
       const json = await graphqlWithRetry(admin, LIVE_PRODUCTS_QUERY, { cursor }, { label: "live products backup" });
 
-      if (json?.errors?.length) {
-        console.warn("collectLiveProductsForBackup GraphQL errors:", json.errors.map((e) => e.message).join("; "));
+      const gqlErrors = normalizeGraphQLErrors(json?.errors);
+      if (gqlErrors.length) {
+        console.warn("collectLiveProductsForBackup GraphQL errors:", gqlErrors.map((e) => e.message || String(e)).join("; "));
         failed = true;
         break;
       }
@@ -1915,7 +1927,7 @@ export async function restoreMenu(admin, menu) {
     try {
       let createJson = await executeCreate(formattedItems);
       let errors = createJson.data?.menuCreate?.userErrors || [];
-      let gqlErrors = createJson.errors || [];
+      let gqlErrors = normalizeGraphQLErrors(createJson.errors);
 
       // If failure was due to broken/deleted resource link, retry with HTTP fallback
       if (
@@ -1927,7 +1939,7 @@ export async function restoreMenu(admin, menu) {
         formattedItems = formatItems(menu.items, true);
         createJson = await executeCreate(formattedItems);
         errors = createJson.data?.menuCreate?.userErrors || [];
-        gqlErrors = createJson.errors || [];
+        gqlErrors = normalizeGraphQLErrors(createJson.errors);
       }
 
       if (errors.length === 0 && gqlErrors.length === 0 && createJson.data?.menuCreate?.menu?.id) {
@@ -1935,8 +1947,8 @@ export async function restoreMenu(admin, menu) {
       }
 
       const errMsg =
-        errors.map((e) => e.message).join(", ") ||
-        gqlErrors.map((e) => e.message).join(", ") ||
+        errors.map((e) => e.message || String(e)).join(", ") ||
+        gqlErrors.map((e) => e.message || String(e)).join(", ") ||
         "Failed to create menu.";
       return { success: false, message: errMsg };
     } catch (createErr) {
@@ -2631,8 +2643,9 @@ async function fetchDefinitionsForOwnerType(admin, ownerType) {
         { ownerType, cursor },
         { label: `metafieldDefinitions(${ownerType})` }
       );
-      if (json?.errors?.length) {
-        throw new Error(json.errors.map((e) => e.message).join("; "));
+      const gqlErrors = normalizeGraphQLErrors(json?.errors);
+      if (gqlErrors.length) {
+        throw new Error(gqlErrors.map((e) => e.message || String(e)).join("; "));
       }
       const conn = json?.data?.metafieldDefinitions;
       nodes.push(...(conn?.nodes || []));
@@ -2716,8 +2729,9 @@ async function fetchOwnersWithMetafields(admin, ownerType) {
       { label: "shop metafields" }
     );
 
-    if (json?.errors?.length) {
-      warnings.push({ stage: "owners", ownerType, message: json.errors.map((e) => e.message).join("; ") });
+    const gqlErrors = normalizeGraphQLErrors(json?.errors);
+    if (gqlErrors.length) {
+      warnings.push({ stage: "owners", ownerType, message: gqlErrors.map((e) => e.message || String(e)).join("; ") });
       return { owners, warnings };
     }
 
@@ -2770,8 +2784,9 @@ async function fetchOwnersWithMetafields(admin, ownerType) {
       break;
     }
 
-    if (json?.errors?.length) {
-      warnings.push({ stage: "owners", ownerType, message: json.errors.map((e) => e.message).join("; ") });
+    const gqlErrors = normalizeGraphQLErrors(json?.errors);
+    if (gqlErrors.length) {
+      warnings.push({ stage: "owners", ownerType, message: gqlErrors.map((e) => e.message || String(e)).join("; ") });
       break;
     }
 
