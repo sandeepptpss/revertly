@@ -283,7 +283,7 @@
     "scenario": "Starting 14-day trial initializes trialEndsAt and hasUsedTrial",
     "group": "Trial",
     "expected": "trialEndsAt is set 14 days in future, hasUsedTrial is true",
-    "actual": "trialEndsAt: 2026-10-09T10:03:01.421Z, hasUsedTrial: true",
+    "actual": "trialEndsAt: 2026-10-09T12:22:46.902Z, hasUsedTrial: true",
     "status": "PASS",
     "notes": ""
   },
@@ -331,7 +331,7 @@
     "scenario": "productLimitReachedAt banner triggers when limit exceeded",
     "group": "Feature Limits",
     "expected": "productLimitReachedAt is stored and triggers alert banner in UI",
-    "actual": "productLimitReachedAt set to 2026-09-25T10:03:01.488Z",
+    "actual": "productLimitReachedAt set to 2026-09-25T12:22:46.945Z",
     "status": "PASS",
     "notes": ""
   },

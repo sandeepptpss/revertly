@@ -78,7 +78,12 @@ export const action = async ({ request, params }) => {
         where: { id: incident.id },
         data: { status: "RESOLVED", resolvedAt: new Date() },
       });
-      await logAudit(shop, perm.actor, "INCIDENT_RESOLVE", { incidentId: incident.id, name: incident.name, request });
+      await logAudit(shop, perm.actor, "INCIDENT_RESOLVE", {
+        resourceType: "Incident",
+        resourceId: incident.id,
+        details: { name: incident.name },
+        request,
+      });
       return { success: true, message: "Incident marked as resolved." };
     }
 

@@ -642,7 +642,7 @@ async function main() {
     const src = fs.readFileSync(new URL("../app/routes/webhooks.themes.publish.jsx", import.meta.url), "utf8");
     const gate = src.indexOf('"Monitoring disabled"');
     const call = src.indexOf("await scheduleTagRecheck(shop)");
-    const snapshot = src.indexOf("fetchThemeBackup(admin)");
+    const snapshot = src.indexOf("fetchThemeBackup(admin");
     assert.ok(gate !== -1 && call !== -1 && snapshot !== -1, "expected markers not found");
     assert.ok(gate < call && call < snapshot, "scheduling is not between the gate and the snapshot");
     assert.match(src, /try \{\s*await scheduleTagRecheck\(shop\);\s*\} catch \(/);

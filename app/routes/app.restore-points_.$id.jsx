@@ -366,6 +366,10 @@ export const action = async ({ request, params }) => {
     }
 
     if (intent === "restore_theme") {
+      const featureCheck = await checkFeatureAccess(shop, "themes");
+      if (!featureCheck.allowed) {
+        return { success: false, message: "Theme restoration requires a Growth, Business or Enterprise plan." };
+      }
       const themeAccess = await checkThemeAccess(shop);
       if (!themeAccess.allowed) {
         return { success: false, message: "Theme restoration requires a Growth, Business or Enterprise plan." };

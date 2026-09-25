@@ -104,7 +104,12 @@ export const action = async ({ request }) => {
         where: { id: incidentId },
         data: { status: "RESOLVED", resolvedAt: new Date() },
       });
-      await logAudit(shop, session, "INCIDENT_RESOLVE", { incidentId, name: incident.name });
+      await logAudit(shop, perm.actor, "INCIDENT_RESOLVE", {
+        resourceType: "Incident",
+        resourceId: incidentId,
+        details: { name: incident.name },
+        request,
+      });
       return { success: true, message: `Incident "${incident.name}" marked as resolved.` };
     }
 
@@ -113,7 +118,12 @@ export const action = async ({ request }) => {
         where: { id: incidentId },
         data: { status: "IGNORED", resolvedAt: new Date() },
       });
-      await logAudit(shop, session, "INCIDENT_IGNORE", { incidentId, name: incident.name });
+      await logAudit(shop, perm.actor, "INCIDENT_IGNORE", {
+        resourceType: "Incident",
+        resourceId: incidentId,
+        details: { name: incident.name },
+        request,
+      });
       return { success: true, message: `Incident "${incident.name}" ignored.` };
     }
 
@@ -122,7 +132,12 @@ export const action = async ({ request }) => {
         where: { id: incidentId },
         data: { status: "OPEN", resolvedAt: null },
       });
-      await logAudit(shop, session, "INCIDENT_REOPEN", { incidentId, name: incident.name });
+      await logAudit(shop, perm.actor, "INCIDENT_REOPEN", {
+        resourceType: "Incident",
+        resourceId: incidentId,
+        details: { name: incident.name },
+        request,
+      });
       return { success: true, message: `Incident "${incident.name}" reopened as Open.` };
     }
 

@@ -107,7 +107,7 @@ export const loader = async ({ request }) => {
   }
 
   const cloudSync = {
-    connected: Boolean(settings?.cloudSyncConnected),
+    connected: Boolean(planLimitsInfo?.cloudSync && settings?.cloudSyncConnected),
     provider: settings?.cloudSyncProvider || "NONE",
     email: settings?.cloudSyncEmail || null,
     folder: settings?.cloudSyncFolder || "Revertly_Backups",

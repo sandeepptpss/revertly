@@ -203,8 +203,13 @@ export const action = async ({ request }) => {
       );
     }
 
-    // Check detection rules
-    const rules = await prisma.detectionRule.findMany({ where: { shop, isActive: true } });
+    // Check detection rules (respecting the plan's active rule allowance)
+    const ruleLimit = limits?.rules ?? 1;
+    const rules = await prisma.detectionRule.findMany({
+      where: { shop, isActive: true },
+      orderBy: { id: "asc" },
+      ...(ruleLimit === Infinity ? {} : { take: ruleLimit }),
+    });
     for (const rule of rules) {
       const match = changes.find((c) => isFieldMatch(c.fieldName, rule.field));
       if (!match) continue;

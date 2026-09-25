@@ -107,9 +107,11 @@ export const action = async ({ request }) => {
       const productId = formData.get("productId");
       const res = await restoreDeletedProduct(admin, shop, productId);
       if (res.success) {
-        await logAudit(shop, session, "PRODUCT_RESTORE", {
-          productId,
-          title: res.title,
+        await logAudit(shop, perm.actor, "PRODUCT_RESTORE", {
+          resourceType: "Product",
+          resourceId: productId,
+          details: { productId, title: res.title },
+          request,
         });
         return {
           success: true,
