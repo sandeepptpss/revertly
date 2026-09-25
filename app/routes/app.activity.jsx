@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useLoaderData, useFetcher, useRouteError, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -158,15 +158,18 @@ export default function Activity() {
     setFieldInput(field || "");
   }, [field]);
 
-  const updateFilters = ({ product: nextProduct, field: nextField }) => {
-    const params = new URLSearchParams();
-    const prod = (nextProduct !== undefined ? nextProduct : productInput).trim();
-    const fld = (nextField !== undefined ? nextField : fieldInput).trim();
-    if (prod) params.set("product", prod);
-    if (fld) params.set("field", fld);
-    const query = params.toString();
-    navigate(`/app/activity${query ? `?${query}` : ""}`);
-  };
+  const updateFilters = useCallback(
+    ({ product: nextProduct, field: nextField } = {}) => {
+      const params = new URLSearchParams();
+      const prod = (nextProduct !== undefined ? nextProduct : productInput).trim();
+      const fld = (nextField !== undefined ? nextField : fieldInput).trim();
+      if (prod) params.set("product", prod);
+      if (fld) params.set("field", fld);
+      const query = params.toString();
+      navigate(`/app/activity${query ? `?${query}` : ""}`);
+    },
+    [navigate, productInput, fieldInput]
+  );
 
   // Automatically update results when product search text changes (debounced)
   useEffect(() => {
@@ -176,7 +179,7 @@ export default function Activity() {
       }, 350);
       return () => clearTimeout(timer);
     }
-  }, [productInput]);
+  }, [productInput, product, fieldInput, updateFilters]);
 
   const handleFieldChange = (e) => {
     const nextField = e.target.value;

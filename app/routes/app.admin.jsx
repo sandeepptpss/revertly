@@ -1,5 +1,5 @@
-import { Fragment, useState, useEffect } from "react";
-import { useLoaderData, useFetcher, useRouteError, redirect } from "react-router";
+import { Fragment, useState, useEffect, useMemo } from "react";
+import { useLoaderData, useFetcher, useRouteError, redirect, useSearchParams } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, unauthenticated } from "../shopify.server.js";
 import prisma from "../db.server.js";
@@ -35,6 +35,8 @@ import {
 import { Banner } from "../components/Banner.jsx";
 import { EmptyState } from "../components/EmptyState.jsx";
 import ConfirmModal from "../components/ConfirmModal.jsx";
+import { PillNav } from "../components/PillNav.jsx";
+import { Pagination, usePagination } from "../components/Pagination.jsx";
 import {
   ShieldCheckIcon,
   DatabaseIcon,
@@ -48,6 +50,7 @@ import {
   SaveIcon,
   XIcon,
   ExternalLinkIcon,
+  SearchIcon,
 } from "../components/Icons.jsx";
 
 /**
@@ -823,6 +826,36 @@ export default function AdminPanel() {
   // Ticket management state
   const [viewingTicket, setViewingTicket] = useState(null);
   const [ticketFilter, setTicketFilter] = useState("ALL");
+  const [ticketSearchQuery, setTicketSearchQuery] = useState("");
+
+  // Store search & filter state
+  const [storeFilter, setStoreFilter] = useState("ALL");
+  const [storeSearchQuery, setStoreSearchQuery] = useState("");
+
+  // Tab navigation state
+  const [searchParams, setSearchParams] = useSearchParams();
+  const validTabs = useMemo(() => ["stores", "tickets", "promotions"], []);
+  const urlTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState(() => (["stores", "tickets", "promotions"].includes(urlTab) ? urlTab : "stores"));
+
+  useEffect(() => {
+    const currentTab = searchParams.get("tab");
+    if (currentTab && validTabs.includes(currentTab) && currentTab !== activeTab) {
+      setActiveTab(currentTab);
+    }
+  }, [searchParams, activeTab, validTabs]);
+
+  const handleTabChange = (newTab) => {
+    setActiveTab(newTab);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", newTab);
+        return next;
+      },
+      { replace: true }
+    );
+  };
 
   // Custom quota & pricing state
   const [quotaTargetShop, setQuotaTargetShop] = useState(null);
@@ -903,23 +936,7 @@ export default function AdminPanel() {
 
   const seatPct = freeGrowth.limit > 0 ? Math.min(100, (freeGrowth.used / freeGrowth.limit) * 100) : 0;
 
-  const filteredTickets = tickets.filter((t) => {
-    if (ticketFilter === "ALL") return true;
-    if (ticketFilter === "OPEN") return t.status === "OPEN";
-    if (ticketFilter === "IN_PROGRESS") return t.status === "IN_PROGRESS";
-    if (ticketFilter === "RESOLVED") return t.status === "RESOLVED";
-    if (ticketFilter === "BILLING") {
-      return (
-        t.category?.toLowerCase() === "billing" ||
-        t.subject?.toLowerCase().includes("custom") ||
-        t.subject?.toLowerCase().includes("enterprise") ||
-        t.subject?.toLowerCase().includes("quote") ||
-        t.subject?.toLowerCase().includes("200k")
-      );
-    }
-    return true;
-  });
-
+  // ── Ticket Counts & Filtering ──
   const openTicketCount = tickets.filter((t) => t.status === "OPEN").length;
   const inProgressTicketCount = tickets.filter((t) => t.status === "IN_PROGRESS").length;
   const billingTicketCount = tickets.filter(
@@ -930,6 +947,127 @@ export default function AdminPanel() {
       t.subject?.toLowerCase().includes("quote") ||
       t.subject?.toLowerCase().includes("200k")
   ).length;
+  const resolvedTicketCount = tickets.filter((t) => t.status === "RESOLVED").length;
+
+  const filteredTickets = useMemo(() => {
+    const query = ticketSearchQuery.trim().toLowerCase();
+    return tickets.filter((t) => {
+      // 1. Status / Category Filter
+      if (ticketFilter === "OPEN" && t.status !== "OPEN") return false;
+      if (ticketFilter === "IN_PROGRESS" && t.status !== "IN_PROGRESS") return false;
+      if (ticketFilter === "RESOLVED" && t.status !== "RESOLVED") return false;
+      if (ticketFilter === "BILLING") {
+        const isBilling =
+          t.category?.toLowerCase() === "billing" ||
+          t.subject?.toLowerCase().includes("custom") ||
+          t.subject?.toLowerCase().includes("enterprise") ||
+          t.subject?.toLowerCase().includes("quote") ||
+          t.subject?.toLowerCase().includes("200k");
+        if (!isBilling) return false;
+      }
+
+      // 2. Search Query Matching
+      if (query) {
+        const idMatch = String(t.id).includes(query) || `#${t.id}`.includes(query);
+        const shopMatch = t.shop?.toLowerCase().includes(query);
+        const emailMatch = t.email?.toLowerCase().includes(query);
+        const subjectMatch = t.subject?.toLowerCase().includes(query);
+        const messageMatch = t.message?.toLowerCase().includes(query);
+        const categoryMatch = t.category?.toLowerCase().includes(query);
+        const priorityMatch = t.priority?.toLowerCase().includes(query);
+        const planMatch = t.planTier?.toLowerCase().includes(query);
+
+        if (
+          !idMatch &&
+          !shopMatch &&
+          !emailMatch &&
+          !subjectMatch &&
+          !messageMatch &&
+          !categoryMatch &&
+          !priorityMatch &&
+          !planMatch
+        ) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [tickets, ticketFilter, ticketSearchQuery]);
+
+  // ── Merchant Counts & Filtering ──
+  const installedCount = merchants.filter((m) => m.isInstalled).length;
+  const withQuotaCount = merchants.filter((m) => m.customProductLimit).length;
+  const withDiscountCount = merchants.filter((m) => m.discount?.isActive || m.discount?.awaitingClaim).length;
+  const partnerDevCount = merchants.filter((m) => m.isPartnerDevelopment).length;
+
+  const filteredMerchants = useMemo(() => {
+    const query = storeSearchQuery.trim().toLowerCase();
+    return merchants.filter((row) => {
+      // 1. Store Filter Pill
+      if (storeFilter === "INSTALLED" && !row.isInstalled) return false;
+      if (storeFilter === "UNINSTALLED" && row.isInstalled) return false;
+      if (storeFilter === "DISCOUNTS" && !(row.discount?.isActive || row.discount?.awaitingClaim)) return false;
+      if (storeFilter === "QUOTAS" && !row.customProductLimit) return false;
+      if (storeFilter === "PARTNER" && !row.isPartnerDevelopment) return false;
+
+      // 2. Search Query Matching
+      if (query) {
+        const shopMatch = row.shop?.toLowerCase().includes(query);
+        const emailMatch = row.alertEmail?.toLowerCase().includes(query);
+        const planMatch =
+          (row.planId || "")?.toLowerCase().includes(query) ||
+          (PLAN_TIERS[row.planId]?.name || "")?.toLowerCase().includes(query);
+        const noteMatch =
+          (row.customPlanNote || "")?.toLowerCase().includes(query) ||
+          (row.discount?.note || "")?.toLowerCase().includes(query);
+        const quotaMatch = row.customProductLimit ? String(row.customProductLimit).includes(query) : false;
+        const discountSourceMatch = row.effectiveDiscount?.source?.toLowerCase()?.includes(query);
+
+        if (!shopMatch && !emailMatch && !planMatch && !noteMatch && !quotaMatch && !discountSourceMatch) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [merchants, storeFilter, storeSearchQuery]);
+
+  // ── Pagination Hooks ──
+  const ticketPagination = usePagination(filteredTickets, 15);
+  const storePagination = usePagination(filteredMerchants, 15);
+
+  const { setCurrentPage: setTicketCurrentPage } = ticketPagination;
+  const { setCurrentPage: setStoreCurrentPage } = storePagination;
+
+  useEffect(() => {
+    setTicketCurrentPage(1);
+  }, [ticketSearchQuery, ticketFilter, setTicketCurrentPage]);
+
+  useEffect(() => {
+    setStoreCurrentPage(1);
+  }, [storeSearchQuery, storeFilter, setStoreCurrentPage]);
+
+  const adminTabs = [
+    {
+      id: "stores",
+      label: "Merchant Stores",
+      icon: <DatabaseIcon size={15} />,
+      count: merchants.length,
+    },
+    {
+      id: "tickets",
+      label: "Support Tickets & Inquiries",
+      icon: <MailIcon size={15} />,
+      count: openTicketCount > 0 ? `${openTicketCount} open` : tickets.length,
+    },
+    {
+      id: "promotions",
+      label: "Global Discounts & Free Growth",
+      icon: <SparklesIcon size={15} />,
+      count: globalDiscount.isActive ? `${globalDiscount.percent}% live` : (freeGrowth.enabled ? "Active" : undefined),
+    },
+  ];
 
   return (
     <s-page heading="Platform Admin" inlineSize="large">
@@ -945,714 +1083,1061 @@ export default function AdminPanel() {
           </Banner>
         )}
 
-        {/* ── Global Yearly Discount ── */}
-        <div className="rv-card" style={{ margin: "20px 0" }}>
-          <div className="rv-card-header">
-            <div className="rv-card-icon-title">
-              <div className="rv-card-icon-badge info">
-                <SparklesIcon size={20} />
-              </div>
-              <div>
-                <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>Global Yearly Discount</h3>
-                <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                  Applies to every store at once. A store with a bigger discount of its own keeps that instead —
-                  discounts never stack.
-                </p>
-              </div>
-            </div>
-            {globalDiscount.isActive ? (
-              <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
-                Live · {globalDiscount.percent}% until {formatDate(globalDiscount.expiresAt)}
-              </span>
-            ) : (
-              <span className="rv-badge rv-badge-neutral">Off</span>
-            )}
-          </div>
+        {/* ── Segmented Navigation Tabs ── */}
+        <div style={{ marginTop: "18px", marginBottom: "6px" }}>
+          <PillNav items={adminTabs} activeId={activeTab} onChange={handleTabChange} />
+        </div>
 
-          <div className="rv-card-body">
-            <globalFetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
-              <input type="hidden" name="intent" value="setGlobalDiscount" />
-              <div className="rv-form-field" style={{ maxWidth: "160px" }}>
-                <label className="rv-form-label" htmlFor="global-percent">Discount %</label>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <input
-                    id="global-percent"
-                    type="number"
-                    min="1"
-                    max="100"
-                    required
-                    name="globalDiscountPercent"
-                    value={globalPercentDraft}
-                    onChange={(e) => setGlobalPercentDraft(e.target.value)}
-                    className="rv-input"
-                  />
-                  <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>%</span>
+        {/* ── Tab 1: Merchant Stores ── */}
+        {activeTab === "stores" && (
+          <div className="rv-fade-in">
+            <div className="rv-card" style={{ margin: "20px 0" }}>
+              <div className="rv-card-header" style={{ flexWrap: "wrap", gap: "12px" }}>
+                <div className="rv-card-icon-title">
+                  <div className="rv-card-icon-badge info">
+                    <DatabaseIcon size={20} />
+                  </div>
+                  <div>
+                    <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                      Merchant Stores ({merchants.length})
+                    </h3>
+                    <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      Every store that has installed the app. Manage custom product limits or yearly discounts.
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                  <span className="rv-badge rv-badge-neutral" style={{ fontSize: "11px", fontWeight: 600 }}>
+                    {installedCount} Installed
+                  </span>
+                  {withQuotaCount > 0 && (
+                    <span className="rv-badge rv-badge-info" style={{ fontSize: "11px", fontWeight: 600 }}>
+                      {withQuotaCount} Custom {withQuotaCount === 1 ? "Quota" : "Quotas"}
+                    </span>
+                  )}
+                  {withDiscountCount > 0 && (
+                    <span className="rv-badge rv-badge-success" style={{ fontSize: "11px", fontWeight: 600 }}>
+                      {withDiscountCount} {withDiscountCount === 1 ? "Discount" : "Discounts"}
+                    </span>
+                  )}
                 </div>
               </div>
-              <div className="rv-form-field" style={{ flex: 1, minWidth: "220px" }}>
-                <label className="rv-form-label" htmlFor="global-note">Internal note (optional)</label>
-                <input
-                  id="global-note"
-                  type="text"
-                  name="globalNote"
-                  placeholder="e.g. Black Friday campaign"
-                  value={globalNoteDraft}
-                  onChange={(e) => setGlobalNoteDraft(e.target.value)}
-                  className="rv-input"
-                />
-              </div>
-              <button type="submit" disabled={isGlobalBusy} className="rv-btn rv-btn-primary rv-btn-sm">
-                <SparklesIcon size={14} />
-                <span>{isGlobalBusy ? "Saving..." : `Apply to all stores (${durationMonths} months)`}</span>
-              </button>
-            </globalFetcher.Form>
 
-            {globalDiscount.isActive && (
-              <div style={{ marginTop: "12px" }}>
-                <button
-                  type="button"
-                  disabled={isGlobalBusy}
-                  className="rv-btn rv-btn-secondary rv-btn-sm"
-                  onClick={() => setShowClearGlobalModal(true)}
-                >
-                  Turn off global discount
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
+              <div className="rv-card-body">
+                {/* Search & Filter Controls */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", justifyContent: "space-between" }}>
+                    {/* Search Input */}
+                    <div className="rv-search-wrapper" style={{ flex: "1 1 300px", maxWidth: "480px" }}>
+                      <span className="rv-search-icon">
+                        <SearchIcon size={14} />
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="Search by store domain, email, plan, or notes..."
+                        value={storeSearchQuery}
+                        onChange={(e) => setStoreSearchQuery(e.target.value)}
+                        className="rv-input rv-input-with-icon"
+                        style={{ width: "100%", paddingRight: storeSearchQuery ? "32px" : "12px" }}
+                      />
+                      {storeSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setStoreSearchQuery("")}
+                          aria-label="Clear store search"
+                          style={{
+                            position: "absolute",
+                            right: "8px",
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            color: "var(--rv-text-subdued)",
+                            display: "flex",
+                            alignItems: "center",
+                            padding: "4px",
+                          }}
+                        >
+                          <XIcon size={14} />
+                        </button>
+                      )}
+                    </div>
 
-        {/* ── Free Growth promotion ── */}
-        <div className="rv-card" style={{ margin: "20px 0" }}>
-          <div className="rv-card-header">
-            <div className="rv-card-icon-title">
-              <div className="rv-card-icon-badge success">
-                <ShieldCheckIcon size={20} />
-              </div>
-              <div>
-                <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
-                  Free Growth for the first {freeGrowth.limit} stores to claim ({freeGrowth.durationMonths} Months Free)
-                </h3>
-                <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                  Offered to every installed store while places remain. A place is taken only when the
-                  merchant claims it, giving full Growth features at no charge for {freeGrowth.durationMonths} months
-                  with no Shopify subscription created.
-                </p>
+                    {/* Quick Filter Pills */}
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${storeFilter === "ALL" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setStoreFilter("ALL")}
+                      >
+                        All ({merchants.length})
+                      </button>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${storeFilter === "INSTALLED" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setStoreFilter("INSTALLED")}
+                      >
+                        Installed ({installedCount})
+                      </button>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${storeFilter === "QUOTAS" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setStoreFilter("QUOTAS")}
+                      >
+                        Custom Quotas ({withQuotaCount})
+                      </button>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${storeFilter === "DISCOUNTS" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setStoreFilter("DISCOUNTS")}
+                      >
+                        Discounts ({withDiscountCount})
+                      </button>
+                      {partnerDevCount > 0 && (
+                        <button
+                          type="button"
+                          className={`rv-btn rv-btn-sm ${storeFilter === "PARTNER" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                          onClick={() => setStoreFilter("PARTNER")}
+                        >
+                          Partner Dev ({partnerDevCount})
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Search / Filter Feedback Bar */}
+                  {(storeSearchQuery || storeFilter !== "ALL") && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      <span>
+                        Showing {filteredMerchants.length} of {merchants.length} stores
+                        {storeSearchQuery && (
+                          <> matching &ldquo;<strong>{storeSearchQuery}</strong>&rdquo;</>
+                        )}
+                        {storeFilter !== "ALL" && (
+                          <> (filter: <strong>{storeFilter.toLowerCase()}</strong>)</>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStoreSearchQuery("");
+                          setStoreFilter("ALL");
+                        }}
+                        className="rv-btn rv-btn-subtle rv-btn-sm"
+                        style={{ fontSize: "11px", padding: "2px 8px" }}
+                      >
+                        Reset filters
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {filteredMerchants.length === 0 ? (
+                  <EmptyState
+                    icon={<DatabaseIcon size={22} />}
+                    title={storeSearchQuery || storeFilter !== "ALL" ? "No matching stores" : "No merchant stores yet"}
+                    description={
+                      storeSearchQuery
+                        ? `No stores matched "${storeSearchQuery}". Try another domain or keyword.`
+                        : storeFilter !== "ALL"
+                        ? `No stores match the "${storeFilter}" filter.`
+                        : "Stores will appear here once they install the app."
+                    }
+                    action={
+                      (storeSearchQuery || storeFilter !== "ALL") && (
+                        <button
+                          type="button"
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                          onClick={() => {
+                            setStoreSearchQuery("");
+                            setStoreFilter("ALL");
+                          }}
+                        >
+                          Clear filters
+                        </button>
+                      )
+                    }
+                  />
+                ) : (
+                  <>
+                    <div style={{ overflowX: "auto" }}>
+                      <table className="rv-table" style={{ width: "100%" }}>
+                        <thead>
+                          <tr>
+                            <th>Store</th>
+                            <th>Plan</th>
+                            <th>Quota / Catalog</th>
+                            <th>Store discount</th>
+                            <th>Effective</th>
+                            <th>Backups</th>
+                            <th>Open Incidents</th>
+                            <th>First seen</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {storePagination.paginatedItems.map((row) => (
+                            <Fragment key={row.shop}>
+                              <tr>
+                                <td>
+                                  <strong>{row.shop}</strong>
+                                  {!row.isInstalled && (
+                                    <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ marginLeft: "6px", fontWeight: 700 }}>
+                                      Uninstalled
+                                    </span>
+                                  )}
+                                  {row.alertEmail && (
+                                    <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>{row.alertEmail}</div>
+                                  )}
+                                </td>
+                                <td>
+                                  <span className="rv-badge rv-badge-neutral" style={{ textTransform: "uppercase", fontWeight: 700 }}>
+                                    {PLAN_TIERS[row.planId]?.name || row.planId}
+                                  </span>
+                                  {row.isPartnerDevelopment && (
+                                    <div style={{ marginTop: "4px" }}>
+                                      <span className="rv-badge rv-badge-info rv-badge-sm" style={{ fontWeight: 700 }}>
+                                        Partner dev store
+                                      </span>
+                                    </div>
+                                  )}
+                                  {row.freeGrowthSeat?.isActive && (
+                                    <div style={{ marginTop: "4px" }}>
+                                      <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
+                                        Free Growth · to {formatDate(row.freeGrowthSeat.expiresAt)}
+                                      </span>
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  <div style={{ fontWeight: 600 }}>{formatProductCount(row.productCount)}</div>
+                                  <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                                    {row.customQuotaInForce ? "Custom cap" : "Plan cap"}: {row.productCap.toLocaleString("en-US")}
+                                  </div>
+                                  {row.customProductLimit ? (
+                                    <div style={{ marginTop: "4px" }}>
+                                      <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", alignItems: "center" }}>
+                                        <span
+                                          className={`rv-badge rv-badge-sm ${row.customQuotaInForce ? "rv-badge-success" : "rv-badge-warning"}`}
+                                          style={{ fontWeight: 700 }}
+                                          title={row.customQuotaInForce ? "In force" : "Not in force until the merchant is on it"}
+                                        >
+                                          Custom: {row.customProductLimit.toLocaleString("en-US")}
+                                        </span>
+                                        {row.customPriceAmount && (
+                                          <span
+                                            className={`rv-badge rv-badge-sm ${
+                                              row.customPriceStatus === "ACTIVE" ? "rv-badge-success" : "rv-badge-warning"
+                                            }`}
+                                            style={{ fontWeight: 700 }}
+                                          >
+                                            ${row.customPriceAmount}/mo ·{" "}
+                                            {row.customBillingMethod === "EXTERNAL"
+                                              ? "Contract"
+                                              : row.customPriceStatus === "ACTIVE"
+                                              ? "Active"
+                                              : row.customPriceStatus === "CANCELLED"
+                                              ? "Lapsed"
+                                              : "Offered"}
+                                          </span>
+                                        )}
+                                        {row.pendingCustomTerms && (
+                                          <span
+                                            className="rv-badge rv-badge-warning rv-badge-sm"
+                                            style={{ fontWeight: 700 }}
+                                            title="New terms waiting for the merchant's approval; the current ones stay in force"
+                                          >
+                                            Pending: {row.pendingCustomTerms.products.toLocaleString("en-US")} at $
+                                            {row.pendingCustomTerms.price}/mo
+                                          </span>
+                                        )}
+                                      </div>
+                                      {row.customPlanNote && (
+                                        <div
+                                          style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}
+                                          title={row.customPlanNote}
+                                        >
+                                          {row.customPlanNote}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td>
+                                  {row.discount?.awaitingClaim ? (
+                                    <span className="rv-badge rv-badge-warning" style={{ fontWeight: 700 }}>
+                                      VIP {row.discount.percent}% · awaiting claim
+                                    </span>
+                                  ) : row.discount?.isActive ? (
+                                    <span
+                                      className={`rv-badge ${row.discount.tier === TIER_VIP ? "rv-badge-info" : "rv-badge-success"}`}
+                                      style={{ fontWeight: 700 }}
+                                    >
+                                      <SparklesIcon size={12} />{" "}
+                                      {row.discount.tier === TIER_VIP ? "VIP " : ""}
+                                      {row.discount.percent}% until {formatDate(row.discount.expiresAt)}
+                                    </span>
+                                  ) : (
+                                    <span className="rv-badge rv-badge-neutral">None</span>
+                                  )}
+                                </td>
+                                <td>
+                                  {row.effectiveDiscount ? (
+                                    row.effectiveDiscount.monthly &&
+                                    row.effectiveDiscount.yearly &&
+                                    row.effectiveDiscount.monthly.percent !== row.effectiveDiscount.yearly.percent ? (
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                        <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
+                                          {row.effectiveDiscount.yearly.percent}%
+                                          <span style={{ fontWeight: 500, marginLeft: "4px" }}>
+                                            ({EFFECTIVE_LABELS[row.effectiveDiscount.yearly.source]} · yr)
+                                          </span>
+                                        </span>
+                                        <span className="rv-badge rv-badge-info" style={{ fontWeight: 700, fontSize: "11px" }}>
+                                          {row.effectiveDiscount.monthly.percent}%
+                                          <span style={{ fontWeight: 500, marginLeft: "4px" }}>
+                                            ({EFFECTIVE_LABELS[row.effectiveDiscount.monthly.source]} · mo)
+                                          </span>
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
+                                        {row.effectiveDiscount.percent}%
+                                        <span style={{ fontWeight: 500, marginLeft: "4px" }}>
+                                          ({EFFECTIVE_LABELS[row.effectiveDiscount.source]}
+                                          {row.effectiveDiscount.monthly ? "" : " · yearly only"})
+                                        </span>
+                                      </span>
+                                    )
+                                  ) : (
+                                    <span className="rv-badge rv-badge-neutral">—</span>
+                                  )}
+                                </td>
+                                <td>{row.restorePointCount}</td>
+                                <td>
+                                  {row.openIncidentCount > 0 ? (
+                                    <span className="rv-badge rv-badge-critical">{row.openIncidentCount}</span>
+                                  ) : (
+                                    <span className="rv-badge rv-badge-neutral">0</span>
+                                  )}
+                                </td>
+                                <td>{formatDate(row.firstSeenAt)}</td>
+                                <td>
+                                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                                    <button
+                                      type="button"
+                                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                                      onClick={() => (editingShop === row.shop ? setEditingShop(null) : startEditing(row))}
+                                    >
+                                      <SparklesIcon size={14} />
+                                      <span>{row.discount?.isActive || row.discount?.awaitingClaim ? "Edit" : "Grant"}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                                      onClick={() => startQuotaEdit(row)}
+                                      title="Configure custom product quota for this store"
+                                    >
+                                      <DatabaseIcon size={13} />
+                                      <span>{row.customProductLimit ? "Edit Quota" : "Quota"}</span>
+                                    </button>
+                                    {(row.discount?.isActive || row.discount?.awaitingClaim) && (
+                                      <button
+                                        type="button"
+                                        disabled={isStoreBusy}
+                                        className="rv-btn rv-btn-critical rv-btn-sm"
+                                        onClick={() => setRemoveDiscountTarget(row)}
+                                        title="Remove discount"
+                                      >
+                                        <Trash2Icon size={14} />
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+
+                              {editingShop === row.shop && (
+                                <tr>
+                                  <td colSpan={9} style={{ background: "var(--rv-surface-subdued)" }}>
+                                    <storeFetcher.Form
+                                      method="POST"
+                                      style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap", padding: "12px 4px" }}
+                                      onSubmit={() => setEditingShop(null)}
+                                    >
+                                      <input type="hidden" name="intent" value="setDiscount" />
+                                      <input type="hidden" name="targetShop" value={row.shop} />
+                                      <div className="rv-form-field" style={{ maxWidth: "150px" }}>
+                                        <label className="rv-form-label" htmlFor={`tier-${row.shop}`}>
+                                          Discount type
+                                        </label>
+                                        <select
+                                          id={`tier-${row.shop}`}
+                                          name="tier"
+                                          value={tierDraft}
+                                          onChange={(e) => setTierDraft(e.target.value)}
+                                          className="rv-input"
+                                        >
+                                          <option value={TIER_STANDARD}>Standard</option>
+                                          <option value={TIER_VIP}>VIP</option>
+                                        </select>
+                                      </div>
+                                      <div className="rv-form-field" style={{ maxWidth: "160px" }}>
+                                        <label className="rv-form-label" htmlFor={`percent-${row.shop}`}>
+                                          Discount %
+                                        </label>
+                                        <div className="rv-input-group">
+                                          <input
+                                            id={`percent-${row.shop}`}
+                                            type="number"
+                                            min="1"
+                                            max="100"
+                                            required
+                                            name="discountPercent"
+                                            value={percentDraft}
+                                            onChange={(e) => setPercentDraft(e.target.value)}
+                                            className="rv-input"
+                                          />
+                                          <span className="rv-input-suffix">%</span>
+                                        </div>
+                                      </div>
+                                      <div className="rv-form-field" style={{ flex: 1, minWidth: "220px" }}>
+                                        <label className="rv-form-label" htmlFor={`note-${row.shop}`}>
+                                          Internal note (optional)
+                                        </label>
+                                        <input
+                                          id={`note-${row.shop}`}
+                                          type="text"
+                                          name="note"
+                                          value={noteDraft}
+                                          onChange={(e) => setNoteDraft(e.target.value)}
+                                          placeholder="e.g. Loyalty renewal, partner deal"
+                                          className="rv-input"
+                                          style={{ width: "100%" }}
+                                        />
+                                      </div>
+                                      <button type="submit" disabled={isStoreBusy} className="rv-btn rv-btn-primary rv-btn-sm">
+                                        <HistoryIcon size={14} />
+                                        <span>{isStoreBusy ? "Saving..." : `Apply (valid ${durationMonths} months)`}</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="rv-btn rv-btn-secondary rv-btn-sm"
+                                        onClick={() => setEditingShop(null)}
+                                      >
+                                        Cancel
+                                      </button>
+                                    </storeFetcher.Form>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <Pagination
+                      currentPage={storePagination.currentPage}
+                      totalItems={storePagination.totalItems}
+                      pageSize={storePagination.pageSize}
+                      onPageChange={storePagination.setCurrentPage}
+                      onPageSizeChange={storePagination.setPageSize}
+                      pageSizeOptions={[10, 20, 50, 100]}
+                      itemLabel="stores"
+                    />
+                  </>
+                )}
               </div>
             </div>
-            <span className={`rv-badge ${freeGrowth.enabled ? (freeGrowth.remaining > 0 ? "rv-badge-success" : "rv-badge-warning") : "rv-badge-neutral"}`} style={{ fontWeight: 700 }}>
-              {!freeGrowth.enabled ? "Paused" : freeGrowth.remaining > 0 ? "Running" : "Fully Claimed"}
-            </span>
           </div>
+        )}
 
-          <div className="rv-card-body">
-            <div style={{ marginBottom: "14px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "6px" }}>
-                <strong>{freeGrowth.used} of {freeGrowth.limit} seats claimed</strong>
-                <span style={{ color: "var(--rv-text-subdued)", fontWeight: 600 }}>
-                  {freeGrowth.remaining > 0 ? `${freeGrowth.remaining} left` : "Limit reached (Offer closed to new users)"}
+        {/* ── Tab 2: Support Tickets & Inquiries ── */}
+        {activeTab === "tickets" && (
+          <div className="rv-fade-in">
+            <div className="rv-card" style={{ margin: "20px 0" }}>
+              <div className="rv-card-header" style={{ flexWrap: "wrap", gap: "12px" }}>
+                <div className="rv-card-icon-title">
+                  <div className="rv-card-icon-badge info">
+                    <MailIcon size={20} />
+                  </div>
+                  <div>
+                    <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                      Support Tickets &amp; Inquiries ({tickets.length})
+                    </h3>
+                    <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      Merchant support inquiries, billing questions, and Custom Enterprise Plus quote requests.
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                  {openTicketCount > 0 ? (
+                    <span className="rv-badge rv-badge-warning" style={{ fontWeight: 700 }}>
+                      {openTicketCount} Open {openTicketCount === 1 ? "Ticket" : "Tickets"}
+                    </span>
+                  ) : (
+                    <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
+                      All Caught Up
+                    </span>
+                  )}
+                  {billingTicketCount > 0 && (
+                    <span className="rv-badge rv-badge-info" style={{ fontWeight: 700 }}>
+                      {billingTicketCount} Custom / Billing
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="rv-card-body">
+                {/* Search & Filter Controls */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", justifyContent: "space-between" }}>
+                    {/* Search Input */}
+                    <div className="rv-search-wrapper" style={{ flex: "1 1 300px", maxWidth: "480px" }}>
+                      <span className="rv-search-icon">
+                        <SearchIcon size={14} />
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="Search by ticket #, store, email, subject, or message..."
+                        value={ticketSearchQuery}
+                        onChange={(e) => setTicketSearchQuery(e.target.value)}
+                        className="rv-input rv-input-with-icon"
+                        style={{ width: "100%", paddingRight: ticketSearchQuery ? "32px" : "12px" }}
+                      />
+                      {ticketSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setTicketSearchQuery("")}
+                          aria-label="Clear ticket search"
+                          style={{
+                            position: "absolute",
+                            right: "8px",
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            color: "var(--rv-text-subdued)",
+                            display: "flex",
+                            alignItems: "center",
+                            padding: "4px",
+                          }}
+                        >
+                          <XIcon size={14} />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Filter Pills */}
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${ticketFilter === "ALL" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setTicketFilter("ALL")}
+                      >
+                        All ({tickets.length})
+                      </button>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${ticketFilter === "OPEN" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setTicketFilter("OPEN")}
+                      >
+                        Open ({openTicketCount})
+                      </button>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${ticketFilter === "IN_PROGRESS" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setTicketFilter("IN_PROGRESS")}
+                      >
+                        In Progress ({inProgressTicketCount})
+                      </button>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${ticketFilter === "BILLING" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setTicketFilter("BILLING")}
+                      >
+                        Billing / Custom ({billingTicketCount})
+                      </button>
+                      <button
+                        type="button"
+                        className={`rv-btn rv-btn-sm ${ticketFilter === "RESOLVED" ? "rv-btn-primary" : "rv-btn-secondary"}`}
+                        onClick={() => setTicketFilter("RESOLVED")}
+                      >
+                        Resolved ({resolvedTicketCount})
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Search / Filter Feedback Bar */}
+                  {(ticketSearchQuery || ticketFilter !== "ALL") && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      <span>
+                        Showing {filteredTickets.length} of {tickets.length} tickets
+                        {ticketSearchQuery && (
+                          <> matching &ldquo;<strong>{ticketSearchQuery}</strong>&rdquo;</>
+                        )}
+                        {ticketFilter !== "ALL" && (
+                          <> (status: <strong>{ticketFilter.replace("_", " ").toLowerCase()}</strong>)</>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTicketSearchQuery("");
+                          setTicketFilter("ALL");
+                        }}
+                        className="rv-btn rv-btn-subtle rv-btn-sm"
+                        style={{ fontSize: "11px", padding: "2px 8px" }}
+                      >
+                        Reset filters
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {filteredTickets.length === 0 ? (
+                  <EmptyState
+                    icon={<MailIcon size={22} />}
+                    title={ticketSearchQuery || ticketFilter !== "ALL" ? "No matching tickets" : "No support inquiries yet"}
+                    description={
+                      ticketSearchQuery
+                        ? `No tickets match "${ticketSearchQuery}". Try another keyword or clear filters.`
+                        : ticketFilter === "ALL"
+                        ? "No support tickets have been submitted yet."
+                        : `No tickets match the "${ticketFilter}" filter.`
+                    }
+                    action={
+                      (ticketSearchQuery || ticketFilter !== "ALL") && (
+                        <button
+                          type="button"
+                          className="rv-btn rv-btn-secondary rv-btn-sm"
+                          onClick={() => {
+                            setTicketSearchQuery("");
+                            setTicketFilter("ALL");
+                          }}
+                        >
+                          Clear filters
+                        </button>
+                      )
+                    }
+                  />
+                ) : (
+                  <>
+                    <div style={{ overflowX: "auto" }}>
+                      <table className="rv-table" style={{ width: "100%" }}>
+                        <thead>
+                          <tr>
+                            <th>#</th>
+                            <th>Store &amp; Email</th>
+                            <th>Subject &amp; Category</th>
+                            <th>Priority</th>
+                            <th>Status</th>
+                            <th>Submitted</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ticketPagination.paginatedItems.map((t) => {
+                            const isCustomPlus =
+                              t.category?.toLowerCase() === "billing" ||
+                              t.subject?.toLowerCase().includes("custom") ||
+                              t.subject?.toLowerCase().includes("200k") ||
+                              t.subject?.toLowerCase().includes("enterprise");
+                            const matchingMerchant = merchants.find((m) => m.shop === t.shop);
+
+                            return (
+                              <tr key={t.id}>
+                                <td>
+                                  <strong>#{t.id}</strong>
+                                </td>
+                                <td>
+                                  <strong>{t.shop}</strong>
+                                  <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                                    {t.email || "No email provided"}
+                                  </div>
+                                </td>
+                                <td>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                                    <span style={{ fontWeight: 600 }}>{t.subject}</span>
+                                    {isCustomPlus && (
+                                      <span className="rv-badge rv-badge-warning rv-badge-sm" style={{ fontWeight: 700 }}>
+                                        Custom Plus Request
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
+                                    <span style={{ textTransform: "capitalize" }}>{t.category}</span>
+                                    {" · "}
+                                    <span>Plan: {t.planTier || "Unknown"}</span>
+                                    {matchingMerchant && (
+                                      <span> · Catalog: {formatProductCount(matchingMerchant.productCount)}</span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td>
+                                  <span
+                                    className={`rv-badge rv-badge-sm ${
+                                      t.priority === "URGENT" || t.priority === "HIGH"
+                                        ? "rv-badge-critical"
+                                        : "rv-badge-neutral"
+                                    }`}
+                                    style={{ fontWeight: 700 }}
+                                  >
+                                    {t.priority}
+                                  </span>
+                                </td>
+                                <td>
+                                  <span
+                                    className={`rv-badge ${
+                                      t.status === "RESOLVED"
+                                        ? "rv-badge-success"
+                                        : t.status === "IN_PROGRESS"
+                                        ? "rv-badge-info"
+                                        : "rv-badge-warning"
+                                    }`}
+                                    style={{ fontWeight: 700 }}
+                                  >
+                                    {t.status === "RESOLVED" ? (
+                                      <CheckCircleIcon size={12} />
+                                    ) : t.status === "IN_PROGRESS" ? (
+                                      <ClockIcon size={12} />
+                                    ) : (
+                                      <AlertTriangleIcon size={12} />
+                                    )}{" "}
+                                    {t.status}
+                                  </span>
+                                </td>
+                                <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                                  {formatDate(t.createdAt)}
+                                </td>
+                                <td>
+                                  <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                                    <button
+                                      type="button"
+                                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                                      onClick={() => setViewingTicket(t)}
+                                    >
+                                      View
+                                    </button>
+                                    {matchingMerchant && isCustomPlus && (
+                                      <button
+                                        type="button"
+                                        className="rv-btn rv-btn-primary rv-btn-sm"
+                                        onClick={() => startQuotaEdit(matchingMerchant)}
+                                        title="Configure custom catalog limit for this merchant"
+                                      >
+                                        <DatabaseIcon size={12} />
+                                        <span>Grant Quota</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <Pagination
+                      currentPage={ticketPagination.currentPage}
+                      totalItems={ticketPagination.totalItems}
+                      pageSize={ticketPagination.pageSize}
+                      onPageChange={ticketPagination.setCurrentPage}
+                      onPageSizeChange={ticketPagination.setPageSize}
+                      pageSizeOptions={[10, 20, 50]}
+                      itemLabel="tickets"
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Tab 3: Global Yearly Discount + Free Growth ── */}
+        {activeTab === "promotions" && (
+          <div className="rv-fade-in">
+            {/* Quick Metrics Summary */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px", margin: "20px 0 10px" }}>
+              <div className="rv-card" style={{ padding: "16px", margin: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--rv-text-subdued)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Global Yearly Discount
+                  </span>
+                  <div className="rv-card-icon-badge info" style={{ width: "28px", height: "28px" }}>
+                    <SparklesIcon size={15} />
+                  </div>
+                </div>
+                <div style={{ fontSize: "20px", fontWeight: 700, color: "var(--rv-text)" }}>
+                  {globalDiscount.isActive ? `${globalDiscount.percent}% Live` : "Inactive"}
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "4px" }}>
+                  {globalDiscount.isActive
+                    ? `Active until ${formatDate(globalDiscount.expiresAt)} · All stores`
+                    : "No global campaign active"}
+                </div>
+              </div>
+
+              <div className="rv-card" style={{ padding: "16px", margin: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--rv-text-subdued)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Free Growth Promotion
+                  </span>
+                  <div className="rv-card-icon-badge success" style={{ width: "28px", height: "28px" }}>
+                    <ShieldCheckIcon size={15} />
+                  </div>
+                </div>
+                <div style={{ fontSize: "20px", fontWeight: 700, color: "var(--rv-text)" }}>
+                  {freeGrowth.used} / {freeGrowth.limit} Seats Claimed
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "4px" }}>
+                  {freeGrowth.remaining > 0
+                    ? `${freeGrowth.remaining} seats remaining · ${freeGrowth.durationMonths} Months Free`
+                    : "Offer closed to new users (Pool exhausted)"}
+                </div>
+              </div>
+
+              <div className="rv-card" style={{ padding: "16px", margin: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--rv-text-subdued)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Store-Specific Grants
+                  </span>
+                  <div className="rv-card-icon-badge info" style={{ width: "28px", height: "28px" }}>
+                    <DatabaseIcon size={15} />
+                  </div>
+                </div>
+                <div style={{ fontSize: "20px", fontWeight: 700, color: "var(--rv-text)" }}>
+                  {withDiscountCount} Stores
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "4px" }}>
+                  Holding direct VIP or Standard discounts
+                </div>
+              </div>
+            </div>
+
+            {/* ── Global Yearly Discount Card ── */}
+            <div className="rv-card" style={{ margin: "20px 0" }}>
+              <div className="rv-card-header">
+                <div className="rv-card-icon-title">
+                  <div className="rv-card-icon-badge info">
+                    <SparklesIcon size={20} />
+                  </div>
+                  <div>
+                    <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>Global Yearly Discount</h3>
+                    <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      Applies to every store at once. A store with a bigger discount of its own keeps that instead —
+                      discounts never stack.
+                    </p>
+                  </div>
+                </div>
+                {globalDiscount.isActive ? (
+                  <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
+                    Live · {globalDiscount.percent}% until {formatDate(globalDiscount.expiresAt)}
+                  </span>
+                ) : (
+                  <span className="rv-badge rv-badge-neutral">Off</span>
+                )}
+              </div>
+
+              <div className="rv-card-body">
+                <globalFetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
+                  <input type="hidden" name="intent" value="setGlobalDiscount" />
+                  <div className="rv-form-field" style={{ maxWidth: "160px" }}>
+                    <label className="rv-form-label" htmlFor="global-percent">Discount %</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <input
+                        id="global-percent"
+                        type="number"
+                        min="1"
+                        max="100"
+                        required
+                        name="globalDiscountPercent"
+                        value={globalPercentDraft}
+                        onChange={(e) => setGlobalPercentDraft(e.target.value)}
+                        className="rv-input"
+                      />
+                      <span style={{ fontSize: "13px", color: "var(--rv-text-subdued)" }}>%</span>
+                    </div>
+                  </div>
+                  <div className="rv-form-field" style={{ flex: 1, minWidth: "220px" }}>
+                    <label className="rv-form-label" htmlFor="global-note">Internal note (optional)</label>
+                    <input
+                      id="global-note"
+                      type="text"
+                      name="globalNote"
+                      placeholder="e.g. Black Friday campaign"
+                      value={globalNoteDraft}
+                      onChange={(e) => setGlobalNoteDraft(e.target.value)}
+                      className="rv-input"
+                    />
+                  </div>
+                  <button type="submit" disabled={isGlobalBusy} className="rv-btn rv-btn-primary rv-btn-sm">
+                    <SparklesIcon size={14} />
+                    <span>{isGlobalBusy ? "Saving..." : `Apply to all stores (${durationMonths} months)`}</span>
+                  </button>
+                </globalFetcher.Form>
+
+                {globalDiscount.isActive && (
+                  <div style={{ marginTop: "12px" }}>
+                    <button
+                      type="button"
+                      disabled={isGlobalBusy}
+                      className="rv-btn rv-btn-secondary rv-btn-sm"
+                      onClick={() => setShowClearGlobalModal(true)}
+                    >
+                      Turn off global discount
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* ── Free Growth promotion Card ── */}
+            <div className="rv-card" style={{ margin: "20px 0" }}>
+              <div className="rv-card-header">
+                <div className="rv-card-icon-title">
+                  <div className="rv-card-icon-badge success">
+                    <ShieldCheckIcon size={20} />
+                  </div>
+                  <div>
+                    <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
+                      Free Growth for the first {freeGrowth.limit} stores to claim ({freeGrowth.durationMonths} Months Free)
+                    </h3>
+                    <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
+                      Offered to every installed store while places remain. A place is taken only when the
+                      merchant claims it, giving full Growth features at no charge for {freeGrowth.durationMonths} months
+                      with no Shopify subscription created.
+                    </p>
+                  </div>
+                </div>
+                <span className={`rv-badge ${freeGrowth.enabled ? (freeGrowth.remaining > 0 ? "rv-badge-success" : "rv-badge-warning") : "rv-badge-neutral"}`} style={{ fontWeight: 700 }}>
+                  {!freeGrowth.enabled ? "Paused" : freeGrowth.remaining > 0 ? "Running" : "Fully Claimed"}
                 </span>
               </div>
-              <div style={{ height: "8px", borderRadius: "999px", background: "var(--rv-surface-subdued)", overflow: "hidden" }}>
-                <div style={{ width: `${seatPct}%`, height: "100%", background: freeGrowth.remaining === 0 ? "var(--rv-warning)" : "var(--rv-primary)" }} />
-              </div>
-            </div>
 
-            <freeGrowthFetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
-              <input type="hidden" name="intent" value="updateFreeGrowth" />
-              <input type="hidden" name="freeGrowthEnabled" value={freeGrowthOn ? "1" : "0"} />
-              <div className="rv-form-field" style={{ maxWidth: "160px" }}>
-                <label className="rv-form-label" htmlFor="seat-limit">Eligible merchants</label>
-                <input
-                  id="seat-limit"
-                  type="number"
-                  min={freeGrowth.used}
-                  max="1000"
-                  required
-                  name="freeGrowthSeatLimit"
-                  value={seatLimitDraft}
-                  onChange={(e) => setSeatLimitDraft(e.target.value)}
-                  className="rv-input"
-                />
-              </div>
-              <div className="rv-form-field" style={{ maxWidth: "160px" }}>
-                <label className="rv-form-label" htmlFor="duration-months">Free duration (months)</label>
-                <input
-                  id="duration-months"
-                  type="number"
-                  min="1"
-                  max="36"
-                  required
-                  name="freeGrowthDurationMonths"
-                  value={durationMonthsDraft}
-                  onChange={(e) => setDurationMonthsDraft(e.target.value)}
-                  className="rv-input"
-                />
-              </div>
-              <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", paddingBottom: "8px" }}>
-                <input
-                  type="checkbox"
-                  checked={freeGrowthOn}
-                  onChange={(e) => setFreeGrowthOn(e.target.checked)}
-                />
-                <span>Offer seats to merchants</span>
-              </label>
-              <button type="submit" disabled={isFreeGrowthBusy} className="rv-btn rv-btn-primary rv-btn-sm">
-                <HistoryIcon size={14} />
-                <span>{isFreeGrowthBusy ? "Saving..." : "Save promotion"}</span>
-              </button>
-            </freeGrowthFetcher.Form>
+              <div className="rv-card-body">
+                <div style={{ marginBottom: "14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "6px" }}>
+                    <strong>{freeGrowth.used} of {freeGrowth.limit} seats claimed</strong>
+                    <span style={{ color: "var(--rv-text-subdued)", fontWeight: 600 }}>
+                      {freeGrowth.remaining > 0 ? `${freeGrowth.remaining} left` : "Limit reached (Offer closed to new users)"}
+                    </span>
+                  </div>
+                  <div style={{ height: "8px", borderRadius: "999px", background: "var(--rv-surface-subdued)", overflow: "hidden" }}>
+                    <div style={{ width: `${seatPct}%`, height: "100%", background: freeGrowth.remaining === 0 ? "var(--rv-warning)" : "var(--rv-primary)" }} />
+                  </div>
+                </div>
 
-            <p style={{ margin: "12px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
-              Stores that install but never claim take up nothing, so you always give away{" "}
-              {freeGrowth.limit} real activations. Each store can claim once: uninstalling does not return
-              its seat to the pool, and a store that reinstalls gets the rest of its original term, never a
-              new one. Seats are never revoked automatically, so the total cannot be lowered below {freeGrowth.used}.
-              Once all {freeGrowth.limit} places are claimed, the offer automatically closes to new users.
-            </p>
-          </div>
-        </div>
+                <freeGrowthFetcher.Form method="POST" style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap" }}>
+                  <input type="hidden" name="intent" value="updateFreeGrowth" />
+                  <input type="hidden" name="freeGrowthEnabled" value={freeGrowthOn ? "1" : "0"} />
+                  <div className="rv-form-field" style={{ maxWidth: "160px" }}>
+                    <label className="rv-form-label" htmlFor="seat-limit">Eligible merchants</label>
+                    <input
+                      id="seat-limit"
+                      type="number"
+                      min={freeGrowth.used}
+                      max="1000"
+                      required
+                      name="freeGrowthSeatLimit"
+                      value={seatLimitDraft}
+                      onChange={(e) => setSeatLimitDraft(e.target.value)}
+                      className="rv-input"
+                    />
+                  </div>
+                  <div className="rv-form-field" style={{ maxWidth: "160px" }}>
+                    <label className="rv-form-label" htmlFor="duration-months">Free duration (months)</label>
+                    <input
+                      id="duration-months"
+                      type="number"
+                      min="1"
+                      max="36"
+                      required
+                      name="freeGrowthDurationMonths"
+                      value={durationMonthsDraft}
+                      onChange={(e) => setDurationMonthsDraft(e.target.value)}
+                      className="rv-input"
+                    />
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", paddingBottom: "8px" }}>
+                    <input
+                      type="checkbox"
+                      checked={freeGrowthOn}
+                      onChange={(e) => setFreeGrowthOn(e.target.checked)}
+                    />
+                    <span>Offer seats to merchants</span>
+                  </label>
+                  <button type="submit" disabled={isFreeGrowthBusy} className="rv-btn rv-btn-primary rv-btn-sm">
+                    <HistoryIcon size={14} />
+                    <span>{isFreeGrowthBusy ? "Saving..." : "Save promotion"}</span>
+                  </button>
+                </freeGrowthFetcher.Form>
 
-        {/* ── Support Tickets & Custom Tier Inquiries ── */}
-        <div className="rv-card" style={{ margin: "20px 0" }}>
-          <div className="rv-card-header" style={{ flexWrap: "wrap", gap: "12px" }}>
-            <div className="rv-card-icon-title">
-              <div className="rv-card-icon-badge info">
-                <MailIcon size={20} />
-              </div>
-              <div>
-                <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
-                  Support Tickets &amp; Inquiries ({tickets.length})
-                </h3>
-                <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                  Merchant support inquiries, billing questions, and Custom Enterprise Plus quote requests.
+                <p style={{ margin: "12px 0 0", fontSize: "12px", color: "var(--rv-text-subdued)", lineHeight: 1.5 }}>
+                  Stores that install but never claim take up nothing, so you always give away{" "}
+                  {freeGrowth.limit} real activations. Each store can claim once: uninstalling does not return
+                  its seat to the pool, and a store that reinstalls gets the rest of its original term, never a
+                  new one. Seats are never revoked automatically, so the total cannot be lowered below {freeGrowth.used}.
+                  Once all {freeGrowth.limit} places are claimed, the offer automatically closes to new users.
                 </p>
               </div>
             </div>
 
-            {/* Filter Pills */}
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
-              <button
-                type="button"
-                className={`rv-btn rv-btn-sm ${ticketFilter === "ALL" ? "rv-btn-primary" : "rv-btn-secondary"}`}
-                onClick={() => setTicketFilter("ALL")}
-              >
-                All ({tickets.length})
-              </button>
-              <button
-                type="button"
-                className={`rv-btn rv-btn-sm ${ticketFilter === "OPEN" ? "rv-btn-primary" : "rv-btn-secondary"}`}
-                onClick={() => setTicketFilter("OPEN")}
-              >
-                Open ({openTicketCount})
-              </button>
-              <button
-                type="button"
-                className={`rv-btn rv-btn-sm ${ticketFilter === "IN_PROGRESS" ? "rv-btn-primary" : "rv-btn-secondary"}`}
-                onClick={() => setTicketFilter("IN_PROGRESS")}
-              >
-                In Progress ({inProgressTicketCount})
-              </button>
-              <button
-                type="button"
-                className={`rv-btn rv-btn-sm ${ticketFilter === "BILLING" ? "rv-btn-primary" : "rv-btn-secondary"}`}
-                onClick={() => setTicketFilter("BILLING")}
-              >
-                Billing / Custom ({billingTicketCount})
-              </button>
-              <button
-                type="button"
-                className={`rv-btn rv-btn-sm ${ticketFilter === "RESOLVED" ? "rv-btn-primary" : "rv-btn-secondary"}`}
-                onClick={() => setTicketFilter("RESOLVED")}
-              >
-                Resolved ({tickets.filter((t) => t.status === "RESOLVED").length})
-              </button>
-            </div>
-          </div>
-
-          <div className="rv-card-body">
-            {filteredTickets.length === 0 ? (
-              <EmptyState
-                icon={<MailIcon size={22} />}
-                title="No inquiries found"
-                description={
-                  ticketFilter === "ALL"
-                    ? "No support tickets have been submitted yet."
-                    : `No tickets match the "${ticketFilter}" filter.`
-                }
-              />
-            ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table className="rv-table" style={{ width: "100%" }}>
-                  <thead>
-                    <tr>
-                      <th>#</th>
-                      <th>Store &amp; Email</th>
-                      <th>Subject &amp; Category</th>
-                      <th>Priority</th>
-                      <th>Status</th>
-                      <th>Submitted</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredTickets.map((t) => {
-                      const isCustomPlus =
-                        t.category?.toLowerCase() === "billing" ||
-                        t.subject?.toLowerCase().includes("custom") ||
-                        t.subject?.toLowerCase().includes("200k") ||
-                        t.subject?.toLowerCase().includes("enterprise");
-                      const matchingMerchant = merchants.find((m) => m.shop === t.shop);
-
-                      return (
-                        <tr key={t.id}>
-                          <td>
-                            <strong>#{t.id}</strong>
-                          </td>
-                          <td>
-                            <strong>{t.shop}</strong>
-                            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                              {t.email || "No email provided"}
-                            </div>
-                          </td>
-                          <td>
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                              <span style={{ fontWeight: 600 }}>{t.subject}</span>
-                              {isCustomPlus && (
-                                <span className="rv-badge rv-badge-warning rv-badge-sm" style={{ fontWeight: 700 }}>
-                                  Custom Plus Request
-                                </span>
-                              )}
-                            </div>
-                            <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                              <span style={{ textTransform: "capitalize" }}>{t.category}</span>
-                              {" · "}
-                              <span>Plan: {t.planTier || "Unknown"}</span>
-                              {matchingMerchant && (
-                                <span> · Catalog: {formatProductCount(matchingMerchant.productCount)}</span>
-                              )}
-                            </div>
-                          </td>
-                          <td>
-                            <span
-                              className={`rv-badge rv-badge-sm ${
-                                t.priority === "URGENT" || t.priority === "HIGH"
-                                  ? "rv-badge-critical"
-                                  : "rv-badge-neutral"
-                              }`}
-                              style={{ fontWeight: 700 }}
-                            >
-                              {t.priority}
-                            </span>
-                          </td>
-                          <td>
-                            <span
-                              className={`rv-badge ${
-                                t.status === "RESOLVED"
-                                  ? "rv-badge-success"
-                                  : t.status === "IN_PROGRESS"
-                                  ? "rv-badge-info"
-                                  : "rv-badge-warning"
-                              }`}
-                              style={{ fontWeight: 700 }}
-                            >
-                              {t.status === "RESOLVED" ? (
-                                <CheckCircleIcon size={12} />
-                              ) : t.status === "IN_PROGRESS" ? (
-                                <ClockIcon size={12} />
-                              ) : (
-                                <AlertTriangleIcon size={12} />
-                              )}{" "}
-                              {t.status}
-                            </span>
-                          </td>
-                          <td style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                            {formatDate(t.createdAt)}
-                          </td>
-                          <td>
-                            <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
-                              <button
-                                type="button"
-                                className="rv-btn rv-btn-secondary rv-btn-sm"
-                                onClick={() => setViewingTicket(t)}
-                              >
-                                View
-                              </button>
-                              {matchingMerchant && isCustomPlus && (
-                                <button
-                                  type="button"
-                                  className="rv-btn rv-btn-primary rv-btn-sm"
-                                  onClick={() => startQuotaEdit(matchingMerchant)}
-                                  title="Configure custom catalog limit for this merchant"
-                                >
-                                  <DatabaseIcon size={12} />
-                                  <span>Grant Quota</span>
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            {/* ── How this works Card ── */}
+            <div className="rv-card" style={{ margin: "20px 0" }}>
+              <div className="rv-card-header">
+                <div className="rv-card-icon-title">
+                  <div className="rv-card-icon-badge success">
+                    <ShieldCheckIcon size={20} />
+                  </div>
+                  <div>
+                    <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>How this works</h3>
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
-        </div>
-
-        <div className="rv-card" style={{ margin: "20px 0" }}>
-          <div className="rv-card-header">
-            <div className="rv-card-icon-title">
-              <div className="rv-card-icon-badge info">
-                <DatabaseIcon size={20} />
-              </div>
-              <div>
-                <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>
-                  Merchant Stores ({merchants.length})
-                </h3>
-                <p style={{ margin: 0, fontSize: "12px", color: "var(--rv-text-subdued)" }}>
-                  Every store that has installed the app. Manage custom product limits or yearly discounts.
-                </p>
+              <div className="rv-card-body" style={{ fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6 }}>
+                <ul style={{ margin: 0, paddingLeft: "18px" }}>
+                  <li>A discount is always granted for {durationMonths} months from the moment you set or update it.</li>
+                  <li>The merchant sees it immediately on their own Plans &amp; Billing page — no separate sync step.</li>
+                  <li>
+                    <strong>Discounts never stack.</strong> A store gets the single largest one it qualifies for —
+                    its own VIP or standard grant, or the global discount, whichever is bigger. The global
+                    discount applies to yearly billing only, so a store with no grant of its own pays full
+                    price monthly. The &ldquo;Effective&rdquo; column shows which one actually applies.
+                  </li>
+                  <li>
+                    <strong>VIP is a label on the store&apos;s own grant</strong>, not a second discount. Switching a
+                    store between Standard and VIP changes how it is badged for the merchant, not how many
+                    discounts they hold.
+                  </li>
+                  <li>
+                    <strong>A VIP grant is an offer the merchant must claim.</strong> It discounts nothing and
+                    shows as &ldquo;awaiting claim&rdquo; until they accept it on their own Plans &amp; Billing
+                    page. Their {durationMonths} months start from the claim, not from when you granted it, so
+                    there is no penalty for them deciding later. Standard and global discounts apply
+                    immediately, with no claim step.
+                  </li>
+                  <li>
+                    <strong>Free Growth is separate from discounts</strong>, and is also claimed by the merchant.
+                    It gives Growth features at no charge and creates no Shopify subscription. A seat holder who
+                    upgrades to Business or Enterprise pays for that plan, with their best discount applied.
+                  </li>
+                  <li>It reaches the real Shopify charge only when they start or switch to a paid plan, and then lasts {durationMonths} billing cycles.</li>
+                  <li>
+                    A merchant already on a paid plan keeps paying their current price until they apply it —
+                    their Plans &amp; Billing page prompts them to do so.
+                  </li>
+                  <li>Removing a discount here disables it immediately; it does not retroactively change a subscription that already applied it.</li>
+                </ul>
               </div>
             </div>
           </div>
-
-          <div className="rv-card-body">
-            {merchants.length === 0 ? (
-              <EmptyState
-                icon={<DatabaseIcon size={22} />}
-                title="No merchant stores yet"
-                description="Stores will appear here once they install the app."
-              />
-            ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table className="rv-table" style={{ width: "100%" }}>
-                  <thead>
-                    <tr>
-                      <th>Store</th>
-                      <th>Plan</th>
-                      <th>Quota / Catalog</th>
-                      <th>Store discount</th>
-                      <th>Effective</th>
-                      <th>Backups</th>
-                      <th>Open Incidents</th>
-                      <th>First seen</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {merchants.map((row) => (
-                      <Fragment key={row.shop}>
-                        <tr>
-                          <td>
-                            <strong>{row.shop}</strong>
-                            {!row.isInstalled && (
-                              <span className="rv-badge rv-badge-neutral rv-badge-sm" style={{ marginLeft: "6px", fontWeight: 700 }}>
-                                Uninstalled
-                              </span>
-                            )}
-                            {row.alertEmail && (
-                              <div style={{ fontSize: "12px", color: "var(--rv-text-subdued)" }}>{row.alertEmail}</div>
-                            )}
-                          </td>
-                          <td>
-                            <span className="rv-badge rv-badge-neutral" style={{ textTransform: "uppercase", fontWeight: 700 }}>
-                              {PLAN_TIERS[row.planId]?.name || row.planId}
-                            </span>
-                            {row.isPartnerDevelopment && (
-                              <div style={{ marginTop: "4px" }}>
-                                <span className="rv-badge rv-badge-info rv-badge-sm" style={{ fontWeight: 700 }}>
-                                  Partner dev store
-                                </span>
-                              </div>
-                            )}
-                            {row.freeGrowthSeat?.isActive && (
-                              <div style={{ marginTop: "4px" }}>
-                                <span className="rv-badge rv-badge-success rv-badge-sm" style={{ fontWeight: 700 }}>
-                                  Free Growth · to {formatDate(row.freeGrowthSeat.expiresAt)}
-                                </span>
-                              </div>
-                            )}
-                          </td>
-                          <td>
-                            <div style={{ fontWeight: 600 }}>{formatProductCount(row.productCount)}</div>
-                            <div style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}>
-                              {row.customQuotaInForce ? "Custom cap" : "Plan cap"}: {row.productCap.toLocaleString("en-US")}
-                            </div>
-                            {row.customProductLimit ? (
-                              <div style={{ marginTop: "4px" }}>
-                                <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", alignItems: "center" }}>
-                                  <span
-                                    className={`rv-badge rv-badge-sm ${row.customQuotaInForce ? "rv-badge-success" : "rv-badge-warning"}`}
-                                    style={{ fontWeight: 700 }}
-                                    title={row.customQuotaInForce ? "In force" : "Not in force until the merchant is on it"}
-                                  >
-                                    Custom: {row.customProductLimit.toLocaleString("en-US")}
-                                  </span>
-                                  {row.customPriceAmount && (
-                                    <span
-                                      className={`rv-badge rv-badge-sm ${
-                                        row.customPriceStatus === "ACTIVE" ? "rv-badge-success" : "rv-badge-warning"
-                                      }`}
-                                      style={{ fontWeight: 700 }}
-                                    >
-                                      ${row.customPriceAmount}/mo ·{" "}
-                                      {row.customBillingMethod === "EXTERNAL"
-                                        ? "Contract"
-                                        : row.customPriceStatus === "ACTIVE"
-                                        ? "Active"
-                                        : row.customPriceStatus === "CANCELLED"
-                                        ? "Lapsed"
-                                        : "Offered"}
-                                    </span>
-                                  )}
-                                  {row.pendingCustomTerms && (
-                                    <span
-                                      className="rv-badge rv-badge-warning rv-badge-sm"
-                                      style={{ fontWeight: 700 }}
-                                      title="New terms waiting for the merchant's approval; the current ones stay in force"
-                                    >
-                                      Pending: {row.pendingCustomTerms.products.toLocaleString("en-US")} at $
-                                      {row.pendingCustomTerms.price}/mo
-                                    </span>
-                                  )}
-                                </div>
-                                {row.customPlanNote && (
-                                  <div
-                                    style={{ fontSize: "11px", color: "var(--rv-text-subdued)", marginTop: "2px" }}
-                                    title={row.customPlanNote}
-                                  >
-                                    {row.customPlanNote}
-                                  </div>
-                                )}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td>
-                            {row.discount?.awaitingClaim ? (
-                              <span className="rv-badge rv-badge-warning" style={{ fontWeight: 700 }}>
-                                VIP {row.discount.percent}% · awaiting claim
-                              </span>
-                            ) : row.discount?.isActive ? (
-                              <span
-                                className={`rv-badge ${row.discount.tier === TIER_VIP ? "rv-badge-info" : "rv-badge-success"}`}
-                                style={{ fontWeight: 700 }}
-                              >
-                                <SparklesIcon size={12} />{" "}
-                                {row.discount.tier === TIER_VIP ? "VIP " : ""}
-                                {row.discount.percent}% until {formatDate(row.discount.expiresAt)}
-                              </span>
-                            ) : (
-                              <span className="rv-badge rv-badge-neutral">None</span>
-                            )}
-                          </td>
-                          <td>
-                            {row.effectiveDiscount ? (
-                              row.effectiveDiscount.monthly &&
-                              row.effectiveDiscount.yearly &&
-                              row.effectiveDiscount.monthly.percent !== row.effectiveDiscount.yearly.percent ? (
-                                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                                  <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
-                                    {row.effectiveDiscount.yearly.percent}%
-                                    <span style={{ fontWeight: 500, marginLeft: "4px" }}>
-                                      ({EFFECTIVE_LABELS[row.effectiveDiscount.yearly.source]} · yr)
-                                    </span>
-                                  </span>
-                                  <span className="rv-badge rv-badge-info" style={{ fontWeight: 700, fontSize: "11px" }}>
-                                    {row.effectiveDiscount.monthly.percent}%
-                                    <span style={{ fontWeight: 500, marginLeft: "4px" }}>
-                                      ({EFFECTIVE_LABELS[row.effectiveDiscount.monthly.source]} · mo)
-                                    </span>
-                                  </span>
-                                </div>
-                              ) : (
-                                <span className="rv-badge rv-badge-success" style={{ fontWeight: 700 }}>
-                                  {row.effectiveDiscount.percent}%
-                                  <span style={{ fontWeight: 500, marginLeft: "4px" }}>
-                                    {/* The global discount is yearly-only: a monthly store pays full price. */}
-                                    ({EFFECTIVE_LABELS[row.effectiveDiscount.source]}
-                                    {row.effectiveDiscount.monthly ? "" : " · yearly only"})
-                                  </span>
-                                </span>
-                              )
-                            ) : (
-                              <span className="rv-badge rv-badge-neutral">—</span>
-                            )}
-                          </td>
-                          <td>{row.restorePointCount}</td>
-                          <td>
-                            {row.openIncidentCount > 0 ? (
-                              <span className="rv-badge rv-badge-critical">{row.openIncidentCount}</span>
-                            ) : (
-                              <span className="rv-badge rv-badge-neutral">0</span>
-                            )}
-                          </td>
-                          <td>{formatDate(row.firstSeenAt)}</td>
-                          <td>
-                            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                              <button
-                                type="button"
-                                className="rv-btn rv-btn-secondary rv-btn-sm"
-                                onClick={() => (editingShop === row.shop ? setEditingShop(null) : startEditing(row))}
-                              >
-                                <SparklesIcon size={14} />
-                                <span>{row.discount?.isActive || row.discount?.awaitingClaim ? "Edit" : "Grant"}</span>
-                              </button>
-                              <button
-                                type="button"
-                                className="rv-btn rv-btn-secondary rv-btn-sm"
-                                onClick={() => startQuotaEdit(row)}
-                                title="Configure custom product quota for this store"
-                              >
-                                <DatabaseIcon size={13} />
-                                <span>{row.customProductLimit ? "Edit Quota" : "Quota"}</span>
-                              </button>
-                              {(row.discount?.isActive || row.discount?.awaitingClaim) && (
-                                <button
-                                  type="button"
-                                  disabled={isStoreBusy}
-                                  className="rv-btn rv-btn-critical rv-btn-sm"
-                                  onClick={() => setRemoveDiscountTarget(row)}
-                                  title="Remove discount"
-                                >
-                                  <Trash2Icon size={14} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-
-                        {editingShop === row.shop && (
-                          <tr>
-                            <td colSpan={9} style={{ background: "var(--rv-surface-subdued)" }}>
-                              <storeFetcher.Form
-                                method="POST"
-                                style={{ display: "flex", alignItems: "flex-end", gap: "14px", flexWrap: "wrap", padding: "12px 4px" }}
-                                onSubmit={() => setEditingShop(null)}
-                              >
-                                <input type="hidden" name="intent" value="setDiscount" />
-                                <input type="hidden" name="targetShop" value={row.shop} />
-                                <div className="rv-form-field" style={{ maxWidth: "150px" }}>
-                                  <label className="rv-form-label" htmlFor={`tier-${row.shop}`}>
-                                    Discount type
-                                  </label>
-                                  <select
-                                    id={`tier-${row.shop}`}
-                                    name="tier"
-                                    value={tierDraft}
-                                    onChange={(e) => setTierDraft(e.target.value)}
-                                    className="rv-input"
-                                  >
-                                    <option value={TIER_STANDARD}>Standard</option>
-                                    <option value={TIER_VIP}>VIP</option>
-                                  </select>
-                                </div>
-                                <div className="rv-form-field" style={{ maxWidth: "160px" }}>
-                                  <label className="rv-form-label" htmlFor={`percent-${row.shop}`}>
-                                    Discount %
-                                  </label>
-                                  <div className="rv-input-group">
-                                    <input
-                                      id={`percent-${row.shop}`}
-                                      type="number"
-                                      min="1"
-                                      max="100"
-                                      required
-                                      name="discountPercent"
-                                      value={percentDraft}
-                                      onChange={(e) => setPercentDraft(e.target.value)}
-                                      className="rv-input"
-                                    />
-                                    <span className="rv-input-suffix">%</span>
-                                  </div>
-                                </div>
-                                <div className="rv-form-field" style={{ flex: 1, minWidth: "220px" }}>
-                                  <label className="rv-form-label" htmlFor={`note-${row.shop}`}>
-                                    Internal note (optional)
-                                  </label>
-                                  <input
-                                    id={`note-${row.shop}`}
-                                    type="text"
-                                    name="note"
-                                    value={noteDraft}
-                                    onChange={(e) => setNoteDraft(e.target.value)}
-                                    placeholder="e.g. Loyalty renewal, partner deal"
-                                    className="rv-input"
-                                    style={{ width: "100%" }}
-                                  />
-                                </div>
-                                <button type="submit" disabled={isStoreBusy} className="rv-btn rv-btn-primary rv-btn-sm">
-                                  <HistoryIcon size={14} />
-                                  <span>{isStoreBusy ? "Saving..." : `Apply (valid ${durationMonths} months)`}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  className="rv-btn rv-btn-secondary rv-btn-sm"
-                                  onClick={() => setEditingShop(null)}
-                                >
-                                  Cancel
-                                </button>
-                              </storeFetcher.Form>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="rv-card" style={{ margin: "20px 0" }}>
-          <div className="rv-card-header">
-            <div className="rv-card-icon-title">
-              <div className="rv-card-icon-badge success">
-                <ShieldCheckIcon size={20} />
-              </div>
-              <div>
-                <h3 className="rv-card-title" style={{ margin: 0, fontSize: "16px" }}>How this works</h3>
-              </div>
-            </div>
-          </div>
-          <div className="rv-card-body" style={{ fontSize: "13px", color: "var(--rv-text-subdued)", lineHeight: 1.6 }}>
-            <ul style={{ margin: 0, paddingLeft: "18px" }}>
-              <li>A discount is always granted for {durationMonths} months from the moment you set or update it.</li>
-              <li>The merchant sees it immediately on their own Plans &amp; Billing page — no separate sync step.</li>
-              <li>
-                <strong>Discounts never stack.</strong> A store gets the single largest one it qualifies for —
-                its own VIP or standard grant, or the global discount, whichever is bigger. The global
-                discount applies to yearly billing only, so a store with no grant of its own pays full
-                price monthly. The &ldquo;Effective&rdquo; column shows which one actually applies.
-              </li>
-              <li>
-                <strong>VIP is a label on the store&apos;s own grant</strong>, not a second discount. Switching a
-                store between Standard and VIP changes how it is badged for the merchant, not how many
-                discounts they hold.
-              </li>
-              <li>
-                <strong>A VIP grant is an offer the merchant must claim.</strong> It discounts nothing and
-                shows as &ldquo;awaiting claim&rdquo; until they accept it on their own Plans &amp; Billing
-                page. Their {durationMonths} months start from the claim, not from when you granted it, so
-                there is no penalty for them deciding later. Standard and global discounts apply
-                immediately, with no claim step.
-              </li>
-              <li>
-                <strong>Free Growth is separate from discounts</strong>, and is also claimed by the merchant.
-                It gives Growth features at no charge and creates no Shopify subscription. A seat holder who
-                upgrades to Business or Enterprise pays for that plan, with their best discount applied.
-              </li>
-              <li>It reaches the real Shopify charge only when they start or switch to a paid plan, and then lasts {durationMonths} billing cycles.</li>
-              <li>
-                A merchant already on a paid plan keeps paying their current price until they apply it —
-                their Plans &amp; Billing page prompts them to do so.
-              </li>
-              <li>Removing a discount here disables it immediately; it does not retroactively change a subscription that already applied it.</li>
-            </ul>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* ── Clear Global Discount Modal ── */}

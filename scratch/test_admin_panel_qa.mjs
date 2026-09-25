@@ -694,10 +694,20 @@ try {
     page.split("Merchant Stores (")[1].split("<tr").find((chunk) => chunk.includes(`<strong>${shop}</strong>`)) || "";
   const rowHtml = (shop) => merchantRow(html, shop);
 
-  await check("render", "page renders the four operator cards", async () => {
-    for (const heading of ["Global Yearly Discount", "Free Growth for the first", "Support Tickets", "Merchant Stores"]) {
-      expect(html.includes(heading), `missing ${heading}`);
-    }
+  await check("render", "page renders the operator cards across tabs", async () => {
+    globalThis.__qaSearchParams = "tab=promotions";
+    const promoHtml = renderToStaticMarkup(createElement(adminRoute.default));
+    expect(promoHtml.includes("Global Yearly Discount"), "missing Global Yearly Discount");
+    expect(promoHtml.includes("Free Growth for the first"), "missing Free Growth");
+
+    globalThis.__qaSearchParams = "tab=tickets";
+    const ticketHtml = renderToStaticMarkup(createElement(adminRoute.default));
+    expect(ticketHtml.includes("Support Tickets"), "missing Support Tickets");
+
+    globalThis.__qaSearchParams = "tab=stores";
+    const storesHtml = renderToStaticMarkup(createElement(adminRoute.default));
+    expect(storesHtml.includes("Merchant Stores"), "missing Merchant Stores");
+    globalThis.__qaSearchParams = "";
   });
 
   await check("render", "global-only discount is labelled yearly only", async () => {

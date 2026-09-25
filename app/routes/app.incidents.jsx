@@ -188,7 +188,7 @@ export default function Incidents() {
       }, 350);
       return () => clearTimeout(timer);
     }
-  }, [searchInput]);
+  }, [searchInput, searchQuery, searchParams, navigate]);
 
   // Turn off manual refresh spinner when navigation finishes
   useEffect(() => {

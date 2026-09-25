@@ -1297,7 +1297,9 @@ export default function RestorePointDetail() {
     if (intent) setSubmittedIntent(String(intent));
   }, [fetcher.formData]);
 
-  const filesList = themeDiffFiles?.length > 0 ? themeDiffFiles : (themeData?.files || []);
+  const filesList = useMemo(() => {
+    return themeDiffFiles?.length > 0 ? themeDiffFiles : (themeData?.files || []);
+  }, [themeDiffFiles, themeData?.files]);
 
   const metafieldOwners = Array.isArray(metafieldData?.owners) ? metafieldData.owners : [];
   const metafieldValueCount = metafieldData?.counts?.metafields || 0;

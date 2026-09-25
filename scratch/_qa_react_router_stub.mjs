@@ -14,6 +14,9 @@ export function useActionData() {
 export function useRouteError() {
   return null;
 }
+export function useSearchParams() {
+  return [new URLSearchParams(globalThis.__qaSearchParams || ""), (val) => val];
+}
 
 // Fetchers are handed out in the order the component asks for them, from
 // globalThis.__qaFetchers; call __qaResetFetchers() before each render.

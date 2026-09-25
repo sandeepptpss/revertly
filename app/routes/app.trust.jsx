@@ -13,7 +13,6 @@ import {
   ServerIcon,
   SparklesIcon,
   RefreshCwIcon,
-  ExternalLinkIcon,
   SearchIcon,
   XIcon,
   UsersIcon,
@@ -84,7 +83,7 @@ export const action = async ({ request }) => {
   const intent = formData.get("intent");
 
   if (intent === "runSecurityAudit") {
-    const [settings, auditCount, readyPoints] = await Promise.all([
+    await Promise.all([
       prisma.appSettings.findUnique({ where: { shop } }),
       prisma.auditLog.count({ where: { shop } }),
       prisma.restorePoint.count({ where: { shop, status: "READY" } }),
@@ -117,7 +116,6 @@ export default function TrustCenterPage() {
     mailchimpConnected,
     auditCount,
     readyPointsCount,
-    lastBackupDate,
     installedDate,
   } = useLoaderData();
 
